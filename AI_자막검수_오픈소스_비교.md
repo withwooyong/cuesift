@@ -191,6 +191,7 @@ flowchart LR
 ## 5. 한계 · 다음 확인 사항
 
 **이 문서의 공백(정직하게)**
+
 - 🟡 표기 항목(subsai·TransQuest·OpenKiwi·pysubs2·Subtitle Edit의 라이선스·스타·최신 릴리스)은 검색 결과 기반이며 **리포 직접 확인 미완료**.
 - **한국어 성능 미검증**: CometKiwi·xCOMET의 **한국어 ↔ 저자원 언어(태국어·베트남어·인도네시아어)** 쌍 성능을 확인하지 못했다. 이게 나쁘면 트리아지 신뢰도 전체가 흔들린다. **최우선 검증 대상.**
 - **모델 크기 문제**: xCOMET-XL(3.5B)·XXL(10.7B)는 로컬 추론에 GPU가 필요하다. 오픈소스 사용자의 진입 장벽이 될 수 있어 **경량 대안 또는 API 폴백 경로**가 필요하다.
@@ -198,6 +199,7 @@ flowchart LR
 - **샷 체인지 검출**: 공백 ③의 핵심인데, 이걸 하는 오픈소스(PySceneDetect 등)를 이번 조사에서 다루지 못했다.
 
 **다음 조사 질문**
+
 1. CometKiwi/xCOMET의 **ko→th/vi/id** 실제 성능은? 대안(자가일관성 단독)으로 충분한가?
 2. xCOMET 없이 **경량 신호만으로** 트리아지가 성립하는가? (비용·접근성 결정)
 3. PySubtrans를 의존성으로 쓸 것인가, 얇게 자체 구현할 것인가? (MIT라 라이선스는 무해)
@@ -211,21 +213,21 @@ flowchart LR
 
 | 항목 | URL | 검증 |
 |---|---|---|
-| LLM-Subtrans | https://github.com/machinewrapped/llm-subtrans | 🟢 |
-| VideoLingo | https://github.com/Huanshere/VideoLingo | 🟢 |
-| Unbabel COMET (CometKiwi·xCOMET) | https://github.com/Unbabel/COMET | 🟢 |
-| Unbabel OpenKiwi | https://github.com/Unbabel/OpenKiwi | 🟡 |
-| TransQuest | https://github.com/TharinduDR/TransQuest | 🟡 |
-| xCOMET 소개 | https://unbabel.com/xcomet-translation-quality-analysis/ | 🟡 |
-| SubER 논문 | https://arxiv.org/pdf/2205.05805 | 🟡 |
-| WhisperX | https://github.com/m-bain/whisperx | 🟡 |
-| whisply | https://github.com/tsmdt/whisply | 🟡 |
-| subsai | https://github.com/absadiki/subsai | 🟡 |
-| pysubs2 문서 | https://pysubs2.readthedocs.io/en/latest/cli.html | 🟡 |
-| Subtitle Edit — Fix Common Errors | https://subtitleedit.github.io/subtitleedit/features/fix-common-errors.html | 🟡 |
-| ai-subtitle-translator | https://github.com/LavX/ai-subtitle-translator | 🟡 |
-| srt-llm-translator | https://github.com/alejandrosnz/srt-llm-translator | 🟡 |
-| open-whisperer | https://github.com/othneildrew/open-whisperer | 🟡 |
-| auto-subtitle-translate | https://github.com/YJ-20/auto-subtitle-translate | 🟡 |
-| CompactQE (소형 오픈웨이트 QE) | https://arxiv.org/html/2605.15763 | 🟡 |
-| MQM-APE | https://arxiv.org/pdf/2409.14335 | 🟡 |
+| LLM-Subtrans | <https://github.com/machinewrapped/llm-subtrans> | 🟢 |
+| VideoLingo | <https://github.com/Huanshere/VideoLingo> | 🟢 |
+| Unbabel COMET (CometKiwi·xCOMET) | <https://github.com/Unbabel/COMET> | 🟢 |
+| Unbabel OpenKiwi | <https://github.com/Unbabel/OpenKiwi> | 🟡 |
+| TransQuest | <https://github.com/TharinduDR/TransQuest> | 🟡 |
+| xCOMET 소개 | <https://unbabel.com/xcomet-translation-quality-analysis/> | 🟡 |
+| SubER 논문 | <https://arxiv.org/pdf/2205.05805> | 🟡 |
+| WhisperX | <https://github.com/m-bain/whisperx> | 🟡 |
+| whisply | <https://github.com/tsmdt/whisply> | 🟡 |
+| subsai | <https://github.com/absadiki/subsai> | 🟡 |
+| pysubs2 문서 | <https://pysubs2.readthedocs.io/en/latest/cli.html> | 🟡 |
+| Subtitle Edit — Fix Common Errors | <https://subtitleedit.github.io/subtitleedit/features/fix-common-errors.html> | 🟡 |
+| ai-subtitle-translator | <https://github.com/LavX/ai-subtitle-translator> | 🟡 |
+| srt-llm-translator | <https://github.com/alejandrosnz/srt-llm-translator> | 🟡 |
+| open-whisperer | <https://github.com/othneildrew/open-whisperer> | 🟡 |
+| auto-subtitle-translate | <https://github.com/YJ-20/auto-subtitle-translate> | 🟡 |
+| CompactQE (소형 오픈웨이트 QE) | <https://arxiv.org/html/2605.15763> | 🟡 |
+| MQM-APE | <https://arxiv.org/pdf/2409.14335> | 🟡 |

@@ -104,6 +104,7 @@ flowchart LR
     CI --> CDN["CDN CloudFront 배포"]
     CDN --> U["글로벌 사용자"]
 ```
+
 - **티빙 적합점**: Spring/Node·**Git 기반 CI/CD**에 그대로 붙음(별도 인프라 불필요, SaaS). 자막(SRT↔VTT 변환 포함)이 UI 문자열과 **한 리포·한 루프**로 관리됨.
 
 ### 2-3. Transifex 연동 (★2순위 — CLI/API · 인컨텍스트 영상 자막)
@@ -118,6 +119,7 @@ flowchart LR
     B --> CDN["CDN CloudFront 배포"]
     CDN --> U["글로벌 사용자"]
 ```
+
 - **티빙 적합점**: **API·SDK·CLI·Webhook·Git이 전 요금제 기본** → 자동화 파이프라인 구성 자유도 높음. 자막 품질은 **영상 보며 번역**으로 확보.
 
 ### 2-4. 단계별 티빙 적용 (요약)
@@ -147,6 +149,7 @@ flowchart LR
 | **POEditor** | **자막 포맷 전무** | ❌ | — | — | poeditor.com/localization/files |
 
 **핵심 판단**
+
 - **VTT 네이티브 = Crowdin·Transifex·Smartling 3종.** Lokalise·Localazy(SRT만)·Weblate는 웹 표준 자막에 구멍, POEditor는 자막 자체가 없어 OTT 부적합.
 - **자막 워크플로우 심화도**: Smartling(파싱모드+QA+영상컨텍스트+CaptionHub AI) ≈ Crowdin(6종+포맷변환+자막QA) > Transifex(영상 인컨텍스트, QA는 평범).
 - **Smartling의 미묘한 한계**: CaptionHub 경로는 네이티브 저작이 아니라 **유료 제3자 커넥터**이고, 인컨텍스트는 라이브 플레이어가 아니라 **영상에서 추출한 프레임 이미지 매칭** 방식.
@@ -172,6 +175,7 @@ flowchart LR
 | **Phrase** | 시트 + 관리단어 | **Team $1,245/월**(연납·관리단어 120만) · Software UI/UX **$525/월** · 자막은 **Phrase Studio 유료 애드온** | — | phrase.com/pricing |
 
 **핵심 판단**
+
 - **가격 투명성**: Crowdin·Transifex·Localazy·POEditor·Weblate는 공개 단가 → 계획 수립 용이. **Smartling·Phrase(사실상)·Business는 영업 견적** → TCO 산정에 세일즈 접촉 필요.
 - **Crowdin 주의**: 자막·핵심 기능은 전 요금제 포함이나 **MT 처리량은 "포함"이 아니라 종량과금(Managed Balance)**.
 - **Localazy/POEditor**: 가격은 저렴하나 **자막 축에서 탈락**(SRT만/자막 전무) → OTT 본류엔 부적합. 소프트웨어 UI 문자열용 보조 도구 성격.
@@ -197,6 +201,7 @@ flowchart LR
 | **Phrase** | ✅ 50+ 포맷·Figma/Jira/GitHub 등·Developer Portal | 50+ | ✅ | **MT Autoselect(LLM 오케스트레이션)** | 자막은 별도 Studio |
 
 **핵심 판단**
+
 - **개발통합만 보면** Lokalise·Transifex·Crowdin·Smartling 모두 우수. 그러나 **OTT 자막 결정축**에서 Lokalise·Localazy·POEditor가 탈락 → 남는 3강(Crowdin·Transifex·Smartling)이 개발통합도 우수.
 - 티빙 **Git 기반 CI/CD**엔 Crowdin(push 시 자동 PR)·Transifex(전 플랜 Webhook/Git)·Smartling(API/커넥터)이 자연스럽게 붙는다.
 
@@ -205,27 +210,33 @@ flowchart LR
 ## 6. 티빙 추천 (근거)
 
 ### ★ 1순위: Crowdin — OTT 자막 적합성 + 전 요금제 기능성 + 가격 투명
+
 - **왜**: 자막 **6종+VTT** 네이티브 + 타임코드 동기화 + **자막 전용 QA**, TM·용어집·MT·AI·QA·CLI **전 요금제**, SaaS라 **AWS/Spring/Node와 무관하게 API·CLI·Git 즉시 연동**, Git push 시 자동 PR로 **CI/CD 친화**(§2-2), 진입가($50/월) 합리적·**공개**.
 - **주의**: MT 처리량 종량과금 / 티어별 단어 한도 공식 재확인.
 
 ### ★ 2순위(병행·대안): Transifex — 인컨텍스트 영상 자막 + 전 요금제 개발통합 + 가격 투명
+
 - **왜**: **영상 재생하며 번역**하는 인컨텍스트 편집기, **API·SDK·CLI·Webhook·Git 전 요금제 기본**(§2-3), 호스팅 단어 볼륨 과금 + 연납 2개월 무료로 비용 예측 용이.
 - **약점**: 자막 4종(Crowdin 6종보다 좁음), 자막 QA 평범.
 
 ### ★ 엔터프라이즈 유력: Smartling — 자막 워크플로우 최심화 (단, 견적제)
+
 - **왜**: WebVTT 네이티브 + **자막 전용 QA + Standard/Enhanced 파싱모드 + Video Context 인컨텍스트 + CaptionHub AI 캡셔닝 커넥터** → 대량 K콘텐츠 엔터프라이즈 자막에 기능적으로 가장 깊다. 티빙이 대기업 조달·엔터프라이즈 SLA를 원하면 **1순위와 함께 견적 비교**할 만하다.
 - **약점/미확정**: **공식 가격 비공개(Contact sales)** → TCO 산정 불가, CaptionHub는 **유료 제3자 커넥터**. 세일즈 접촉으로 최소 계약 규모·과금 구조 확인이 선결.
 
 ### 조건부: Weblate — 데이터주권이 "절대 요건"일 때만
+
 - 셀프호스팅 오픈소스로 데이터 레지던시·주권 완전 통제, 라이선스 저렴. **단 VTT 미지원** → OTT 웹 자막은 **별도 변환/툴체인 보완 필수**. 티빙 규모면 유료 지원 계약 권장.
 
 ### 탈락(참고): Lokalise·Localazy·POEditor·Phrase·Tolgee
+
 - **Lokalise·Localazy**: 개발·가격은 좋으나 **VTT 미지원**(자막 공백/SRT만).
 - **POEditor**: **자막 포맷 자체가 없음** → OTT 부적합(소프트웨어 문자열 전용).
 - **Phrase**: 입문가 $1,245/월·자막은 유료 Studio 애드온 → 비용·구조 불리.
 - **Tolgee**: 무료는 10시트 제한 → 소규모/PoC용.
 
 ### 면접·전략 활용 포인트 (다음 단계 ②로 연결)
+
 - **TVING 1세대 CMS에서 다국어 메타 필드를 초기부터 반영**(제목·자막 등) → i18n/l10n 아키텍처 판단 근거. *(방어 범위: "글로벌 확장에 유리한 토대"까지. "선제 설계/미리 대비" 표현 금지 — 2012 도메스틱 맥락)*
 - **야나두 AI 서비스 직접 개발**(AI 튜터·여행영어) → **AI/LLM 자막·메타 자동 번역** 설계 근거(Crowdin AI·Smartling AI Hub·Lokalise Pro AI 흐름과 연결).
 - **BTV 대용량 파이프라인(Kafka·ELK)** → 대규모 다국어 콘텐츠 처리 확장성 근거.
@@ -253,6 +264,7 @@ flowchart LR
 ## 8. 한계 · 다음 확인 사항 (Open Questions)
 
 **이 보고서의 공백(정직하게)**
+
 - **미검증 2종**: Traduora·GitLocalize는 GitHub 소스를 fetch했으나 두 라운드 연속 3표 통과 클레임 0개 → 판정 불가. **생사(활동성)부터 확인 필요**.
 - **정량 공백**: 티빙 실제 **자막량·문자열 수·MAU·언어/지역 수**가 없어 각 솔루션 **실 월비용(Crowdin MT 종량·Transifex 볼륨·Lokalise 처리단어·Smartling 견적)** 산정 불가.
 - **Smartling 가격 비공개**: 견적제라 3강 중 유일하게 TCO 정량 비교 불가.
@@ -260,6 +272,7 @@ flowchart LR
 - **거버넌스 심화**(SSO/SAML·감사로그·데이터 레지던시)는 이번 검증에서 얕게만 다뤄짐 → 티빙 보안·주권 요건 충족 여부 추가 조사 필요.
 
 **다음 조사 질문**
+
 1. **Traduora·GitLocalize의 2026 유지보수/존폐 상태**(GitHub 커밋·릴리스·이슈 응답)와 자막 지원 — 두 라운드 실패, 별도 조사로 생사부터.
 2. **Smartling 실제 엔터프라이즈 가격·최소 계약 규모** — 견적 접촉 없이는 TCO 비교 불가.
 3. 검증 9종 중 방송용 timed-text 또는 Netflix급 딜리버리 스펙 네이티브 지원처가 있는가?
@@ -273,29 +286,29 @@ flowchart LR
 
 | 솔루션/주제 | URL |
 |---|---|
-| Crowdin 자막 현지화 | https://crowdin.com/solutions/subtitles-localization |
-| Crowdin 지원 포맷 | https://support.crowdin.com/supported-formats/ |
-| Crowdin SRT 스토어 | https://store.crowdin.com/srt |
-| Crowdin 가격 | https://crowdin.com/pricing |
-| Transifex 자막 현지화 | https://help.transifex.com/en/articles/6221673-subtitles-localization |
-| Transifex 가격 | https://www.transifex.com/pricing |
-| Smartling WebVTT | https://help.smartling.com/hc/en-us/articles/360041306074-WebVTT |
-| Smartling 자막 파일 번역 | https://help.smartling.com/hc/en-us/articles/26103534325915-Translating-Subtitle-Files |
-| Smartling 영상 자막 통합 | https://www.smartling.com/software/integrations/video-subtitles/ |
-| Smartling CaptionHub | https://www.smartling.com/integrations/captionhub |
-| Lokalise 개발자 | https://lokalise.com/product/for-developers/ |
-| Lokalise 신가격(2026) | https://docs.lokalise.com/en/articles/11694835-new-price-plans-everything-you-should-know |
-| Localazy 가격 | https://localazy.com/pricing |
-| Localazy 2026 가격인상 | https://localazy.com/blog/pricing-update-january-2026 |
-| Localazy SRT 포맷 | https://localazy.com/docs/cli/srt-format |
-| Localazy 지원 포맷 | https://localazy.com/docs/general/supported-file-formats |
-| POEditor 가격 | https://poeditor.com/pricing/ |
-| POEditor 지원 포맷 | https://poeditor.com/localization/files |
-| POEditor 코드호스팅 통합 | https://poeditor.com/kb/code-hosting-service-integrations |
-| POEditor API | https://poeditor.com/docs/api |
-| Phrase 가격 | https://phrase.com/pricing/ |
-| Weblate 호스팅 가격 | https://weblate.org/en/hosting/ |
-| Weblate 자막 포맷 | https://docs.weblate.org/en/latest/formats/subtitles.html |
-| Tolgee 셀프호스팅 가격 | https://tolgee.io/pricing/self-hosted |
+| Crowdin 자막 현지화 | <https://crowdin.com/solutions/subtitles-localization> |
+| Crowdin 지원 포맷 | <https://support.crowdin.com/supported-formats/> |
+| Crowdin SRT 스토어 | <https://store.crowdin.com/srt> |
+| Crowdin 가격 | <https://crowdin.com/pricing> |
+| Transifex 자막 현지화 | <https://help.transifex.com/en/articles/6221673-subtitles-localization> |
+| Transifex 가격 | <https://www.transifex.com/pricing> |
+| Smartling WebVTT | <https://help.smartling.com/hc/en-us/articles/360041306074-WebVTT> |
+| Smartling 자막 파일 번역 | <https://help.smartling.com/hc/en-us/articles/26103534325915-Translating-Subtitle-Files> |
+| Smartling 영상 자막 통합 | <https://www.smartling.com/software/integrations/video-subtitles/> |
+| Smartling CaptionHub | <https://www.smartling.com/integrations/captionhub> |
+| Lokalise 개발자 | <https://lokalise.com/product/for-developers/> |
+| Lokalise 신가격(2026) | <https://docs.lokalise.com/en/articles/11694835-new-price-plans-everything-you-should-know> |
+| Localazy 가격 | <https://localazy.com/pricing> |
+| Localazy 2026 가격인상 | <https://localazy.com/blog/pricing-update-january-2026> |
+| Localazy SRT 포맷 | <https://localazy.com/docs/cli/srt-format> |
+| Localazy 지원 포맷 | <https://localazy.com/docs/general/supported-file-formats> |
+| POEditor 가격 | <https://poeditor.com/pricing/> |
+| POEditor 지원 포맷 | <https://poeditor.com/localization/files> |
+| POEditor 코드호스팅 통합 | <https://poeditor.com/kb/code-hosting-service-integrations> |
+| POEditor API | <https://poeditor.com/docs/api> |
+| Phrase 가격 | <https://phrase.com/pricing/> |
+| Weblate 호스팅 가격 | <https://weblate.org/en/hosting/> |
+| Weblate 자막 포맷 | <https://docs.weblate.org/en/latest/formats/subtitles.html> |
+| Tolgee 셀프호스팅 가격 | <https://tolgee.io/pricing/self-hosted> |
 
 > 통계: 2개 라운드 · 11개 검색 앵글 · 42개 소스 · 189개 주장 추출 · 50개 검증(47 확정/3 기각) · 검증 통과 9종·미검증 2종.
