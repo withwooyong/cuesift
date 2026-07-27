@@ -33,6 +33,13 @@
       "allowed_elements": ["br"]
     },
 
+    // MD024(중복 제목) — 형제 관계일 때만 금지한다.
+    // Keep a Changelog 형식은 버전 섹션마다 Added/Changed/Fixed를 반복하는
+    // 것이 정의 그 자체다. 전면 금지하면 CHANGELOG.md를 쓸 수 없다.
+    "MD024": {
+      "siblings_only": true
+    },
+
     // MD060(표 파이프 간격) — 셀에 여백을 두는 기존 관례에 맞춘다.
     "MD060": {
       "style": "padded"
