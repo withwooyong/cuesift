@@ -93,5 +93,5 @@ src/cuesift/cli.py             translate·check·transcribe 스텁
 tests/test_cli.py              인자 스키마·종료 코드 계약 6건
 docs/AI_자막검수_오픈소스_비교.md   (기존)
 docs/번역관리_TMS_솔루션_비교.md    (기존)
-docs/요구사항정의서.md              (문서 버전 0.3)
+docs/요구사항정의서.md              (문서 버전 0.4)
 ```
