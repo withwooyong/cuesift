@@ -44,3 +44,31 @@ jobs:
 
       - name: 테스트 (pytest)
         run: pytest --cov=cuesift --cov-report=term-missing
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # 버전을 고정한다. npx가 매번 최신을 받아오면 새 규칙이 추가된 날
+      # 코드 변경 없이 CI가 깨진다.
+      #
+      # 검사 대상(globs)과 규칙은 .markdownlint-cli2.jsonc에 있다.
+      # 인자 없이 실행하되, 설정에 globs가 빠지면 0개 파일을 검사하고도
+      # 통과하므로 아래 스텝에서 검사한 파일 수를 함께 확인한다.
+      - name: 문서 린트 (markdownlint)
+        # 기본 셸은 `bash -e`라 파이프라인 종료 코드가 마지막 명령(tee)의
+        # 것이 된다. pipefail이 없으면 lint 실패가 통과로 둔갑한다.
+        shell: bash
+        run: |
+          set -eo pipefail
+          npx --yes markdownlint-cli2@0.23.2 2>&1 | tee lint.log
+          if grep -qE '^Linting: 0 files' lint.log; then
+            echo "::error::검사한 파일이 0개다. .markdownlint-cli2.jsonc의 globs를 확인하라."
+            exit 1
+          fi
