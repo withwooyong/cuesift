@@ -5,7 +5,11 @@
     "**/*.md"
   ],
 
-  // 서드파티 문서는 검사 대상이 아니다.
+  // .gitignore를 따른다. 이것이 없으면 .pytest_cache/README.md 같은
+  // 로컬 생성물까지 검사해 로컬과 CI의 검사 대상이 어긋난다.
+  "gitignore": true,
+
+  // 서드파티 문서는 검사 대상이 아니다(.gitignore에도 있으나 명시한다).
   "ignores": [
     ".venv/**",
     "node_modules/**"
