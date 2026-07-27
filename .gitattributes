@@ -1,0 +1,18 @@
+# 리포 안에서는 LF로 통일한다.
+# Windows에서 개발하고 CI는 Linux에서 돌기 때문에, 명시하지 않으면
+# 줄바꿈만 바뀐 diff가 발생한다.
+* text=auto eol=lf
+
+# 자막 파일은 규격상 줄바꿈이 의미를 가질 수 있으므로 변환하지 않는다.
+*.srt -text
+*.vtt -text
+*.ass -text
+*.ttml -text
+
+# 바이너리
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.pt binary
+*.bin binary
+*.safetensors binary

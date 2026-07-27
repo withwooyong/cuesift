@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cuesift"
+version = "0.0.1.dev0"
+description = "AI 자막 번역·검수 트리아지 엔진 — 사람이 정말 봐야 할 자막만 걸러냅니다"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Ted", email = "withwooyong@gmail.com" }]
+keywords = ["subtitle", "translation", "quality-estimation", "srt", "webvtt", "localization"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Text Processing :: Linguistic",
+]
+
+# v0.1 최소 의존성. STT(WhisperX)·품질추정(COMET)은 무거우므로
+# 아래 optional-dependencies로 분리한다 — `pip install cuesift`가
+# torch를 끌고 오지 않도록 하기 위함이다.
+dependencies = [
+    "typer>=0.12",
+    "pysubs2>=1.7",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+stt = ["whisperx>=3.1"]
+qe = ["unbabel-comet>=2.2"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+cuesift = "cuesift.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/withwooyong/cuesift"
+Repository = "https://github.com/withwooyong/cuesift"
+Issues = "https://github.com/withwooyong/cuesift/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cuesift"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

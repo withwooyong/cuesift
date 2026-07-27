@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 테스트·커버리지·캐시
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# 환경변수 (LLM API 키 — 절대 커밋 금지)
+.env
+.env.*
+!.env.example
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── cuesift 런타임 산출물 ──────────────────────────────
+# 요구사항정의서 §9.2 / R6: 저작권 있는 자막·영상은 리포에 포함하지 않는다.
+# 로컬 실험 파일이 실수로 커밋되는 것을 막는다.
+*.srt
+*.vtt
+*.ass
+*.ssa
+*.ttml
+*.sami
+*.smi
+*.mp4
+*.mkv
+*.mov
+*.wav
+*.mp3
+# 단, 테스트용 최소 픽스처는 명시적으로 허용한다.
+!tests/fixtures/**
+
+# 파이프라인 출력물
+/out/
+/dist-subs/
+review.json
+report.html
+
+# 로컬 설정 오버라이드 (cuesift.yaml 자체는 예시로 커밋할 수 있음)
+cuesift.local.yaml
+
+# 모델 가중치·캐시 (WhisperX·COMET)
+models/
+*.pt
+*.bin
+*.safetensors
