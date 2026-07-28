@@ -5,6 +5,7 @@ import pytest
 from cuesift.segment import Segment
 from cuesift.signals import SignalContext
 from cuesift.signals.structural import (
+    _DEGENERATION_MAX_TOKENS,
     Degeneration,
     Empty,
     NumberMissing,
@@ -113,6 +114,21 @@ def test_degeneration_detects_repeated_phrase(ctx):
 def test_degeneration_detects_korean_repetition(ctx):
     sig = Degeneration().collect(_seg("원문", "그래 그래 그래 그래"), ctx)
     assert sig is not None
+
+
+def test_degeneration_is_bounded_on_pathological_input(ctx):
+    """탐지기가 탐지 대상에서 느려지면 안 된다.
+
+    디코딩 루프에 빠진 LLM은 같은 토큰을 수천 번 뱉는다 — 이 신호가
+    존재하는 이유가 그 실패 모드인데, 검사 비용이 이차로 늘면 정작
+    그 입력에서 파이프라인이 멈춘다.
+    """
+    runaway = " ".join(["yes"] * 5000)
+    sig = Degeneration().collect(_seg("원문", runaway), ctx)
+    assert sig is not None
+    assert sig.hard_fail is True
+    # 상한을 넘겨 세지 않는다.
+    assert sig.detail["count"] <= _DEGENERATION_MAX_TOKENS
 
 
 # --- FR-3.4 숫자 누락 ---

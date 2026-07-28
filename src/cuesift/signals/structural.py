@@ -43,6 +43,14 @@ _DEGENERATION_MIN_REPEAT = 3
 # 짧은 구를 통째로 되풀이한다("I don't know I don't know I don't know").
 _DEGENERATION_MAX_UNIT = 4
 
+# 반복 검사에 쓸 최대 어절 수.
+#
+# `_longest_consecutive_repeat`는 O(n²)이고, **이 신호가 잡으려는 입력이
+# 곧 최악 케이스다** — 디코딩 루프에 빠진 LLM은 같은 토큰을 수천 번 뱉는다.
+# 연속 반복은 앞쪽에서 이미 드러나므로 앞부분만 봐도 탐지력이 그대로다.
+# 자막 한 줄이 이 길이를 넘는다는 것 자체가 이미 비정상이다.
+_DEGENERATION_MAX_TOKENS = 200
+
 # 천 단위 구분자와 소수점을 숫자의 일부로 본다.
 #
 # `\d+`만 쓰면 "1,000"이 ['1', '000']으로, "3.14"가 ['3', '14']로 쪼개진다.
@@ -88,7 +96,7 @@ def _longest_consecutive_repeat(tokens: list[str]) -> tuple[int, str | None]:
 
 def _numbers(text: str) -> list[str]:
     """텍스트의 숫자를 천 단위 구분자를 제거한 형태로 뽑는다."""
-    return [m.group().replace(",", "").rstrip(".") for m in _NUMBER.finditer(text)]
+    return [m.group().replace(",", "") for m in _NUMBER.finditer(text)]
 
 
 def _tag_names(text: str) -> Counter[str]:
@@ -155,7 +163,7 @@ class Degeneration:
     def collect(self, seg: Segment, ctx: SignalContext) -> Signal | None:
         if not seg.target_text:
             return None
-        tokens = seg.target_text.split()
+        tokens = seg.target_text.split()[:_DEGENERATION_MAX_TOKENS]
         if len(tokens) < _DEGENERATION_MIN_REPEAT:
             return None
 
