@@ -505,19 +505,22 @@ fullwidth가 반각 라틴도 1.0으로 세는 것은 의도된 결정이다. la
 - Consumes: `CharCounting` (Task 2)
 - Produces: `SpecProfile` (필드: `name`·`max_chars_per_line`·`char_counting`·`max_cps`·`max_lines`·`min_duration_ms`·`max_duration_ms`·`source`), `load_profile(path: Path) -> SpecProfile`, `load_builtin(name: str) -> SpecProfile`
 
-**⚠️ 착수 전 사람이 할 일 — TED 값 확인**
+**TED 값 확인 결과 (2026-07-28 조사 완료)**
 
-`specs/ted-*.yaml`의 수치는 §8.3.1이 확정하지 않았다. §11 R8("출처 없는 수치를 기본값으로 넣지 않는다")에 따라 **구현 전에 TED 자막 가이드를 열어 확인**한다.
+아래 YAML의 수치는 조사로 확정한 값이다. 추가 확인은 필요 없다.
 
-출처: <https://www.ted.com/participate/translate/subtitling-tips>
+| 항목 | 값 | 출처 | 검증 등급 |
+| --- | --- | --- | --- |
+| en 줄당 42자 · 2줄 · 21 CPS | 확정 | [ted.com 자막 팁](https://www.ted.com/participate/translate/subtitling-tips) — 현재 접근 가능 | 🟢 원문 확인 |
+| ko 줄당 21자 · 10 CPS | 확정 | TED Translators Wiki 한국어 포털 | 🟡 **도메인 소멸** |
+| ja 줄당 21자 · 10 CPS | 확정 | TED Translators Wiki 일본어 번역 가이드 | 🟡 **도메인 소멸** |
+| 최소·최대 노출시간 | TED가 명시하지 않음 | Netflix 일반 요건 차용 | 🟡 대체 출처 |
 
-| 확인할 것 | 결과 처리 |
-| --- | --- |
-| TED가 ko·ja의 줄당 한도를 별도로 명시하는가 | 명시하면 그 값을 쓰고 URL을 `source`에 적는다 |
-| 명시하지 않는 경우 | 라틴 기준 42자를 문자 폭으로 환산한 값을 쓰고, **주석에 "TED 미명시, 라틴 기준 환산"을 명기**한다 |
-| CPS 21이 전 언어 공통인가 | 언어별 값이 있으면 그것을 쓴다 |
+**🟡 등급의 뜻**: `translations.ted.com`이 DNS 해석에 실패한다(2026-07-28 확인). TED가 Open Translation Project 위키를 내린 것으로 보인다. ko·ja 값은 **검색 색인에 남은 스냅샷**으로만 확인했고 원문 페이지는 열지 못했다. 두 언어 포털이 독립적으로 같은 값(21자 / 10 CPS)을 말하는 점이 상호 검증 역할을 한다.
 
-아래 YAML의 ko·ja 값은 **환산 기본값**이다. 확인 결과가 다르면 그 값으로 교체하고 `source` 주석도 함께 고친다.
+**이 사실을 YAML 주석에 남긴다.** §11 R8은 출처 없는 수치를 금지하는데, 죽은 URL을 살아 있는 것처럼 적는 것도 같은 문제다 — 나중에 확인하려는 사람이 링크를 눌러 보고서야 알게 된다.
+
+**노출시간을 TED 프로파일 3개 모두 833/7000으로 통일한다.** Netflix ja의 500ms를 가져오지 않는 이유는, TED가 지속시간을 아예 명시하지 않으므로 언어별 차등의 근거가 없기 때문이다. 근거 없는 비대칭은 벤치마크에서 ja만 다른 기준으로 재는 결과를 낳는다.
 
 - [ ] **Step 1: 실패하는 테스트를 작성한다**
 
@@ -568,6 +571,21 @@ def test_ted_profile_is_separate_from_netflix():
     """§8.3.1 — TED2020을 Netflix 프로파일로 검사하면 위반이 대량
     발생해 트리아지 성능 측정이 오염된다."""
     assert load_builtin("ted-en").max_cps != load_builtin("en").max_cps
+
+
+def test_ted_cjk_profiles_keep_the_researched_values():
+    """ko·ja의 21자/10 CPS는 원문 URL이 죽은 출처에서 얻은 값이다.
+    다시 확인할 수 없으므로 테스트가 유일한 보존 수단이다.
+
+    라틴 기준(42자/21 CPS)의 환산치가 아니라 TED가 두 언어에 별도로
+    정한 값이며, 두 언어 포털이 독립적으로 같은 수치를 말한다."""
+    for name in ["ted-ko", "ted-ja"]:
+        p = load_builtin(name)
+        assert p.max_chars_per_line == 21
+        assert p.max_cps == 10
+        # TED는 지속시간을 명시하지 않는다. 언어별 차등의 근거가 없으므로
+        # TED 프로파일 3종이 같은 값을 쓴다.
+        assert p.min_duration_ms == load_builtin("ted-en").min_duration_ms
 
 
 def test_unknown_builtin_raises_with_available_names():
@@ -692,6 +710,12 @@ max_duration_ms: 7000
 # TED2020 코퍼스는 Netflix가 아니라 TED 자체 기준으로 제작됐다.
 # Netflix 프로파일로 검사하면 규격 위반이 대량 발생해 트리아지 성능
 # 측정이 오염된다(§8.3.1).
+#
+# 42자·2줄·21 CPS는 아래 출처에서 직접 확인했다(2026-07-28).
+#
+# min/max_duration_ms는 TED가 명시하지 않는다. Netflix 일반 요건을
+# 차용했고, TED 프로파일 3종 모두 같은 값을 쓴다 — TED가 지속시간을
+# 언급하지 않으므로 언어별 차등의 근거가 없다.
 name: ted-en
 source: https://www.ted.com/participate/translate/subtitling-tips
 max_chars_per_line: 42
@@ -707,14 +731,21 @@ max_duration_ms: 7000
 ```yaml
 # TED 자막 규격 프로파일 — 한국어 (벤치마크 전용)
 #
-# ⚠️ max_chars_per_line·max_cps는 TED 가이드가 한국어 값을 명시하지 않을 경우
-# 라틴 기준(42자 / 21 CPS)을 문자 폭으로 환산한 값이다. 착수 시 출처를 열어
-# 확인하고, 명시된 값이 있으면 교체한다(§11 R8).
+# 21자/줄·10 CPS는 TED Translators Wiki 한국어 포털의 값이다.
+# 라틴 기준(42자/21 CPS)의 환산치가 아니라 TED가 한국어에 별도로 정한 값이다.
+#
+# ⚠️ 출처 URL이 죽었다. translations.ted.com이 DNS 해석에 실패한다
+# (2026-07-28 확인). TED가 Open Translation Project 위키를 내린 것으로
+# 보인다. 값은 검색 색인에 남은 스냅샷으로 확인했고 원문 페이지는 열지
+# 못했다. 일본어 가이드가 독립적으로 같은 값을 말하는 것이 상호 검증이다.
+# 살아 있는 출처가 필요하면 아래 source를 교체할 것.
+#
+# min/max_duration_ms는 TED 미명시. ted-en 주석 참조.
 name: ted-ko
-source: https://www.ted.com/participate/translate/subtitling-tips
+source: https://translations.ted.com/Portal:한국어
 max_chars_per_line: 21
 char_counting: latin_half
-max_cps: 11
+max_cps: 10
 max_lines: 2
 min_duration_ms: 833
 max_duration_ms: 7000
@@ -725,15 +756,23 @@ max_duration_ms: 7000
 ```yaml
 # TED 자막 규격 프로파일 — 일본어 (벤치마크 전용)
 #
-# ⚠️ ted-ko와 같은 단서가 적용된다. TED 가이드가 일본어 값을 명시하지 않을
-# 경우의 환산값이며, 착수 시 확인해 교체한다(§11 R8).
+# 21자/줄·10 CPS는 TED Translators Wiki 일본어 번역 가이드의 값이다.
+# 한국어 포털과 같은 수치이며, 두 언어가 독립적으로 일치하는 것이
+# 상호 검증 역할을 한다.
+#
+# ⚠️ ted-ko와 같은 단서 — 출처 URL이 죽었다(translations.ted.com DNS 실패,
+# 2026-07-28 확인). 검색 색인 스냅샷으로만 확인한 값이다.
+#
+# min_duration_ms가 Netflix ja의 500이 아니라 833인 것은 의도된 것이다.
+# TED는 지속시간을 아예 명시하지 않으므로 언어별 차등의 근거가 없고,
+# 근거 없는 비대칭은 벤치마크에서 ja만 다른 기준으로 재게 만든다.
 name: ted-ja
-source: https://www.ted.com/participate/translate/subtitling-tips
+source: https://translations.ted.com/日本語への翻訳ガイド
 max_chars_per_line: 21
 char_counting: fullwidth
-max_cps: 11
+max_cps: 10
 max_lines: 2
-min_duration_ms: 500
+min_duration_ms: 833
 max_duration_ms: 7000
 ```
 
@@ -875,7 +914,7 @@ __all__ = [
 - [ ] **Step 5: 테스트가 통과하는지 확인한다**
 
 Run: `pytest tests/test_spec_profile.py -v`
-Expected: PASS — **10 passed**
+Expected: PASS — **11 passed**
 
 - [ ] **Step 6: 프로파일이 휠에 포함되는지 확인한다**
 
@@ -3027,13 +3066,13 @@ Expected: PASS — **14 passed**
 - [ ] **Step 5: 전체 테스트와 커버리지를 확인한다**
 
 Run: `pytest --cov=cuesift --cov-report=term-missing -q`
-Expected: **전체 통과**, 수집 개수 **124개**.
+Expected: **전체 통과**, 수집 개수 **125개**.
 
 | 출처 | 개수 |
 | --- | --- |
 | Task 1 세그먼트 모델 | 7 |
 | Task 2 문자 폭 | 10 |
-| Task 3 프로파일 | 10 |
+| Task 3 프로파일 | 11 |
 | Task 4 규격 검사 | 14 |
 | Task 5 용어집 | 10 |
 | Task 6 레지스트리 | 8 |
@@ -3042,7 +3081,7 @@ Expected: **전체 통과**, 수집 개수 **124개**.
 | Task 9 위험도 융합 | 12 |
 | Task 10 트리아지 | 14 |
 | 기존 CLI 테스트 | 6 |
-| **합계** | **124** |
+| **합계** | **125** |
 
 수집 개수를 눈으로 읽는다. 크게 적으면 테스트 파일이 수집되지 않은 것이다.
 
@@ -3091,4 +3130,3 @@ hard fail은 두 정책 모두에서 우회한다(FR-6.2). 따라서 선별 개�
 | CLI 서브커맨드 실제 연결 (`cuesift check`) | 별도 작업. 이 계획은 모듈만 만든다 |
 | Tier 1 자가일관성 · Q4 | 계획 B 이후 |
 | `ingest`(자막 파싱) · `translate` · `report` 모듈 | v0.1 나머지 범위 |
-| `specs/ted-*.yaml`의 ko·ja 확정값 | Task 3 착수 시 사람이 TED 가이드에서 확인 |
