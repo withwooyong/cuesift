@@ -198,21 +198,28 @@ def test_violation_score_saturates_at_three(ctx):
 def test_length_ratio_detects_outliers_at_benchmark_injection_rate(ctx):
     """§9.2의 벤치마크는 주입률 10%를 쓴다.
 
-    로버스트하지 않은 척도(평균절대편차)를 주 척도로 쓰면 이상치 자체가
-    척도를 부풀려 정작 그 이상치를 놓친다 — 주입률 10%에서 재현율이
-    절반으로 떨어진다. 그러면 측정 숫자가 신호 성능이 아니라 버그를 반영한다.
+    **이상치가 이종일 때 로버스트하지 않은 척도가 무너진다.** 평균절대편차를
+    주 척도로 쓰면 아주 먼 이상치(반복 붕괴, 길이비 10.0)가 척도를 부풀려
+    가까운 이상치(미번역, 길이비 1.0)가 정상 범위로 들어간다. 실제 주입 오류가
+    정확히 이 모습이라, 이 경계를 놓치면 측정 숫자가 신호 성능이 아니라
+    척도 추정 버그를 반영하게 된다.
+
+    실측: MAD 척도는 5건 전부 잡고, 평균절대편차 척도는 미번역 3건을 놓친다.
     """
     segs = []
-    # 정상 45건: 길이비가 조금씩 다르다.
+    # 정상 45건: 원문 20자, 번역 46~50자 -> 길이비 2.30~2.50 (현실적 분산).
     for i in range(45):
-        pad = "." * (i % 5)
-        segs.append(_seg(f"n{i}", "가나다라마", "가나다라마바사아자차" + pad))
-    # 주입 오류 5건(10%): 번역이 원문만큼 짧다 = 미번역에 준하는 길이비.
-    for i in range(5):
-        segs.append(_seg(f"bad{i}", "가나다라마", "가나"))
+        segs.append(_seg(f"n{i}", "가" * 20, "가" * (46 + i % 5)))
+    # 미번역 3건: 번역이 원문과 같은 길이 -> 길이비 1.0 (중앙값에 비교적 가깝다).
+    for i in range(3):
+        segs.append(_seg(f"short{i}", "가" * 20, "가" * 20))
+    # 반복 붕괴 2건: 번역이 극단적으로 길다 -> 길이비 10.0 (중앙값에서 아주 멀다).
+    for i in range(2):
+        segs.append(_seg(f"long{i}", "가" * 20, "가" * 200))
 
     result = LengthRatio().collect_batch(segs, ctx)
-    assert {f"bad{i}" for i in range(5)} <= set(result)
+    expected = {f"short{i}" for i in range(3)} | {f"long{i}" for i in range(2)}
+    assert expected <= set(result)
 
 
 def test_length_ratio_requires_a_practical_deviation_not_just_a_z_score(ctx):
