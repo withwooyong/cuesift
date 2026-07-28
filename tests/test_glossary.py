@@ -92,3 +92,41 @@ def test_missing_entries_key_raises(tmp_path):
     path.write_text("terms: []\n", encoding="utf-8")
     with pytest.raises(ValueError, match="entries"):
         load_glossary(path, "en")
+
+
+def test_short_target_does_not_match_inside_another_word():
+    """'AI'가 'rain' 안에 걸려 위반이 통째로 사라지던 결함.
+
+    브리프의 예시 용어집이 대응어로 'AI'를 쓰므로 가상 사례가 아니다.
+    """
+    g = Glossary(entries=(GlossaryEntry("인공지능", ("AI", "artificial intelligence")),))
+    hits = g.violations("인공지능 얘기", "It might rain today")
+    assert [e.source for e in hits] == ["인공지능"]
+
+
+def test_short_target_still_matches_as_a_whole_word():
+    """경계 매칭이 정상 매칭까지 막지 않는지 확인한다."""
+    g = Glossary(entries=(GlossaryEntry("인공지능", ("AI",)),))
+    assert g.violations("인공지능 연구", "AI research") == []
+    assert g.violations("인공지능 연구", "No mention of ai.") == []
+
+
+def test_cjk_target_matches_next_to_particles():
+    """CJK는 조사·어미가 붙어도 매칭돼야 한다.
+
+    정규식 `\\b`를 쓰면 CJK 문자가 전부 `\\w`라 경계가 생기지 않아
+    이 케이스가 전부 실패한다.
+    """
+    g = Glossary(entries=(GlossaryEntry("기후변화", ("気候変動",)),))
+    assert g.violations("기후변화는 심각하다", "これは気候変動です") == []
+
+
+def test_string_targets_are_rejected_at_load(tmp_path):
+    """YAML 대괄호를 빠뜨리면 글자 단위로 쪼개져 검사가 영원히 통과한다."""
+    path = tmp_path / "bad.yaml"
+    path.write_text(
+        "entries:\n  - source: 기후변화\n    targets:\n      en: climate change\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="리스트가 아니다"):
+        load_glossary(path, "en")
