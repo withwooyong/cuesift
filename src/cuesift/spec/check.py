@@ -78,18 +78,27 @@ def check_overlaps(segments: Sequence[Segment]) -> dict[str, SpecViolation]:
     """시간이 겹치는 세그먼트를 찾는다 (FR-5.1 세그먼트 중첩 금지).
 
     겹침은 **뒤에 오는 세그먼트**에 기록한다. 앞 세그먼트에 붙이면
-    한 자막이 여러 번 겹칠 때 어느 쌍이 문제인지 알 수 없다.
+    한 자막이 여러 번 겹칠 때 어느 쪽이 문제인지 알 수 없다.
 
-    입력 순서에 의존하지 않도록 시간순으로 정렬한 뒤 판정한다.
+    **직전 항목이 아니라 지금까지 본 최대 end_ms와 비교한다.** 인접 쌍만
+    보면 긴 세그먼트가 여러 개를 덮을 때 중간에 끼지 않은 것을 놓친다 —
+    A(0~10000)가 C(5000~6000)를 덮어도 사이의 B(100~200)와 C가 안 겹치면
+    C가 검사에서 빠진다. 검사하지 않고 통과하는 게이트는 없는 게이트보다 나쁘다.
     """
     ordered = sorted(segments, key=lambda s: (s.start_ms, s.end_ms))
     result: dict[str, SpecViolation] = {}
+    run_end: int | None = None
 
-    for prev, curr in zip(ordered, ordered[1:], strict=False):
+    for seg in ordered:
         # end == start는 겹침이 아니다. 경계를 위반으로 보면
         # 연속된 자막 전체가 오탐이 된다.
-        gap = curr.start_ms - prev.end_ms
-        if gap < 0:
-            result[curr.id] = SpecViolation("overlap", float(-gap), 0.0)
+        if run_end is not None and seg.start_ms < run_end:
+            # 포함 관계에서는 앞 세그먼트의 끝이 아니라 이 세그먼트의 끝이
+            # 겹침의 경계다. run_end만 쓰면 겹침량이 과대 보고된다.
+            overlap = min(run_end, seg.end_ms) - seg.start_ms
+            result[seg.id] = SpecViolation("overlap", float(overlap), 0.0)
+
+        if run_end is None or seg.end_ms > run_end:
+            run_end = seg.end_ms
 
     return result

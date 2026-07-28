@@ -118,3 +118,32 @@ def test_overlaps_are_checked_in_time_order_not_list_order():
         Segment(id="a", index=0, start_ms=0, end_ms=2000, source_text="가"),
     ]
     assert set(check_overlaps(segs)) == {"b"}
+
+
+def test_long_segment_overlapping_a_later_one_is_detected():
+    """긴 세그먼트가 뒤쪽 세그먼트를 덮는데 사이에 안 겹치는 것이 끼어 있는 경우.
+
+    인접 쌍만 비교하면 C가 검사에서 통째로 빠진다.
+    """
+    segs = [
+        Segment(id="A", index=0, start_ms=0, end_ms=10000, source_text="가"),
+        Segment(id="B", index=1, start_ms=100, end_ms=200, source_text="나"),
+        Segment(id="C", index=2, start_ms=5000, end_ms=6000, source_text="다"),
+    ]
+    result = check_overlaps(segs)
+    assert set(result) == {"B", "C"}
+
+
+def test_overlap_amount_is_the_actual_intersection():
+    """포함 관계에서 겹침량은 앞 세그먼트의 끝이 아니라 실제 교집합이다.
+
+    B(100~200)는 A(0~10000) 안에 완전히 들어 있으므로 겹침은 100ms다.
+    """
+    segs = [
+        Segment(id="A", index=0, start_ms=0, end_ms=10000, source_text="가"),
+        Segment(id="B", index=1, start_ms=100, end_ms=200, source_text="나"),
+        Segment(id="C", index=2, start_ms=5000, end_ms=6000, source_text="다"),
+    ]
+    result = check_overlaps(segs)
+    assert result["B"].measured == 100
+    assert result["C"].measured == 1000
