@@ -5,7 +5,7 @@ import pytest
 from cuesift.glossary import Glossary, GlossaryEntry
 from cuesift.segment import Segment
 from cuesift.signals import SignalContext
-from cuesift.signals.derived import GlossaryMiss, LengthRatio, SpecViolationSignal
+from cuesift.signals.derived import GlossaryMiss, LengthRatio, OverlapSignal, SpecViolationSignal
 from cuesift.spec import load_builtin
 
 
@@ -231,6 +231,29 @@ def test_length_ratio_ignores_very_short_sources(ctx):
     segs = [_seg(f"n{i}", "가나다라마", "가나다라마바사아자차") for i in range(9)]
     segs.append(_seg("short", "네", "Yes"))
     assert "short" not in LengthRatio().collect_batch(segs, ctx)
+
+
+def test_overlap_signal_fires_on_overlapping_segments(ctx):
+    """FR-5.1의 중첩 금지가 위험도에 도달하는지 확인한다.
+
+    check_overlaps가 구현돼 있어도 신호로 연결되지 않으면 죽은 코드다.
+    """
+    segs = [
+        _seg("a", "가", "a", 0, 2000),
+        _seg("b", "나", "b", 1500, 3000),
+    ]
+    result = OverlapSignal().collect_batch(segs, ctx)
+    assert set(result) == {"b"}
+    assert result["b"].hard_fail is False
+    assert result["b"].detail["overlap_ms"] == 500
+
+
+def test_overlap_signal_silent_on_clean_track(ctx):
+    segs = [
+        _seg("a", "가", "a", 0, 2000),
+        _seg("b", "나", "b", 2000, 4000),
+    ]
+    assert OverlapSignal().collect_batch(segs, ctx) == {}
 
 
 def test_length_ratio_requires_a_practical_deviation_not_just_a_z_score(ctx):

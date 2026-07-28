@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 
 from cuesift.segment import SegmentRisk, Signal
 
-# 등록된 신호 8종에 균등 가중. 무튜닝 기본값이다.
+# 등록된 신호 9종에 균등 가중. 무튜닝 기본값이다.
 DEFAULT_WEIGHTS: dict[str, float] = {
     "struct.untranslated": 1.0,
     "struct.empty": 1.0,
@@ -26,6 +26,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "spec.violation": 1.0,
     "glossary.miss": 1.0,
     "length.ratio": 1.0,
+    "spec.overlap": 1.0,
 }
 
 # 가중치 표에 없는 신호의 기본값. v0.2에서 QE 신호가 꽂혀도

@@ -72,7 +72,7 @@ def test_negative_weight_is_rejected():
         fuse("s1", [_sig("a", 0.5)], weights={"a": -1.0})
 
 
-def test_default_weights_cover_all_eight_signals():
+def test_default_weights_cover_all_nine_signals():
     """등록된 신호가 기본 가중치 표에서 빠지면 조용히 1.0이 되는데,
     그 자체는 문제가 아니지만 '튜닝하지 않았다'는 기록이 사라진다."""
     from cuesift.signals import registry

@@ -12,7 +12,7 @@ from collections.abc import Sequence
 
 from cuesift.segment import Segment, Signal
 from cuesift.signals.base import SignalContext, register
-from cuesift.spec import check_text, text_width
+from cuesift.spec import check_overlaps, check_text, text_width
 
 # 위반 건수를 0.5~1.0 점수로 옮긴다. 1건=0.5, 2건=0.75, 3건 이상=1.0.
 #
@@ -190,5 +190,34 @@ class LengthRatio:
         return result
 
 
-for _collector in (SpecViolationSignal(), GlossaryMiss(), LengthRatio()):
+class OverlapSignal:
+    """FR-5.1 — 세그먼트 시간이 겹친다.
+
+    트랙 전체를 봐야 판정되므로 배치 수집기다. `check_text`는 세그먼트 하나만
+    보므로 겹침을 판정할 수 없어, 이 신호가 없으면 FR-5.1의 중첩 금지가
+    위험도에 도달하지 않는다.
+
+    **hard fail이 아니다.** 겹침은 타이밍 결함이지 번역 결함이 아니고,
+    hard fail을 늘리면 예산 우회가 커져 트리아지가 무의미해진다.
+    """
+
+    name = "spec.overlap"
+    tier = 0
+
+    def collect_batch(self, segments: Sequence[Segment], ctx: SignalContext) -> dict[str, Signal]:
+        return {
+            seg_id: Signal(
+                name=self.name,
+                tier=0,
+                # 겹침은 건수가 아니라 유무의 문제다. 다른 신호의 하한과
+                # 스케일을 맞춘다(_violation_score(1) == 0.5).
+                score=_violation_score(1),
+                hard_fail=False,
+                detail={"overlap_ms": violation.measured},
+            )
+            for seg_id, violation in check_overlaps(segments).items()
+        }
+
+
+for _collector in (SpecViolationSignal(), GlossaryMiss(), LengthRatio(), OverlapSignal()):
     register(_collector)
