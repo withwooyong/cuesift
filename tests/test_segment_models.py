@@ -43,8 +43,32 @@ def test_span_rejects_reversed_range():
         Span(start=5, end=2)
 
 
+def test_span_defaults_to_target_side():
+    """대부분의 신호가 번역문을 가리키므로 그것이 기본값이다."""
+    assert Span(start=0, end=3).side == "target"
+
+
+def test_span_can_point_at_the_source():
+    """용어 누락·숫자 누락은 번역문에 없으므로 원문을 가리킨다."""
+    assert Span(start=0, end=3, side="source").side == "source"
+
+
 def test_segment_risk_holds_signals_and_reasons():
     sig = Signal(name="struct.empty", tier=0, score=1.0, hard_fail=True)
     risk = SegmentRisk(segment_id="s1", signals=[sig], risk_score=1.0, hard_fail=True)
     assert risk.selected is False
     assert risk.reasons == []
+
+
+@pytest.mark.parametrize("bad", [-5.0, 1.5, float("nan")])
+def test_segment_risk_rejects_out_of_range_score(bad):
+    """형제 세 모델과 같은 방어다. 범위 밖 값은 triage의 정렬을 깨뜨린다."""
+    with pytest.raises(ValueError, match="risk_score"):
+        SegmentRisk(segment_id="s1", signals=[], risk_score=bad, hard_fail=False)
+
+
+def test_segment_risk_allows_hard_fail_with_any_score():
+    """FR-6.2는 hard fail이 가중합을 '우회'한다는 의미 계약이지
+    '항상 1.0'이 아니다. triage의 우회 보장을 risk의 구현 선택에 묶지 않는다."""
+    r = SegmentRisk(segment_id="s1", signals=[], risk_score=0.1, hard_fail=True)
+    assert r.hard_fail is True
