@@ -14,9 +14,16 @@ from cuesift.segment import Segment, Signal
 from cuesift.signals.base import SignalContext, register
 from cuesift.spec import check_text, text_width
 
-# 위반 이 건수에서 score 1.0에 도달한다. 한 건이든 세 건이든 같은 점수면
-# 가중합에서 심각도가 사라진다.
-_SPEC_SATURATION = 3.0
+# 위반 건수를 0.5~1.0 점수로 옮긴다. 1건=0.5, 2건=0.75, 3건 이상=1.0.
+#
+# **하한이 0.5인 이유**: 위반 1건은 이미 "문제가 있다"는 판정이다.
+# 0.33 같은 낮은 값을 주면 융합에서 "거의 안전"으로 읽혀 순위가 밀린다.
+#
+# **두 신호가 같은 식을 쓰는 이유**: 서로 다른 스케일을 쓰면 균등 가중
+# 평균에서 암묵적 가중치가 생긴다. 계획은 가중치를 튜닝하지 않기로 했으므로
+# 점수 스케일을 통해 몰래 가중이 들어가면 안 된다.
+_VIOLATION_FLOOR = 0.5
+_VIOLATION_STEP = 0.25
 
 # 길이비 이상치 판정에 필요한 최소 표본. 이보다 적으면 분포를 말할 수 없다.
 _RATIO_MIN_SAMPLES = 8
@@ -27,8 +34,13 @@ _RATIO_Z_THRESHOLD = 3.5
 # MAD를 표준편차 척도로 환산하는 상수 (정규분포 가정).
 _MAD_SCALE = 0.6745
 
-# 평균절대편차를 표준편차 척도로 환산하는 상수. MAD가 0일 때만 쓴다.
+# 평균절대편차를 표준편차 척도로 환산하는 상수. MAD가 0에 가까울 때 쓴다.
 _MEAN_AD_SCALE = 1.2533
+
+
+def _violation_score(count: int) -> float:
+    """위반 건수를 0.5~1.0 범위의 점수로 옮긴다."""
+    return min(1.0, _VIOLATION_FLOOR + _VIOLATION_STEP * (count - 1))
 
 
 class SpecViolationSignal:
@@ -47,11 +59,10 @@ class SpecViolationSignal:
         if not violations:
             return None
 
-        score = min(1.0, len(violations) / _SPEC_SATURATION)
         return Signal(
             name=self.name,
             tier=0,
-            score=score,
+            score=_violation_score(len(violations)),
             hard_fail=False,
             detail={
                 "kinds": sorted(v.kind for v in violations),
@@ -79,7 +90,7 @@ class GlossaryMiss:
         return Signal(
             name=self.name,
             tier=0,
-            score=1.0,
+            score=_violation_score(len(hits)),
             hard_fail=False,
             detail={"terms": [e.source for e in hits]},
         )
@@ -119,14 +130,21 @@ class LengthRatio:
         median = statistics.median(values)
         deviations = [abs(v - median) for v in values]
 
-        scale = statistics.median(deviations) / _MAD_SCALE
-
-        if scale == 0:
-            # 정상군이 완전히 균일하면 MAD가 0이 된다. 여기서 빈손으로
-            # 돌아가면 **가장 명백한 이상치를 놓친다** — 합성 벤치마크에서는
-            # 이 상황이 예외가 아니라 기본이다(정상 세그먼트가 같은 길이로
-            # 생성되고 주입된 오류만 튄다). 평균절대편차로 척도를 다시 잡는다.
-            scale = statistics.fmean(deviations) * _MEAN_AD_SCALE
+        # **두 척도 중 큰 쪽을 쓴다.**
+        #
+        # MAD만 쓰면 정상군이 조밀하게 뭉칠 때 척도가 0에 가까워져
+        # 중앙값 대비 0.4% 편차도 z=4.7이 된다 — 정상 세그먼트가 무더기로
+        # 이상치가 되어 신호가 변별력을 잃는다. 번역 스타일이 일관된
+        # 트랙에서 실제로 일어나는 상황이다.
+        #
+        # 평균절대편차는 로버스트하지 않아 이상치가 많으면 척도가 부풀지만,
+        # 이 신호는 hard fail이 아니므로 미탐이 오탐보다 낫다.
+        # MAD가 정확히 0인 경우(합성 벤치마크의 균일한 정상군)도 이 식이
+        # 자동으로 흡수한다 — 그쪽이 항상 크거나 같기 때문이다.
+        scale = max(
+            statistics.median(deviations) / _MAD_SCALE,
+            statistics.fmean(deviations) * _MEAN_AD_SCALE,
+        )
 
         # 값이 전부 동일하면 두 척도가 모두 0이다. 이때는 이상치가
         # 정의되지 않는다 — 판정하지 않는 것이 맞다.

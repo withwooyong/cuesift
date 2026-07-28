@@ -144,3 +144,46 @@ def test_length_ratio_skips_empty_targets(ctx):
     result = LengthRatio().collect_batch(segs, ctx)
     assert "blank" not in result
     assert "mild" in result
+
+
+def test_length_ratio_survives_a_tiny_but_nonzero_mad(ctx):
+    """정상군이 조밀하게 뭉치면 MAD가 0에 가까워진다.
+
+    MAD만 척도로 쓰면 중앙값 대비 0.4% 편차도 z=4.7이 되어
+    정상 세그먼트가 무더기로 이상치가 되고 신호가 변별력을 잃는다.
+    """
+    # 길이비가 1.000~1.004로 조밀한 정상군 9건 + 명백한 이상치 1건.
+    targets = ["가나다라마"] * 5 + ["가나다라마" + "." * n for n in (1, 2, 3, 4)]
+    segs = [_seg(f"n{i}", "가나다라마", t) for i, t in enumerate(targets)]
+    segs.append(_seg("odd", "가나다라마", "가" * 30))
+
+    result = LengthRatio().collect_batch(segs, ctx)
+    assert set(result) == {"odd"}
+
+
+def test_spec_and_glossary_use_the_same_score_scale(ctx):
+    """서로 다른 스케일을 쓰면 균등 가중 평균에 암묵적 가중치가 생긴다.
+
+    계획은 가중치를 튜닝하지 않기로 했으므로 점수 스케일을 통해
+    몰래 가중이 들어가면 안 된다.
+    """
+    g = Glossary(entries=(GlossaryEntry("기후변화", ("climate change",)),))
+    gctx = SignalContext(load_builtin("en"), g, "ko", "en")
+
+    glossary_sig = GlossaryMiss().collect(_seg("s1", "기후변화 문제", "A weather problem"), gctx)
+    # 규격 위반 1건짜리 세그먼트: 길이만 초과시킨다(en 42자 한도).
+    spec_sig = SpecViolationSignal().collect(_seg("s2", "가", "a" * 50, 0, 5000), ctx)
+
+    assert glossary_sig is not None
+    assert spec_sig is not None
+    assert glossary_sig.score == spec_sig.score == 0.5
+
+
+def test_violation_score_saturates_at_three(ctx):
+    """1건=0.5, 3건 이상=1.0."""
+    from cuesift.signals.derived import _violation_score
+
+    assert _violation_score(1) == 0.5
+    assert _violation_score(2) == 0.75
+    assert _violation_score(3) == 1.0
+    assert _violation_score(10) == 1.0
