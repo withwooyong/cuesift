@@ -364,6 +364,22 @@ def test_ideographic_space_is_full_width():
 def test_empty_text_is_zero_width():
     for mode in CharCounting:
         assert text_width("", mode) == 0.0
+
+
+def test_accented_latin_is_half_width_regardless_of_case():
+    """é(East Asian Width 'A')와 É('N')가 같은 폭이어야 한다.
+
+    유니코드의 Ambiguous 등급은 라틴 악센트 문자를 일관성 없이 분류한다.
+    이를 전각으로 세면 같은 글자의 대소문자가 다른 폭을 갖는다.
+    """
+    assert text_width("é", CharCounting.latin_half) == 0.5
+    assert text_width("É", CharCounting.latin_half) == 0.5
+    assert text_width("Café", CharCounting.latin_half) == 2.0
+
+
+def test_hangul_is_still_full_width_in_latin_half():
+    """A 등급을 반각으로 내리는 변경이 한글 판정을 건드리지 않았는지 확인한다."""
+    assert text_width("안녕", CharCounting.latin_half) == 2.0
 ```
 
 - [ ] **Step 2: 테스트가 실패하는지 확인한다**
@@ -392,10 +408,12 @@ import unicodedata
 from enum import StrEnum
 
 # East Asian Width가 이 값이면 전각으로 본다.
-# W = Wide, F = Fullwidth, A = Ambiguous.
-# A(Ambiguous)를 전각에 넣는 이유는 CJK 문맥에서 실제로 전각으로 렌더링되기
-# 때문이다 — 한중일 폰트에서 '±'·'°' 등이 그렇다. 자막은 CJK 문맥이다.
-_WIDE = frozenset({"W", "F", "A"})
+# W = Wide, F = Fullwidth.
+# 유니코드의 Ambiguous 등급(A)은 라틴 악센트 문자(é, É 등)를 일관성 없이
+# 분류하므로, 같은 글자의 대소문자가 다른 폭을 갖는 문제가 생긴다.
+# 자막의 일관성이 CJK 폰트 렌더링 근사보다 중요하므로, latin_half에서는
+# 실제 전각(W·F)만 1.0으로 센다.
+_WIDE = frozenset({"W", "F"})
 
 
 class CharCounting(StrEnum):
@@ -435,7 +453,7 @@ def text_width(text: str, mode: CharCounting) -> float:
         return float(len(chars))
 
     # latin_half — 전각은 1.0, 그 외는 0.5.
-    return sum(1.0 if unicodedata.east_asian_width(ch) in _WIDE else 0.5 for ch in chars)
+    return sum((1.0 if unicodedata.east_asian_width(ch) in _WIDE else 0.5 for ch in chars), 0.0)
 ```
 
 `src/cuesift/spec/__init__.py`:
@@ -453,7 +471,7 @@ __all__ = ["CharCounting", "text_width"]
 - [ ] **Step 4: 테스트가 통과하는지 확인한다**
 
 Run: `pytest tests/test_spec_counting.py -v`
-Expected: PASS — **10 passed** (파라미터화 3건 + 개별 7건).
+Expected: PASS — **12 passed** (파라미터화 3건 + 개별 9건).
 
 - [ ] **Step 5: `grapheme`과 `fullwidth`가 같은 구현인 것을 확인하고 남긴다**
 
@@ -967,8 +985,9 @@ TED 프로파일을 언어별 파일 3개로 나눴다. 스펙 초안은 ted.yam
 specs/를 휠에 force-include 한다. src/cuesift/ 밖이라 그대로 두면
 설치본에서 load_builtin이 깨진다.
 
-ted-ko·ted-ja의 수치는 TED 가이드가 해당 언어 값을 명시하지 않을 경우의
-라틴 기준 환산값이며, 주석에 그 사실을 명기했다(§11 R8)."
+ted-ko·ted-ja의 21자/10 CPS는 라틴 기준의 환산치가 아니라 TED가 두 언어에
+별도로 정한 값이다. 출처 URL이 죽어 있어(translations.ted.com DNS 실패)
+검색 색인 스냅샷으로만 확인했고, 그 사실을 주석에 명기했다(§11 R8)."
 ```
 
 ---
@@ -3066,12 +3085,12 @@ Expected: PASS — **14 passed**
 - [ ] **Step 5: 전체 테스트와 커버리지를 확인한다**
 
 Run: `pytest --cov=cuesift --cov-report=term-missing -q`
-Expected: **전체 통과**, 수집 개수 **125개**.
+Expected: **전체 통과**, 수집 개수 **127개**.
 
 | 출처 | 개수 |
 | --- | --- |
 | Task 1 세그먼트 모델 | 7 |
-| Task 2 문자 폭 | 10 |
+| Task 2 문자 폭 | 12 |
 | Task 3 프로파일 | 11 |
 | Task 4 규격 검사 | 14 |
 | Task 5 용어집 | 10 |
@@ -3081,7 +3100,7 @@ Expected: **전체 통과**, 수집 개수 **125개**.
 | Task 9 위험도 융합 | 12 |
 | Task 10 트리아지 | 14 |
 | 기존 CLI 테스트 | 6 |
-| **합계** | **125** |
+| **합계** | **127** |
 
 수집 개수를 눈으로 읽는다. 크게 적으면 테스트 파일이 수집되지 않은 것이다.
 
