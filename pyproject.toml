@@ -58,10 +58,13 @@ packages = ["src/cuesift"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+# bench/ 와 scripts/ 는 휠에 들어가지 않으므로 설치 경로로 임포트되지 않는다.
+# 리포 루트를 sys.path에 넣지 않으면 tests/test_bench_*.py가 전부 수집 오류가 된다.
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "bench", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

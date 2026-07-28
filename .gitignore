@@ -68,3 +68,6 @@ models/
 *.pt
 *.bin
 *.safetensors
+
+# 벤치마크 코퍼스와 가공물 (CC BY-NC-ND 4.0 — 파생물 배포 금지, 스펙 §3.2)
+data/
