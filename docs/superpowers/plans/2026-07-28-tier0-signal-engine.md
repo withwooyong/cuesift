@@ -1135,6 +1135,34 @@ def test_overlaps_are_checked_in_time_order_not_list_order():
         Segment(id="a", index=0, start_ms=0, end_ms=2000, source_text="가"),
     ]
     assert set(check_overlaps(segs)) == {"b"}
+
+
+def test_long_segment_overlapping_a_later_one_is_detected():
+    """긴 세그먼트가 뒤쪽 세그먼트를 덮는데 사이에 안 겹치는 것이 끼어 있는 경우.
+
+    인접 쌍만 비교하면 C가 검사에서 통째로 빠진다.
+    """
+    segs = [
+        Segment(id="A", index=0, start_ms=0, end_ms=10000, source_text="가"),
+        Segment(id="B", index=1, start_ms=100, end_ms=200, source_text="나"),
+        Segment(id="C", index=2, start_ms=5000, end_ms=6000, source_text="다"),
+    ]
+    assert set(check_overlaps(segs)) == {"B", "C"}
+
+
+def test_overlap_amount_is_the_actual_intersection():
+    """포함 관계에서 겹침량은 앞 세그먼트의 끝이 아니라 실제 교집합이다.
+
+    B(100~200)는 A(0~10000) 안에 완전히 들어 있으므로 겹침은 100ms다.
+    """
+    segs = [
+        Segment(id="A", index=0, start_ms=0, end_ms=10000, source_text="가"),
+        Segment(id="B", index=1, start_ms=100, end_ms=200, source_text="나"),
+        Segment(id="C", index=2, start_ms=5000, end_ms=6000, source_text="다"),
+    ]
+    result = check_overlaps(segs)
+    assert result["B"].measured == 100
+    assert result["C"].measured == 1000
 ```
 
 - [ ] **Step 2: 테스트가 실패하는지 확인한다**
@@ -1230,16 +1258,27 @@ def check_overlaps(segments: Sequence[Segment]) -> dict[str, SpecViolation]:
     한 자막이 여러 번 겹칠 때 어느 쌍이 문제인지 알 수 없다.
 
     입력 순서에 의존하지 않도록 시간순으로 정렬한 뒤 판정한다.
+
+    **직전 항목이 아니라 지금까지 본 최대 end_ms와 비교한다.** 인접 쌍만
+    보면 긴 세그먼트가 여러 개를 덮을 때 중간에 끼지 않은 것을 놓친다 —
+    A(0~10000)가 C(5000~6000)를 덮어도 사이의 B(100~200)와 C가 안 겹치면
+    C가 검사에서 빠진다. 검사하지 않고 통과하는 게이트는 없는 게이트보다 나쁘다.
     """
     ordered = sorted(segments, key=lambda s: (s.start_ms, s.end_ms))
     result: dict[str, SpecViolation] = {}
+    run_end: int | None = None
 
-    for prev, curr in zip(ordered, ordered[1:], strict=False):
+    for seg in ordered:
         # end == start는 겹침이 아니다. 경계를 위반으로 보면
         # 연속된 자막 전체가 오탐이 된다.
-        gap = curr.start_ms - prev.end_ms
-        if gap < 0:
-            result[curr.id] = SpecViolation("overlap", float(-gap), 0.0)
+        if run_end is not None and seg.start_ms < run_end:
+            # 포함 관계에서는 앞 세그먼트의 끝이 아니라 이 세그먼트의 끝이
+            # 겹침의 경계다. run_end만 쓰면 겹침량이 과대 보고된다.
+            overlap = min(run_end, seg.end_ms) - seg.start_ms
+            result[seg.id] = SpecViolation("overlap", float(overlap), 0.0)
+
+        if run_end is None or seg.end_ms > run_end:
+            run_end = seg.end_ms
 
     return result
 ```
@@ -1255,7 +1294,7 @@ from cuesift.spec.check import SpecViolation, check_overlaps, check_text
 - [ ] **Step 4: 테스트가 통과하는지 확인한다**
 
 Run: `pytest tests/test_spec_check.py -v`
-Expected: PASS — **14 passed**
+Expected: PASS — **16 passed**
 
 - [ ] **Step 5: 린트와 커밋**
 
@@ -3080,19 +3119,19 @@ __all__ = ["review_ratio", "select_by_budget", "select_by_threshold"]
 - [ ] **Step 4: 테스트가 통과하는지 확인한다**
 
 Run: `pytest tests/test_triage_policy.py -v`
-Expected: PASS — **14 passed**
+Expected: PASS — **16 passed**
 
 - [ ] **Step 5: 전체 테스트와 커버리지를 확인한다**
 
 Run: `pytest --cov=cuesift --cov-report=term-missing -q`
-Expected: **전체 통과**, 수집 개수 **127개**.
+Expected: **전체 통과**, 수집 개수 **129개**.
 
 | 출처 | 개수 |
 | --- | --- |
 | Task 1 세그먼트 모델 | 7 |
 | Task 2 문자 폭 | 12 |
 | Task 3 프로파일 | 11 |
-| Task 4 규격 검사 | 14 |
+| Task 4 규격 검사 | 16 |
 | Task 5 용어집 | 10 |
 | Task 6 레지스트리 | 8 |
 | Task 7 구조 신호 | 20 |
@@ -3100,7 +3139,7 @@ Expected: **전체 통과**, 수집 개수 **127개**.
 | Task 9 위험도 융합 | 12 |
 | Task 10 트리아지 | 14 |
 | 기존 CLI 테스트 | 6 |
-| **합계** | **127** |
+| **합계** | **129** |
 
 수집 개수를 눈으로 읽는다. 크게 적으면 테스트 파일이 수집되지 않은 것이다.
 
