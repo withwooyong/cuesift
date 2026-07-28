@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from bench.corpus import SentencePair, filter_pairs, load_pairs, sample
 
 
