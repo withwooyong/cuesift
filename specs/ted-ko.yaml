@@ -1,0 +1,20 @@
+# TED 자막 규격 프로파일 — 한국어 (벤치마크 전용)
+#
+# 21자/줄·10 CPS는 TED Translators Wiki 한국어 포털의 값이다.
+# 라틴 기준(42자/21 CPS)의 환산치가 아니라 TED가 한국어에 별도로 정한 값이다.
+#
+# ⚠️ 출처 URL이 죽었다. translations.ted.com이 DNS 해석에 실패한다
+# (2026-07-28 확인). TED가 Open Translation Project 위키를 내린 것으로
+# 보인다. 값은 검색 색인에 남은 스냅샷으로 확인했고 원문 페이지는 열지
+# 못했다. 일본어 가이드가 독립적으로 같은 값을 말하는 것이 상호 검증이다.
+# 살아 있는 출처가 필요하면 아래 source를 교체할 것.
+#
+# min/max_duration_ms는 TED 미명시. ted-en 주석 참조.
+name: ted-ko
+source: https://translations.ted.com/Portal:한국어
+max_chars_per_line: 21
+char_counting: latin_half
+max_cps: 10
+max_lines: 2
+min_duration_ms: 833
+max_duration_ms: 7000

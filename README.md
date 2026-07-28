@@ -9,8 +9,10 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
 > [!WARNING]
-> **개발 이전 단계(pre-alpha)입니다.** 현재 리포에는 요구사항 정의서와 CLI 골격만 있습니다.
-> 모든 서브커맨드는 미구현 상태로 종료 코드 `70`을 반환합니다. 아직 사용할 수 없습니다.
+> **개발 이전 단계(pre-alpha)입니다.** Tier 0 신호 엔진(무료 결정론적 신호 9종 ·
+> 위험도 융합 · 트리아지 선별)은 구현돼 있으나 **CLI에 배선되지 않았습니다** —
+> 모든 서브커맨드는 여전히 종료 코드 `70`(미구현)을 반환합니다.
+> 자막 파일 파싱과 번역 계층이 없어 아직 사용할 수 없습니다.
 
 ---
 
@@ -77,6 +79,8 @@ ruff check .
 | [docs/요구사항정의서.md](docs/요구사항정의서.md) | 배경·요구사항·아키텍처·인터페이스 명세 |
 | [docs/번역관리_TMS_솔루션_비교.md](docs/번역관리_TMS_솔루션_비교.md) | 기존 TMS 솔루션 조사 |
 | [docs/AI_자막검수_오픈소스_비교.md](docs/AI_자막검수_오픈소스_비교.md) | 자막 검수 오픈소스 조사 |
+| [벤치마크 하네스 설계](docs/superpowers/specs/2026-07-28-ted2020-benchmark-harness-design.md) | TED2020 코퍼스 · 오류 주입 · Recall@Budget 측정 |
+| [Tier 0 신호 엔진 구현 계획](docs/superpowers/plans/2026-07-28-tier0-signal-engine.md) | 구현 계획과 실행 중 바뀐 결정 |
 
 ## 라이선스
 

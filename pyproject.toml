@@ -52,6 +52,9 @@ Issues = "https://github.com/withwooyong/cuesift/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/cuesift"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"specs" = "cuesift/specs"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"

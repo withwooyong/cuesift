@@ -1,0 +1,16 @@
+# 일본어 자막 규격 프로파일
+# 출처: Netflix Timed Text Style Guide — Japanese
+#
+# min_duration_ms가 500인 것은 오타가 아니다. §8.3.1의 선례 규칙 —
+# 언어별 가이드가 일반 요건(833ms)을 덮어쓴다.
+#
+# max_chars_per_line은 가로쓰기 기준 13자다. 세로쓰기(11자)는 v0.1 범위 밖이라
+# 프로파일에 두지 않는다. 필요해지면 별도 프로파일(ja-vertical)로 분리한다.
+name: ja
+source: https://partnerhelp.netflixstudios.com/hc/en-us/articles/215767517-Japanese-Timed-Text-Style-Guide
+max_chars_per_line: 13
+char_counting: fullwidth
+max_cps: 4
+max_lines: 2
+min_duration_ms: 500
+max_duration_ms: 7000
