@@ -93,6 +93,14 @@ def select_by_threshold(risks: Sequence[SegmentRisk], threshold: float) -> list[
     이상이거나 hard fail인 항목에만 `selected=True`를 붙인다. hard fail은
     임계값 미만이어도 우회한다 (FR-6.2).
     """
+    # select_by_budget과 같은 방어다. NaN을 비교 연산의 우연에 맡기면
+    # (`risk_score >= threshold`가 NaN에서 항상 False라 hard fail 외 전량이
+    # 조용히 검수에서 빠진다) Task 9가 잡은 결함과 같은 부류가 재현된다.
+    if math.isnan(threshold):
+        raise ValueError(f"threshold는 NaN일 수 없다 (받은 값: {threshold})")
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"threshold는 0.0~1.0이어야 한다 (받은 값: {threshold})")
+
     ordered = _sorted_desc(risks)
     return [_copy(r, selected=r.hard_fail or r.risk_score >= threshold) for r in ordered]
 

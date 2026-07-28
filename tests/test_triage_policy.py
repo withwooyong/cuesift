@@ -106,6 +106,17 @@ def test_threshold_includes_hard_fail_below_threshold():
     assert {r.segment_id for r in result if r.selected} == {"a"}
 
 
+@pytest.mark.parametrize("bad", [float("nan"), -1.0, 5.0])
+def test_threshold_outside_zero_to_one_is_rejected(bad):
+    """형제 함수 select_by_budget과 같은 방어를 갖는다.
+
+    threshold=nan은 hard fail 외 전량을 조용히 검수에서 뺀다 —
+    Task 9가 잡은 `nan < 0 == False`와 같은 부류다.
+    """
+    with pytest.raises(ValueError, match="threshold"):
+        select_by_threshold([_risk("a", 0.5)], bad)
+
+
 def test_review_ratio_counts_selected_over_total():
     risks = [_risk("a", 0.0), _risk("b", 0.0), _risk("c", 0.0), _risk("d", 0.0)]
     risks[0].selected = True
