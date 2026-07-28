@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from cuesift.spec.check import SpecViolation, check_overlaps, check_text
 from cuesift.spec.counting import CharCounting, text_width
 from cuesift.spec.profile import SpecProfile, available_builtins, load_builtin, load_profile
 
 __all__ = [
     "CharCounting",
     "SpecProfile",
+    "SpecViolation",
     "available_builtins",
+    "check_overlaps",
+    "check_text",
     "load_builtin",
     "load_profile",
     "text_width",
