@@ -248,6 +248,41 @@ def test_overlap_signal_fires_on_overlapping_segments(ctx):
     assert result["b"].detail["overlap_ms"] == 500
 
 
+def test_overlap_signal_flags_every_link_of_a_chain(ctx):
+    """3개 이상이 연쇄로 겹칠 때 중간 고리가 빠지지 않는지 확인한다.
+
+    2개 케이스만 두면 "뒤에 오는 것에 기록한다"는 계약이 실제로 여러 고리에
+    적용되는지 알 수 없다. D-4가 고친 결함이 정확히 이 형태였다 — 인접 쌍만
+    보면 긴 세그먼트가 덮은 것을 놓친다.
+    """
+    segs = [
+        _seg("a", "가", "a", 0, 2000),
+        _seg("b", "나", "b", 1500, 3500),
+        _seg("c", "다", "c", 3000, 5000),
+    ]
+    result = OverlapSignal().collect_batch(segs, ctx)
+    assert set(result) == {"b", "c"}
+    assert result["b"].detail["overlap_ms"] == 500
+    assert result["c"].detail["overlap_ms"] == 500
+
+
+def test_overlap_signal_cascades_from_a_single_bad_end_ms(ctx):
+    """**단일 타임코드 오타가 트랙 대부분을 flag한다.**
+
+    `check_overlaps`가 누적 최대 `end_ms`와 비교하므로(D-4의 의도된 설계),
+    한 세그먼트의 `end_ms`가 크게 틀리면 그 뒤 전부가 겹침으로 잡힌다.
+    번역상 결백한 세그먼트들이 0.0에서 0.5로 올라가 위험도 순위를 오염시키므로,
+    벤치마크가 이 신호를 A/B할 때 반드시 알아야 하는 성질이다.
+    """
+    segs = [_seg(f"s{i}", "가나다", "abc", i * 2000, i * 2000 + 1800) for i in range(10)]
+    segs[1] = _seg("s1", "가나다", "abc", 2000, 20000)
+
+    result = OverlapSignal().collect_batch(segs, ctx)
+
+    # s0(겹침 없음)과 s1(오타 당사자) 외 전부가 잡힌다.
+    assert set(result) == {f"s{i}" for i in range(2, 10)}
+
+
 def test_overlap_signal_silent_on_clean_track(ctx):
     segs = [
         _seg("a", "가", "a", 0, 2000),
