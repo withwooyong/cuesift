@@ -25,7 +25,16 @@ class Span:
     end: int
     side: Literal["source", "target"] = "target"
 
+    _SIDES = ("source", "target")
+
     def __post_init__(self) -> None:
+        # `Literal`은 타입 힌트일 뿐 런타임에 아무것도 막지 않는다 —
+        # `side=None`이나 `"TARGET"`이 그대로 통과한다. 그러면 FR-7.3
+        # 리포트가 칠할 쪽을 잃는데, 그 사실은 신호를 만든 코드에서 멀리
+        # 떨어진 리포트 생성 시점에야 드러난다. 바로 아래 start/end는
+        # 이미 막고 있으므로 여기만 비우면 방어가 반쪽이다.
+        if self.side not in self._SIDES:
+            raise ValueError(f"side({self.side!r})는 'source' 또는 'target'이어야 한다")
         if self.end < self.start:
             raise ValueError(f"end({self.end})가 start({self.start})보다 작다")
 

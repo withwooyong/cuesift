@@ -43,6 +43,19 @@ def test_span_rejects_reversed_range():
         Span(start=5, end=2)
 
 
+@pytest.mark.parametrize("bad", ["both", "TARGET", "", None, 0])
+def test_span_rejects_unknown_side(bad):
+    """`Literal`은 타입 힌트일 뿐 런타임에 아무것도 막지 않는다.
+
+    `side`가 오타나 `None`이면 FR-7.3 리포트가 하이라이트할 쪽을 잃는데,
+    검증이 없으면 그 사실이 리포트 생성 시점에야 드러난다 — 신호를 만든
+    코드에서 멀리 떨어진 곳이다. 같은 클래스의 `start`/`end`는 이미
+    `__post_init__`에서 막고 있으므로 여기만 무방비로 두면 방어가 반쪽이다.
+    """
+    with pytest.raises(ValueError, match="side"):
+        Span(start=0, end=3, side=bad)
+
+
 def test_span_defaults_to_target_side():
     """대부분의 신호가 번역문을 가리키므로 그것이 기본값이다."""
     assert Span(start=0, end=3).side == "target"
