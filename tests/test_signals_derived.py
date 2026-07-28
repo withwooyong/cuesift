@@ -222,6 +222,17 @@ def test_length_ratio_detects_outliers_at_benchmark_injection_rate(ctx):
     assert expected <= set(result)
 
 
+def test_length_ratio_ignores_very_short_sources(ctx):
+    """원문이 짧으면 분모가 작아 길이비가 거칠게 튄다.
+
+    '네' -> 'Yes'가 비율 3.0이 되어 정상 자막이 이상치로 판정됐다.
+    자막은 짧은 감탄사·응답이 매우 흔하므로 계통 오차다.
+    """
+    segs = [_seg(f"n{i}", "가나다라마", "가나다라마바사아자차") for i in range(9)]
+    segs.append(_seg("short", "네", "Yes"))
+    assert "short" not in LengthRatio().collect_batch(segs, ctx)
+
+
 def test_length_ratio_requires_a_practical_deviation_not_just_a_z_score(ctx):
     """통계적으로 극단이어도 중앙값 대비 차이가 미미하면 판정하지 않는다.
 

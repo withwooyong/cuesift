@@ -42,6 +42,16 @@ _RATIO_Z_THRESHOLD = 3.5
 # 평범한 어휘 선택을 구분하지 못한다.
 _RATIO_MIN_RELATIVE_DEVIATION = 0.25
 
+# 원문이 이보다 짧으면 길이비를 판정하지 않는다.
+#
+# 분모가 작으면 정수 문자 수가 비율을 거칠게 튀게 만든다 — '네'->'Yes'가 3.0이다.
+# 자막은 짧은 감탄사·응답이 매우 흔해 이것이 우연이 아니라 계통 오차가 된다.
+# structural.py의 _UNTRANSLATED_MIN_CHARS와 같은 병리에 대한 같은 대응이다.
+#
+# 값 4는 실측으로 골랐다: 깨끗한 400건 트랙의 오탐이 33건 -> 0건이 되고,
+# 주입 40건의 재현율은 100%로 유지된다(6으로 올리면 재현율이 90%로 떨어진다).
+_RATIO_MIN_SOURCE_WIDTH = 4.0
+
 # MAD를 표준편차 척도로 환산하는 상수 (정규분포 가정).
 _MAD_SCALE = 0.6745
 
@@ -128,7 +138,7 @@ class LengthRatio:
             if not seg.target_text or not seg.target_text.strip():
                 continue
             source_width = text_width(seg.source_text, mode)
-            if source_width <= 0:
+            if source_width < _RATIO_MIN_SOURCE_WIDTH:
                 continue
             ratios[seg.id] = text_width(seg.target_text, mode) / source_width
 
