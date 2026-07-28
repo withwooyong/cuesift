@@ -98,6 +98,29 @@ def test_non_finite_weight_is_rejected(bad):
         fuse("s1", [_sig("a", 1.0)], weights={"a": bad})
 
 
+def test_weight_sum_overflow_is_rejected():
+    """개별 가중치가 유한해도 **합계**가 넘치면 같은 역전이 일어난다.
+
+    `1e308 + 1e308 = inf`, `weighted`도 inf, `inf / inf = nan`이 되고
+    `min(1.0, max(0.0, nan))`이 0.0을 반환한다 — 최대 위험(1.0)의 신호가
+    **예외도 로그도 없이 최소 위험으로 뒤집힌다.** 개별 값만 검사하면
+    `test_non_finite_weight_is_rejected`가 막았다고 선언한 실패 모드가
+    합계 경로로 그대로 재현된다.
+    """
+    with pytest.raises(ValueError, match="가중치"):
+        fuse("s1", [_sig("a", 1.0), _sig("b", 1.0)], weights={"a": 1e308, "b": 1e308})
+
+
+def test_large_but_finite_weight_sum_is_allowed():
+    """오버플로 검사가 정상적으로 큰 가중치까지 막으면 안 된다.
+
+    `1e307 * 2`는 유한하므로 통과해야 한다 — 이 경계가 없으면
+    위 검사가 ablation용 큰 가중치를 함께 죽인다.
+    """
+    r = fuse("s1", [_sig("a", 1.0), _sig("b", 1.0)], weights={"a": 1e307, "b": 1e307})
+    assert r.risk_score == 1.0
+
+
 def test_all_zero_weights_is_a_configuration_error():
     """신호가 있는데 가중치가 전부 0이면 전체 세그먼트가 안전 판정된다.
 

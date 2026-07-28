@@ -69,6 +69,19 @@ def fuse(
         )
 
     total_weight = sum(table.get(s.name, _FALLBACK_WEIGHT) for s in signals)
+
+    # 개별 값이 전부 유한해도 **합계**는 넘칠 수 있다. 위의 `isfinite` 검사는
+    # 한 항목씩만 보므로 `1e308` 두 개를 통과시키고, 그 합이 inf가 되면
+    # `weighted / total_weight`가 `inf / inf = nan`이 된다. 그다음
+    # `min(1.0, max(0.0, nan))`이 NaN을 전파하지 않고 0.0을 반환해
+    # **최대 위험이 최소 위험으로 뒤집힌다** — 위 주석이 막았다고 선언한
+    # 바로 그 실패 모드가 합계 경로로 재현된다. 예외도 로그도 남지 않는다.
+    #
+    # `weighted`는 점수가 0~1이라 `total_weight`를 넘지 못하므로
+    # 합계 하나만 검사하면 충분하다.
+    if not math.isfinite(total_weight):
+        raise ValueError(f"가중치 총합이 유한하지 않다: {total_weight}")
+
     if total_weight <= 0:
         # 신호가 없으면 위험도 0은 옳다 — 판단할 것이 없다.
         # 그러나 신호가 있는데 총합이 0이면 설정이 모든 신호를 죽인 것이고,
