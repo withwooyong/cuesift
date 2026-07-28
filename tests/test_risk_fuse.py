@@ -84,3 +84,39 @@ def test_all_default_weights_are_equal():
     """스펙 §6.3 — 첫 측정은 무튜닝이다. 같은 데이터로 맞춘 가중치는
     새 데이터에서 재현되지 않는다."""
     assert len(set(DEFAULT_WEIGHTS.values())) == 1
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_weight_is_rejected(bad):
+    """nan은 `nan < 0`이 False라 음수 검사를 통과하고, 이후
+    `max(0.0, nan)`이 NaN을 전파하지 않고 0.0을 반환해
+    **최대 위험이 최소 위험으로 뒤집힌다.**
+
+    YAML이 `.nan`·`.inf`를 파싱하므로 설정 파일 오타로 도달한다.
+    """
+    with pytest.raises(ValueError, match="가중치"):
+        fuse("s1", [_sig("a", 1.0)], weights={"a": bad})
+
+
+def test_all_zero_weights_is_a_configuration_error():
+    """신호가 있는데 가중치가 전부 0이면 전체 세그먼트가 안전 판정된다.
+
+    신호가 아예 없는 경우(정당한 0.0)와 구분해야 한다.
+    """
+    with pytest.raises(ValueError, match="가중치 총합"):
+        fuse("s1", [_sig("a", 0.9), _sig("b", 0.9)], weights={"a": 0.0, "b": 0.0})
+
+
+def test_zero_weight_on_one_signal_is_allowed():
+    """일부 신호만 0으로 끄는 것은 정상적인 ablation 사용법이다."""
+    r = fuse("s1", [_sig("a", 1.0), _sig("b", 0.0)], weights={"a": 0.0, "b": 2.0})
+    assert r.risk_score == 0.0
+
+
+def test_reasons_preserve_signal_order():
+    """`reasons`는 §8.4 review.json에 그대로 실린다.
+
+    기존 테스트가 `sorted()`로 비교해 순서를 전혀 검증하지 않았다.
+    순서가 흔들리면 같은 입력이 다른 리포트를 낸다(NFR-3).
+    """
+    assert fuse("s1", [_sig("b", 0.7), _sig("a", 0.7)]).reasons == ["b", "a"]

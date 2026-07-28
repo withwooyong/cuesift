@@ -11,6 +11,7 @@ triage의 정렬·임계 비교가 깨진다.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 
 from cuesift.segment import SegmentRisk, Signal
@@ -41,9 +42,14 @@ def fuse(
     table = DEFAULT_WEIGHTS if weights is None else weights
 
     for name, weight in table.items():
-        if weight < 0:
+        if not math.isfinite(weight) or weight < 0:
             # 음수는 "위험할수록 안전"을 뜻하게 되어 정렬이 뒤집힌다.
-            raise ValueError(f"가중치가 음수다: {name}={weight}")
+            #
+            # nan·inf도 함께 막는다. `nan < 0`은 IEEE 754상 False라
+            # 음수 검사를 그냥 통과하고, 이후 `max(0.0, nan)`이 NaN을
+            # 전파하지 않고 0.0을 반환해 **최대 위험이 최소 위험으로 뒤집힌다.**
+            # YAML이 `.nan`·`.inf`를 파싱하므로 설정 파일 오타로 도달한다.
+            raise ValueError(f"가중치가 유효하지 않다: {name}={weight}")
 
     hard_fail = any(s.hard_fail for s in signals)
 
@@ -63,6 +69,14 @@ def fuse(
 
     total_weight = sum(table.get(s.name, _FALLBACK_WEIGHT) for s in signals)
     if total_weight <= 0:
+        # 신호가 없으면 위험도 0은 옳다 — 판단할 것이 없다.
+        # 그러나 신호가 있는데 총합이 0이면 설정이 모든 신호를 죽인 것이고,
+        # 조용히 0.0을 내면 전체 세그먼트가 안전 판정된다.
+        if signals:
+            raise ValueError(
+                f"가중치 총합이 0이다. 설정이 이 세그먼트의 신호를 전부 무효화했다: "
+                f"{sorted(s.name for s in signals)}"
+            )
         score = 0.0
     else:
         weighted = sum(table.get(s.name, _FALLBACK_WEIGHT) * s.score for s in signals)
