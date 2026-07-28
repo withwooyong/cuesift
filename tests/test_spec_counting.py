@@ -53,3 +53,19 @@ def test_ideographic_space_is_full_width():
 def test_empty_text_is_zero_width():
     for mode in CharCounting:
         assert text_width("", mode) == 0.0
+
+
+def test_accented_latin_is_half_width_regardless_of_case():
+    """é(East Asian Width 'A')와 É('N')가 같은 폭이어야 한다.
+
+    유니코드의 Ambiguous 등급은 라틴 악센트 문자를 일관성 없이 분류한다.
+    이를 전각으로 세면 같은 글자의 대소문자가 다른 폭을 갖는다.
+    """
+    assert text_width("é", CharCounting.latin_half) == 0.5
+    assert text_width("É", CharCounting.latin_half) == 0.5
+    assert text_width("Café", CharCounting.latin_half) == 2.0
+
+
+def test_hangul_is_still_full_width_in_latin_half():
+    """A 등급을 반각으로 내리는 변경이 한글 판정을 건드리지 않았는지 확인한다."""
+    assert text_width("안녕", CharCounting.latin_half) == 2.0

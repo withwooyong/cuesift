@@ -14,10 +14,12 @@ import unicodedata
 from enum import StrEnum
 
 # East Asian Width가 이 값이면 전각으로 본다.
-# W = Wide, F = Fullwidth, A = Ambiguous.
-# A(Ambiguous)를 전각에 넣는 이유는 CJK 문맥에서 실제로 전각으로 렌더링되기
-# 때문이다 — 한중일 폰트에서 '±'·'°' 등이 그렇다. 자막은 CJK 문맥이다.
-_WIDE = frozenset({"W", "F", "A"})
+# W = Wide, F = Fullwidth.
+# 유니코드의 Ambiguous 등급(A)은 라틴 악센트 문자(é, É 등)를 일관성 없이
+# 분류하므로, 같은 글자의 대소문자가 다른 폭을 갖는 문제가 생긴다.
+# 자막의 일관성이 CJK 폰트 렌더링 근사보다 중요하므로, latin_half에서는
+# 실제 전각(W·F)만 1.0으로 센다.
+_WIDE = frozenset({"W", "F"})
 
 
 class CharCounting(StrEnum):
@@ -60,4 +62,4 @@ def text_width(text: str, mode: CharCounting) -> float:
         return float(len(chars))
 
     # latin_half — 전각은 1.0, 그 외는 0.5.
-    return sum(1.0 if unicodedata.east_asian_width(ch) in _WIDE else 0.5 for ch in chars)
+    return sum((1.0 if unicodedata.east_asian_width(ch) in _WIDE else 0.5 for ch in chars), 0.0)
