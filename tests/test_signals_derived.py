@@ -149,13 +149,19 @@ def test_length_ratio_skips_empty_targets(ctx):
 def test_length_ratio_survives_a_tiny_but_nonzero_mad(ctx):
     """정상군이 조밀하게 뭉치면 MAD가 0에 가까워진다.
 
-    MAD만 척도로 쓰면 중앙값 대비 0.4% 편차도 z=4.7이 되어
-    정상 세그먼트가 무더기로 이상치가 되고 신호가 변별력을 잃는다.
+    MAD만 척도로 쓰면 중앙값 대비 0.4% 편차도 z가 크게 나온다. 통계적
+    극단만으로 판정하면 이 정상 세그먼트들이 무더기로 이상치가 되므로,
+    실질 편차 게이트(`_RATIO_MIN_RELATIVE_DEVIATION`)가 이들을 걸러야 한다.
+
+    **소스가 1000자여야 "조밀하다"가 실제로 성립한다.** 5자짜리 소스에
+    글자 하나만 더해도 비율이 0.2씩 뛴다 — 그건 "타이니"가 아니라
+    이미 실질적 차이다. 1000자 소스라야 1~4자 차이가 정말 0.1~0.4%
+    수준의 미세한 비율 차이가 된다.
     """
-    # 길이비가 1.000~1.004로 조밀한 정상군 9건 + 명백한 이상치 1건.
-    targets = ["가나다라마"] * 5 + ["가나다라마" + "." * n for n in (1, 2, 3, 4)]
-    segs = [_seg(f"n{i}", "가나다라마", t) for i, t in enumerate(targets)]
-    segs.append(_seg("odd", "가나다라마", "가" * 30))
+    source = "가나다라마" * 200  # 1000자
+    targets = [source] * 5 + [source + "." * n for n in (1, 2, 3, 4)]
+    segs = [_seg(f"n{i}", source, t) for i, t in enumerate(targets)]
+    segs.append(_seg("odd", source, source + "가" * 300))  # 비율 1.3, 명백한 이상치
 
     result = LengthRatio().collect_batch(segs, ctx)
     assert set(result) == {"odd"}
@@ -187,3 +193,37 @@ def test_violation_score_saturates_at_three(ctx):
     assert _violation_score(2) == 0.75
     assert _violation_score(3) == 1.0
     assert _violation_score(10) == 1.0
+
+
+def test_length_ratio_detects_outliers_at_benchmark_injection_rate(ctx):
+    """§9.2의 벤치마크는 주입률 10%를 쓴다.
+
+    로버스트하지 않은 척도(평균절대편차)를 주 척도로 쓰면 이상치 자체가
+    척도를 부풀려 정작 그 이상치를 놓친다 — 주입률 10%에서 재현율이
+    절반으로 떨어진다. 그러면 측정 숫자가 신호 성능이 아니라 버그를 반영한다.
+    """
+    segs = []
+    # 정상 45건: 길이비가 조금씩 다르다.
+    for i in range(45):
+        pad = "." * (i % 5)
+        segs.append(_seg(f"n{i}", "가나다라마", "가나다라마바사아자차" + pad))
+    # 주입 오류 5건(10%): 번역이 원문만큼 짧다 = 미번역에 준하는 길이비.
+    for i in range(5):
+        segs.append(_seg(f"bad{i}", "가나다라마", "가나"))
+
+    result = LengthRatio().collect_batch(segs, ctx)
+    assert {f"bad{i}" for i in range(5)} <= set(result)
+
+
+def test_length_ratio_requires_a_practical_deviation_not_just_a_z_score(ctx):
+    """통계적으로 극단이어도 중앙값 대비 차이가 미미하면 판정하지 않는다.
+
+    조밀한 트랙에서는 0.4% 편차도 z가 4를 넘는다.
+    """
+    from cuesift.signals.derived import _RATIO_MIN_RELATIVE_DEVIATION
+
+    assert _RATIO_MIN_RELATIVE_DEVIATION > 0
+    targets = ["가나다라마"] * 5 + ["가나다라마" + "." * n for n in (1, 2, 3, 4)]
+    segs = [_seg(f"n{i}", "가나다라마", t) for i, t in enumerate(targets)]
+    result = LengthRatio().collect_batch(segs, ctx)
+    assert result == {}

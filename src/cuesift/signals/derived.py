@@ -28,13 +28,24 @@ _VIOLATION_STEP = 0.25
 # 길이비 이상치 판정에 필요한 최소 표본. 이보다 적으면 분포를 말할 수 없다.
 _RATIO_MIN_SAMPLES = 8
 
-# 로버스트 z-점수가 이 값을 넘으면 이상치로 본다.
+# 로버스트 z-점수가 이 값을 넘으면 통계적으로 극단이다.
 _RATIO_Z_THRESHOLD = 3.5
+
+# 그리고 중앙값 대비 이 비율 이상 실제로 달라야 한다.
+#
+# **통계적 극단만으로는 부족하다.** 번역 스타일이 일관된 트랙에서는
+# 길이비가 조밀하게 뭉쳐 MAD가 0에 가까워지고, 중앙값 대비 0.4% 편차도
+# z가 4를 넘는다 — 정상 세그먼트가 무더기로 이상치가 되어 변별력이 사라진다.
+#
+# 25%인 근거: 원문 20자·번역 48자인 전형적 세그먼트에서 이 게이트는
+# 약 12자, 즉 두세 어절에 해당한다. 그보다 작은 차이는 번역 품질 문제와
+# 평범한 어휘 선택을 구분하지 못한다.
+_RATIO_MIN_RELATIVE_DEVIATION = 0.25
 
 # MAD를 표준편차 척도로 환산하는 상수 (정규분포 가정).
 _MAD_SCALE = 0.6745
 
-# 평균절대편차를 표준편차 척도로 환산하는 상수. MAD가 0에 가까울 때 쓴다.
+# 평균절대편차를 표준편차 척도로 환산하는 상수. MAD가 0일 때만 쓴다.
 _MEAN_AD_SCALE = 1.2533
 
 
@@ -130,31 +141,28 @@ class LengthRatio:
         median = statistics.median(values)
         deviations = [abs(v - median) for v in values]
 
-        # **두 척도 중 큰 쪽을 쓴다.**
-        #
-        # MAD만 쓰면 정상군이 조밀하게 뭉칠 때 척도가 0에 가까워져
-        # 중앙값 대비 0.4% 편차도 z=4.7이 된다 — 정상 세그먼트가 무더기로
-        # 이상치가 되어 신호가 변별력을 잃는다. 번역 스타일이 일관된
-        # 트랙에서 실제로 일어나는 상황이다.
-        #
-        # 평균절대편차는 로버스트하지 않아 이상치가 많으면 척도가 부풀지만,
-        # 이 신호는 hard fail이 아니므로 미탐이 오탐보다 낫다.
-        # MAD가 정확히 0인 경우(합성 벤치마크의 균일한 정상군)도 이 식이
-        # 자동으로 흡수한다 — 그쪽이 항상 크거나 같기 때문이다.
-        scale = max(
-            statistics.median(deviations) / _MAD_SCALE,
-            statistics.fmean(deviations) * _MEAN_AD_SCALE,
-        )
+        # MAD를 주 척도로 쓴다. 평균절대편차는 로버스트하지 않아
+        # 이상치가 많으면 척도가 부풀어 정작 그 이상치를 놓친다 —
+        # 주입률 10%에서 재현율이 절반으로 떨어지는 것을 실측했다.
+        scale = statistics.median(deviations) / _MAD_SCALE
 
-        # 값이 전부 동일하면 두 척도가 모두 0이다. 이때는 이상치가
-        # 정의되지 않는다 — 판정하지 않는 것이 맞다.
+        if scale == 0:
+            # 정상군이 완전히 균일하면 MAD가 0이 된다. 합성 벤치마크에서는
+            # 이 상황이 예외가 아니라 기본이다 — 정상 세그먼트가 같은 길이로
+            # 생성되고 주입된 오류만 튄다. 여기서 빈손으로 돌아가면
+            # 가장 명백한 이상치를 놓친다.
+            scale = statistics.fmean(deviations) * _MEAN_AD_SCALE
+
+        # 값이 전부 동일하면 두 척도가 모두 0이다. 이상치가 정의되지 않는다.
         if scale == 0:
             return {}
 
         result: dict[str, Signal] = {}
         for seg_id, ratio in ratios.items():
-            z = abs(ratio - median) / scale
-            if z <= _RATIO_Z_THRESHOLD:
+            deviation = abs(ratio - median)
+            z = deviation / scale
+            # 통계적으로 극단이면서 실질적으로도 달라야 한다.
+            if z <= _RATIO_Z_THRESHOLD or deviation < median * _RATIO_MIN_RELATIVE_DEVIATION:
                 continue
             result[seg_id] = Signal(
                 name=self.name,
@@ -166,6 +174,7 @@ class LengthRatio:
                     "ratio": round(ratio, 3),
                     "median": round(median, 3),
                     "z": round(z, 2),
+                    "deviation": round(deviation, 3),
                 },
             )
         return result
