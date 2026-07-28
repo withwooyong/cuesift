@@ -7,7 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/).
 
 ### Added
 
-- (없음)
+- `scripts/check_links.py` — 마크다운 상대 링크가 실제 파일을 가리키는지 검사한다. 표준 라이브러리만 사용하며 대상은 `git ls-files` 기준(markdownlint의 `gitignore: true`와 동일 집합). 외부 URL과 앵커는 검사하지 않는다 — 외부 URL은 남의 서버 사정으로 CI가 간헐 실패하면 게이트가 무시되고, 앵커 생성 규칙은 렌더러마다 달라 한국어 제목에서 갈린다
+- CI `docs` 잡에 링크 검사 스텝 추가 — 검사 대상 0개면 통과가 아니라 실패로 처리하고, 깨진 링크는 `::error file=…,line=…::` 애노테이션으로 표시한다
 
 ### Changed
 
@@ -15,7 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/).
 
 ### Fixed
 
-- (없음)
+- `docs/번역관리_TMS_솔루션_비교.md:5`의 깨진 링크 처리 — `글로벌_OTT_플랫폼.md`는 이 저장소에 존재한 적이 없다. 링크에서 일반 텍스트로 강등하고 외부 문서임을 명시했다
 
 ### Removed
 

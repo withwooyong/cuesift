@@ -55,6 +55,19 @@ jobs:
         with:
           node-version: "22"
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # markdownlint는 문법 린터라 링크가 실제로 존재하는지는 보지 않는다.
+      # `[문서](없는파일.md)`도 문법적으로는 올바른 마크다운이라 통과한다.
+      # 실제로 문서를 docs/로 옮겼을 때 README 링크 4개가 끊겼는데도
+      # markdownlint는 0 issues였다.
+      #
+      # 표준 라이브러리만 쓰므로 의존성 설치가 필요 없다.
+      - name: 링크 검사 (내부 상대 링크)
+        run: python scripts/check_links.py
+
       # 버전을 고정한다. npx가 매번 최신을 받아오면 새 규칙이 추가된 날
       # 코드 변경 없이 CI가 깨진다.
       #
