@@ -1,0 +1,12 @@
+# 한국어 자막 규격 프로파일
+# 출처: Netflix Timed Text Style Guide — Korean (Q5에서 1차 출처로 확정)
+# 수치와 URL만 둔다. 가이드 본문(산문)은 저작물이므로 복제하지 않는다(§8.3.1).
+name: ko
+source: https://partnerhelp.netflixstudios.com/hc/en-us/articles/216001127-Korean-Timed-Text-Style-Guide
+max_chars_per_line: 16
+char_counting: latin_half
+max_cps: 12
+max_lines: 2
+# 일반 요건 5/6초. 언어별 가이드가 덮어쓰지 않으면 이 값을 쓴다.
+min_duration_ms: 833
+max_duration_ms: 7000

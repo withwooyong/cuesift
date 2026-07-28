@@ -1,0 +1,19 @@
+# TED 자막 규격 프로파일 — 영어 (벤치마크 전용)
+#
+# TED2020 코퍼스는 Netflix가 아니라 TED 자체 기준으로 제작됐다.
+# Netflix 프로파일로 검사하면 규격 위반이 대량 발생해 트리아지 성능
+# 측정이 오염된다(§8.3.1).
+#
+# 42자·2줄·21 CPS는 아래 출처에서 직접 확인했다(2026-07-28).
+#
+# min/max_duration_ms는 TED가 명시하지 않는다. Netflix 일반 요건을
+# 차용했고, TED 프로파일 3종 모두 같은 값을 쓴다 — TED가 지속시간을
+# 언급하지 않으므로 언어별 차등의 근거가 없다.
+name: ted-en
+source: https://www.ted.com/participate/translate/subtitling-tips
+max_chars_per_line: 42
+char_counting: grapheme
+max_cps: 21
+max_lines: 2
+min_duration_ms: 833
+max_duration_ms: 7000

@@ -3,5 +3,13 @@
 from __future__ import annotations
 
 from cuesift.spec.counting import CharCounting, text_width
+from cuesift.spec.profile import SpecProfile, available_builtins, load_builtin, load_profile
 
-__all__ = ["CharCounting", "text_width"]
+__all__ = [
+    "CharCounting",
+    "SpecProfile",
+    "available_builtins",
+    "load_builtin",
+    "load_profile",
+    "text_width",
+]

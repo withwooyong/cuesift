@@ -1,0 +1,10 @@
+# 영어(미국) 자막 규격 프로파일
+# 출처: Netflix Timed Text Style Guide — English (USA)
+name: en
+source: https://partnerhelp.netflixstudios.com/hc/en-us/articles/217350977-English-USA-Timed-Text-Style-Guide
+max_chars_per_line: 42
+char_counting: grapheme
+max_cps: 20
+max_lines: 2
+min_duration_ms: 833
+max_duration_ms: 7000

@@ -1,0 +1,20 @@
+# TED 자막 규격 프로파일 — 일본어 (벤치마크 전용)
+#
+# 21자/줄·10 CPS는 TED Translators Wiki 일본어 번역 가이드의 값이다.
+# 한국어 포털과 같은 수치이며, 두 언어가 독립적으로 일치하는 것이
+# 상호 검증 역할을 한다.
+#
+# ⚠️ ted-ko와 같은 단서 — 출처 URL이 죽었다(translations.ted.com DNS 실패,
+# 2026-07-28 확인). 검색 색인 스냅샷으로만 확인한 값이다.
+#
+# min_duration_ms가 Netflix ja의 500이 아니라 833인 것은 의도된 것이다.
+# TED는 지속시간을 아예 명시하지 않으므로 언어별 차등의 근거가 없고,
+# 근거 없는 비대칭은 벤치마크에서 ja만 다른 기준으로 재게 만든다.
+name: ted-ja
+source: https://translations.ted.com/日本語への翻訳ガイド
+max_chars_per_line: 21
+char_counting: fullwidth
+max_cps: 10
+max_lines: 2
+min_duration_ms: 833
+max_duration_ms: 7000
