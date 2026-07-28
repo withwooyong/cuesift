@@ -80,6 +80,12 @@ def select_by_budget(risks: Sequence[SegmentRisk], budget_ratio: float) -> list[
     # 올림한다. 10건에 5% 예산이면 0.5건인데, 내림하면 0건이 되어
     # 트리아지가 아무것도 안 하고 통과한다.
     quota = math.ceil(len(risks) * budget_ratio)
+
+    # **hard fail이 quota를 소진한다.** 따라서 위험도가 낮은 hard fail이 그보다
+    # 높은 비-hard 세그먼트를 큐에서 밀어낸다(위험도 0.05 hard fail 하나가
+    # quota=1을 다 먹으면 0.9짜리가 탈락한다). 가산으로 바꾸면 반대로
+    # `review_ratio`가 요청 예산을 크게 넘어 §9.1 배수의 분모가 부풀고,
+    # hard fail 오탐이 지표를 직접 파괴한다 — 그쪽이 더 나쁘다.
     remaining = max(0, quota - len(hard_ids))
     selected_ids = hard_ids | {r.segment_id for r in rest[:remaining]}
 
