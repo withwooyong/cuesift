@@ -47,6 +47,11 @@ REFERENCE_DEF = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?", re.MULTILINE)
 # 코드 펜스 안의 예시는 실제 링크가 아니므로 검사 전에 제거한다.
 CODE_FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
+# 인라인 코드 스팬(`[텍스트](경로)`)도 링크가 아니라 링크 문법의 예시다.
+# 문서가 링크 규칙 자체를 설명할 때 반드시 나오므로 제거하지 않으면
+# 오탐이 난다. 여는 백틱과 같은 개수의 백틱까지를 한 스팬으로 본다.
+INLINE_CODE = re.compile(r"(`+)[\s\S]*?\1")
+
 EXTERNAL_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 
 
@@ -63,7 +68,7 @@ def tracked_markdown_files(root: Path) -> list[Path]:
 
 def relative_targets(text: str) -> list[str]:
     """본문에서 검사 대상인 상대 링크만 골라낸다."""
-    body = CODE_FENCE.sub("", text)
+    body = INLINE_CODE.sub("", CODE_FENCE.sub("", text))
     targets = INLINE_LINK.findall(body) + REFERENCE_DEF.findall(body)
 
     keep = []

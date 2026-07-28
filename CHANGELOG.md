@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/).
 
 ### Added
 
-- `scripts/check_links.py` — 마크다운 상대 링크가 실제 파일을 가리키는지 검사한다. 표준 라이브러리만 사용하며 대상은 `git ls-files` 기준(markdownlint의 `gitignore: true`와 동일 집합). 외부 URL과 앵커는 검사하지 않는다 — 외부 URL은 남의 서버 사정으로 CI가 간헐 실패하면 게이트가 무시되고, 앵커 생성 규칙은 렌더러마다 달라 한국어 제목에서 갈린다
+- `scripts/check_links.py` — 마크다운 상대 링크가 실제 파일을 가리키는지 검사한다. 표준 라이브러리만 사용하며 대상은 `git ls-files` 기준(markdownlint의 `gitignore: true`와 동일 집합). 외부 URL과 앵커는 검사하지 않는다 — 외부 URL은 남의 서버 사정으로 CI가 간헐 실패하면 게이트가 무시되고, 앵커 생성 규칙은 렌더러마다 달라 한국어 제목에서 갈린다. 코드 펜스와 인라인 코드 스팬은 제외한다(링크 문법을 설명하는 문장이 오탐되지 않도록)
 - CI `docs` 잡에 링크 검사 스텝 추가 — 검사 대상 0개면 통과가 아니라 실패로 처리하고, 깨진 링크는 `::error file=…,line=…::` 애노테이션으로 표시한다
 
 ### Changed
