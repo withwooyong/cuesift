@@ -17,13 +17,17 @@ def ten():
 
 
 def test_budget_selects_the_top_slice(ten):
-    selected = select_by_budget(ten, 0.2)
-    assert {r.segment_id for r in selected} == {"s9", "s8"}
+    result = select_by_budget(ten, 0.2)
+    assert {r.segment_id for r in result if r.selected} == {"s9", "s8"}
 
 
 def test_budget_marks_selected_flag(ten):
-    selected = select_by_budget(ten, 0.2)
-    assert all(r.selected for r in selected)
+    """select_by_budget은 전체 목록을 반환한다 — 선별된 것은 selected=True,
+    나머지는 selected=False다."""
+    result = select_by_budget(ten, 0.2)
+    selected_ids = {"s9", "s8"}
+    for r in result:
+        assert r.selected == (r.segment_id in selected_ids)
 
 
 def test_budget_does_not_mutate_the_input(ten):
@@ -36,7 +40,9 @@ def test_budget_does_not_mutate_the_input(ten):
 def test_budget_rounds_up_so_a_small_budget_is_not_empty(ten):
     """10건에 5% 예산이면 0.5건이다. 내림하면 0건이 되어 트리아지가
     아무것도 안 하고 통과한다."""
-    assert len(select_by_budget(ten, 0.05)) == 1
+    result = select_by_budget(ten, 0.05)
+    assert len(result) == 10  # 전체 목록이 반환된다
+    assert sum(1 for r in result if r.selected) == 1
 
 
 def test_hard_fail_bypasses_the_budget():
@@ -44,8 +50,8 @@ def test_hard_fail_bypasses_the_budget():
     risks = [_risk(f"s{i}", 0.0) for i in range(10)]
     risks[3] = _risk("s3", 1.0, hard=True)
     risks[7] = _risk("s7", 1.0, hard=True)
-    selected = select_by_budget(risks, 0.01)
-    assert {"s3", "s7"} <= {r.segment_id for r in selected}
+    result = select_by_budget(risks, 0.01)
+    assert {"s3", "s7"} <= {r.segment_id for r in result if r.selected}
 
 
 def test_review_ratio_reports_what_was_actually_spent():
@@ -54,17 +60,19 @@ def test_review_ratio_reports_what_was_actually_spent():
     risks = [_risk(f"s{i}", 0.0) for i in range(10)]
     risks[3] = _risk("s3", 1.0, hard=True)
     risks[7] = _risk("s7", 1.0, hard=True)
-    selected = select_by_budget(risks, 0.01)
-    assert review_ratio(selected + [r for r in risks if r.segment_id not in {"s3", "s7"}]) > 0.01
+    assert review_ratio(select_by_budget(risks, 0.01)) > 0.01
 
 
 def test_budget_of_zero_still_includes_hard_fails():
     risks = [_risk("a", 0.0), _risk("b", 1.0, hard=True)]
-    assert {r.segment_id for r in select_by_budget(risks, 0.0)} == {"b"}
+    result = select_by_budget(risks, 0.0)
+    assert {r.segment_id for r in result if r.selected} == {"b"}
 
 
 def test_full_budget_selects_everything(ten):
-    assert len(select_by_budget(ten, 1.0)) == 10
+    result = select_by_budget(ten, 1.0)
+    assert len(result) == 10
+    assert all(r.selected for r in result)
 
 
 def test_budget_outside_zero_to_one_is_rejected(ten):
@@ -87,17 +95,56 @@ def test_ties_are_broken_deterministically():
 
 
 def test_threshold_selects_at_or_above(ten):
-    selected = select_by_threshold(ten, 0.7)
-    assert {r.segment_id for r in selected} == {"s7", "s8", "s9"}
+    result = select_by_threshold(ten, 0.7)
+    assert {r.segment_id for r in result if r.selected} == {"s7", "s8", "s9"}
 
 
 def test_threshold_includes_hard_fail_below_threshold():
     """hard fail은 임계값 정책에서도 우회한다(FR-6.2)."""
     risks = [_risk("a", 0.1, hard=True), _risk("b", 0.2)]
-    assert {r.segment_id for r in select_by_threshold(risks, 0.9)} == {"a"}
+    result = select_by_threshold(risks, 0.9)
+    assert {r.segment_id for r in result if r.selected} == {"a"}
 
 
 def test_review_ratio_counts_selected_over_total():
     risks = [_risk("a", 0.0), _risk("b", 0.0), _risk("c", 0.0), _risk("d", 0.0)]
     risks[0].selected = True
     assert review_ratio(risks) == 0.25
+
+
+def test_review_ratio_works_on_the_selection_result_directly():
+    """이것이 이 API의 정상 사용법이다.
+
+    선별된 것만 반환하던 이전 계약에서는 이 호출이 항상 1.0을 냈다 —
+    그 값이 스펙 §6.2의 실제 검수 비율이자 README 배수의 분모다.
+    """
+    risks = [_risk(f"s{i}", i / 100) for i in range(100)]
+    assert review_ratio(select_by_budget(risks, 0.10)) == 0.10
+
+
+def test_hard_fail_entries_are_ordered_deterministically():
+    """hard fail 구간도 입력 순서에 의존하면 안 된다 (NFR-3)."""
+    risks = [_risk("z", 1.0, hard=True), _risk("a", 1.0, hard=True), _risk("m", 1.0, hard=True)]
+    forward = [r.segment_id for r in select_by_budget(risks, 1.0)]
+    backward = [r.segment_id for r in select_by_budget(list(reversed(risks)), 1.0)]
+    assert forward == backward
+
+
+def test_selection_does_not_alias_mutable_fields():
+    """사본의 reasons에 append해도 원본이 바뀌면 안 된다.
+
+    예산 스윕(§6.1)은 같은 원본에 여러 예산을 차례로 적용한다.
+    """
+    original = SegmentRisk(
+        segment_id="x", signals=[], risk_score=0.9, hard_fail=False, reasons=["a"]
+    )
+    copy = select_by_budget([original], 1.0)[0]
+    copy.reasons.append("침입")
+    assert original.reasons == ["a"]
+    assert copy.signals is not original.signals
+
+
+def test_nan_budget_is_rejected_explicitly():
+    """NaN 방어가 비교 연산의 우연이 아니라 명시적이어야 한다."""
+    with pytest.raises(ValueError, match="budget_ratio"):
+        select_by_budget([_risk("a", 0.5)], float("nan"))
