@@ -226,4 +226,21 @@ def inject(
             f"자격 미달 건수: { {k: skipped[k] for k in empty_kinds} }"
         )
 
+    # 최종 리뷰 Minor(Task 6 이월) — 0건 가드는 71/72처럼 1건 미달을 못 잡는다.
+    # 리포트의 "유형별 실주입 건수"에 72가 아니라 71이 찍혀도 독자는 그것이
+    # 정상 quota인지 1건 미달인지 구분할 수단이 없다. 라벨 총계가 목표(표본 ×
+    # rate)에 못 미치면 실제 오류율이 낮아져 오라클 상한·배수의 분모 관계가
+    # 조용히 바뀐다 — 스펙 §5.5가 "0 broken이 통과로 읽혔던 것처럼"이라며
+    # 세운 원칙과 같다. `empty_kinds`와 메시지를 분리하는 이유는 0건은 원인
+    # 파악(자격 미달 전멸)이 다르기 때문이다.
+    shortfall = [k for k in kinds if achieved[k] < quota[k]]
+    if shortfall:
+        raise ValueError(
+            f"quota를 채우지 못한 유형이 있다: "
+            f"{ {k: f'{achieved[k]}/{quota[k]}' for k in shortfall} }. "
+            f"그대로 두면 라벨 총계가 목표에 미달해 오류율이 낮아지고 "
+            f"오라클 상한·배수의 분모 관계가 조용히 바뀐다. "
+            f"자격 미달 건수: { {k: skipped[k] for k in shortfall} }"
+        )
+
     return mutated, labels, skipped

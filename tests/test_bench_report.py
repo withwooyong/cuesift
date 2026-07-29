@@ -99,13 +99,25 @@ def test_write_report_emits_markdown_and_json(tmp_path):
 def test_report_states_hard_fail_false_positive_rate():
     """① hard fail 자연 오탐률을 실측치로 명시한다(스펙 §6.4 불변식 4).
 
-    검출기 버그가 아니라 만/억·billion 표기 체계 차이 때문이라는 설명이
-    없으면 독자가 '검출기가 오작동한다'로 오독한다.
+    값 없이 "hard-fail 오탐 ≈ 0" 목표만 적으면 독자가 실측인지 주장인지
+    구분할 수 없다. **값은 `hard_fail_false_positive_rate`에서 직접 뽑는다**
+    — 문자열을 하드코딩하면 재측정 때 조용히 거짓이 된다.
+
+    최종 리뷰 지적(I-2) — 옛 테스트는 `assert "billion" in md`로 "검출기
+    버그가 아니라 한국어 만·억 vs 영어 billion 표기 차이 때문"이라는 특정
+    문구를 회귀 방지선으로 고정했는데, 그 문구 자체가 틀렸다(ja-ko 자연
+    오탐 41건 중 0건이 그 원인이었고, "검출기 버그가 아니다"도 거짓이었다
+    — `struct.number_missing`이 NFKC 정규화를 안 해 전각 숫자를 놓친다).
+    특정 언어쌍에 묶인 문구가 아니라 **값 자체**가 실렸는지로 검증해야
+    이 절이 다시 언어쌍 무관한 사실로 바뀌어도 테스트가 안전하다.
     """
     md = render_markdown(META, RESULTS, DROPS, BASELINE)
     assert "hard fail 자연 오탐률" in md
-    assert "0.96%" in md  # 0.009556 -> :.2%
-    assert "billion" in md
+    assert f"{META.hard_fail_false_positive_rate:.2%}" in md
+    # 검출기의 알려진 한계(NFKC 미정규화)를 인정하고, "검출기 버그가
+    # 아니라"는 부인은 더 이상 하지 않는다.
+    assert "검출기의 알려진 한계" in md
+    assert "검출기 버그가 아니라" not in md
 
 
 def test_report_notes_budget_floor_indistinguishable():
@@ -365,3 +377,27 @@ def test_write_report_round_trips_corpus_stats(tmp_path):
     _, json_path = write_report(meta, RESULTS, DROPS, BASELINE, tmp_path)
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["meta"]["corpus_stats"] == corpus_stats
+
+
+# --- I-3(최종 리뷰): ablation 음수값 설명 -----------------------------------
+
+
+def test_ablation_explains_negative_drops_as_harmful_not_just_unhelpful():
+    """음수 하락폭은 "그 신호를 끄면 Recall이 올라간다"는 뜻이다.
+
+    표가 내림차순이라 음수 항목이 맨 아래에 몰려 "가장 덜 유용함"으로 읽히지만
+    실제로는 "가장 해로움"이다. `+0.0%`(`spec.overlap`)에는 이미 오독 방지 절이
+    있는데 음수에는 짝이 없었다(최종 리뷰 I-3) — 이 절이 그 짝이다. 신호 이름은
+    `drops`에서 뽑아야 한다(하드코딩 금지) — 이 테스트는 `DROPS`에 없는 신호
+    이름(`length.ratio`)으로 검증해 하드코딩 회귀를 잡는다.
+    """
+    drops = {"struct.untranslated": 0.21, "spec.overlap": 0.0, "length.ratio": -0.06}
+    md = render_markdown(META, RESULTS, drops, BASELINE)
+    assert "가장 해로움" in md
+    assert "`length.ratio`" in md.split("## 신호별 기여도", 1)[1]
+
+
+def test_ablation_omits_harmful_paragraph_when_no_negative_drops():
+    """음수 하락폭이 없으면(모든 신호가 도움이 됨) 문단을 생략한다."""
+    md = render_markdown(META, RESULTS, DROPS, BASELINE)
+    assert "가장 해로움" not in md
