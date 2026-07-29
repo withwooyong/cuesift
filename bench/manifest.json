@@ -1,0 +1,20 @@
+{
+  "en-ko": {
+    "bytes": 30153726,
+    "license": "CC BY-NC-ND 4.0",
+    "lines": 399414,
+    "pair": "en-ko",
+    "retrieved": "2026-07-29",
+    "sha256": "c7bda45c82aa8a57d662ece2a58ec11826a161628423e20bd58cbdd692e77cbf",
+    "url": "https://object.pouta.csc.fi/OPUS-TED2020/v1/moses/en-ko.txt.zip"
+  },
+  "ja-ko": {
+    "bytes": 28575670,
+    "license": "CC BY-NC-ND 4.0",
+    "lines": 358635,
+    "pair": "ja-ko",
+    "retrieved": "2026-07-29",
+    "sha256": "f7a3a4b7f4d02532d4eb253fb0e474f7d15f1d14cb26ced39bc37fdbf40c7b9d",
+    "url": "https://object.pouta.csc.fi/OPUS-TED2020/v1/moses/ja-ko.txt.zip"
+  }
+}
