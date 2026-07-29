@@ -33,6 +33,11 @@ hard fail 자연 오탐률: en-ko **0.9556%** / ja-ko **0.9111%** (목표 "≈ 0
 자막 파일 파싱(`ingest`)과 번역(`translate`) 계층이 없다 — 측정은 벤치 하네스가
 `bench/track_io.py`로 만든 JSON 트랙에서 `Segment`를 직접 로드해 이뤄졌고, CLI 경로를 거치지 않았다.
 
+**ko 자막의 약 절반이 TED 규격에 물리적으로 담기지 않는다(스펙 §4.4).** en-ko는
+399,414쌍 중 194,463쌍(**49.91%**), ja-ko는 358,635쌍 중 168,613쌍(**48.09%**)이
+21자×2줄 규격을 못 채워 트랙에서 빠졌다 — FR-5.4(v0.2 규격 자동 교정)를 정량적으로
+정당화하는 숫자이고, 남은 표본이 짧은 문장으로 기운다는 뜻이기도 하다.
+
 저장소: <https://github.com/withwooyong/cuesift> (Public)
 
 ## Completed This Session (Task 9 — 마지막 태스크)
@@ -49,6 +54,8 @@ hard fail 자연 오탐률: en-ko **0.9556%** / ja-ko **0.9111%** (목표 "≈ 0
 | `docs/요구사항정의서.md` §12 Q4 | 정량 근거 추가·강화(의미 반전 Recall 1.41%@예산10%, **무작위 기준선 9.61%보다 낮음**). **열어 둔 채로** |
 | `docs/AI_자막검수_오픈소스_비교.md` §5 | 조사 질문 #2를 ✅ 닫힘으로 갱신. "Q4와 같은 실험" 서술 정정. `specs/ted.yaml` 단수 → 3파일 정정 |
 | `CHANGELOG.md` | Unreleased에 벤치 하네스 전체 + 이번 세션 문서 반영 기록 |
+| `bench/build_track.py` | **(fix 라운드 1)** 트랙과 나란히 사이드카 `{pair}.clean.stats.json`을 쓴다 — 스펙 §4.4 부수 산출물(코퍼스 규격 미충족률)이 리포트 어디에도 없던 것을 바로잡았다 |
+| `bench/report.py` | **(fix 라운드 1)** `RunMeta.excluded` → `injection_skipped`로 이름 정정("표본 제외"가 아니라 "주입 자격 미달"). `corpus_stats` 필드와 "코퍼스 제외 (스펙 §4.4)" 절 추가 |
 
 ## In Progress / Pending
 
@@ -78,6 +85,38 @@ Task 8 리뷰어가 유형별 무작위 기준선을 100시드로 재측정해 *
 9.86%/11.27% vs 무작위 19.49%/19.85%). 이 숫자가 Tier 1(자가일관성·역번역)의 필요성을
 뒷받침하고, Q4는 그 Tier 1을 실제로 구현해야 답할 수 있다. **이전 버전의 조사 문서가
 "Q4와 #2는 같은 실험에서 답이 나온다"고 적어놨던 것은 틀린 서술이었다** — 이번 세션에서 정정했다.
+
+## fix 라운드 1 — §4.4 부수 산출물이 리포트에서 빠져 있었다
+
+컨트롤러 계획의 `run.py` 의사코드가 `excluded=dict(skipped)`였는데, 이는 `inject`의
+**주입 자격 미달** 건수(`bench/inject.py`의 `skipped`)이지 스펙 §4.4가 요구하는
+**코퍼스 규격 미충족 제외**(`build_track`의 `unfittable`)가 아니었다. 두 가지가 같은
+"제외"라는 말로 뭉뚱그려져 있었다 — 필드 이름(`excluded`)도, 리포트 절 제목("제외
+건수")도 이 둘을 구분하지 못했다.
+
+**바로잡은 방법**: `bench/build_track.py`가 트랙을 쓸 때 사이드카 JSON
+(`{pair}.clean.stats.json`)에 §4.4 통계를 함께 쓰고, `bench/run.py`는 그 값을 **그대로
+읽어서** 쓴다 — 코퍼스를 다시 훑어 재계산하지 않는다. 재계산하면 트랙을 만든 실행과
+측정 실행이 다른 숫자를 낼 수 있고, 그때 어느 쪽이 맞는지 알 방법이 없어진다.
+`RunMeta.excluded`는 `injection_skipped`로 이름을 바꿔 의미를 분명히 했다.
+
+**검증 순서(TDD)**: `tests/test_bench_report.py`에 새 절·필드명을 요구하는 테스트
+4건을 먼저 추가해 `TypeError`로 실패하는 것을 확인했고, `tests/test_bench_build_track.py`
+(신규 파일)에 사이드카 테스트 2건을 추가해 `ImportError`로 실패하는 것을 확인한 뒤
+구현했다. 트랙을 재생성해 시드가 같으므로 SHA-256이 재생성 전과 **완전히 동일함**을
+확인했다(en-ko `7fb304ec…`, ja-ko `1dade65a…`).
+
+**실측(콘솔·사이드카 일치 확인)**: en-ko 원본 399,414쌍 → 필터 후 389,598쌍 →
+규격 미충족 제외 **194,463건(49.91%)** → 가용 195,135. ja-ko 원본 358,635쌍 → 필터 후
+350,634쌍 → 규격 미충족 제외 **168,613건(48.09%)** → 가용 182,021. 팀장이 미리 알려준
+en-ko 수치(194,463건/49.91%)와 정확히 일치했다.
+
+**주의 — 이 라운드 도중 작업트리 충돌이 실제로 발생했다.** `bench/report.py`를
+두 번째로 Edit하려는 시점에 파일이 외부에서 갱신돼(다른 에이전트가 같은 파일을 건드린
+것으로 추정) 방금 적용한 첫 번째 Edit(RunMeta 필드 선언부)이 사라져 있었다. 즉시
+재적용하고 테스트를 다시 돌려 확인했다. **CLAUDE.md의 경고("구현자가 도는 동안
+작업트리는 내 것이 아니다")가 실제로 재현된 사례다** — 다음 세션도 공유 작업트리에서
+파일을 편집한 직후에는 재확인 없이 다음 단계로 넘어가지 말 것.
 
 ## `spec.overlap`이 미해결로 남은 이유
 
@@ -164,14 +203,19 @@ LLM 연동은 **자체 얇은 어댑터**(Q6) · **가중치는 튜닝하지 않
 
 ```text
 bench/run.py                          신규 — 벤치마크 오케스트레이션(python -m bench.run),
-                                       negation 유형별 무작위 기준선 계산 포함
+                                       negation 유형별 무작위 기준선 · 사이드카 로드 포함
 bench/report.py                       "오라클 대비 달성률" · "negation 무작위 기준선과의
-                                       비교" 절 추가(`by_kind_baseline` 키워드 인자, 하위 호환)
-bench/results/en-ko-2026-07-29.md     신규 — en-ko 실측 리포트
-bench/results/en-ko-2026-07-29.json   신규
-bench/results/ja-ko-2026-07-29.md     신규 — ja-ko 실측 리포트
-bench/results/ja-ko-2026-07-29.json   신규
-README.md                             "실측: Recall @ Budget" 절 신설, 상태 경고 현행화
+                                       비교" · "코퍼스 제외 (스펙 §4.4)" 절 추가.
+                                       RunMeta.excluded → injection_skipped 이름 정정
+bench/build_track.py                  (fix 라운드 1) 사이드카 {pair}.clean.stats.json 기록
+tests/test_bench_report.py            corpus_stats·injection_skipped 테스트 4건 추가
+tests/test_bench_build_track.py       신규 — 사이드카 테스트 2건
+bench/results/en-ko-2026-07-29.md     신규 — en-ko 실측 리포트(재생성, fix 라운드 1 반영)
+bench/results/en-ko-2026-07-29.json   신규(재생성)
+bench/results/ja-ko-2026-07-29.md     신규 — ja-ko 실측 리포트(재생성, fix 라운드 1 반영)
+bench/results/ja-ko-2026-07-29.json   신규(재생성)
+README.md                             "실측: Recall @ Budget" 절 신설, 상태 경고 현행화,
+                                       §4.4 코퍼스 제외 한 줄 추가
 CHANGELOG.md                          Unreleased에 벤치 하네스 전체 + 이번 반영 기록
 docs/요구사항정의서.md                  §12 Q4 정량 근거 추가(열어 둠)
 docs/AI_자막검수_오픈소스_비교.md        §5 #2 닫힘, Q4/Q5 서술 정정
@@ -179,3 +223,7 @@ HANDOFF.md                            전면 갱신
 ```
 
 **`src/cuesift/`는 이 세션에서 손대지 않았다.** 측정만 했고 제품 코드는 그대로다.
+**`data/bench/{en-ko,ja-ko}.clean.stats.json`은 로컬에만 있다** — `data/`가
+`.gitignore:73`에 걸려 커밋 대상이 아니다. 다음 세션이 벤치를 재실행하려면
+`bench.build_track`을 먼저 돌려야 사이드카가 다시 생긴다(트랙 자체는 시드 고정으로
+항상 동일하다 — 이번 세션에 SHA-256으로 확인).

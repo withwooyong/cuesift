@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from bench.corpus import filter_pairs, load_pairs, sample
+from bench.corpus import FilterStats, filter_pairs, load_pairs, sample
 from bench.timing import GAP_MS, SentencePair, plan_segment
 from bench.track_io import dump_track
 from cuesift.segment import Segment
@@ -55,6 +56,27 @@ def build(
         cursor = end + GAP_MS
 
     return segments, excluded
+
+
+def _corpus_stats(
+    stats: FilterStats, unfittable: int, feasible: int, track_size: int
+) -> dict[str, object]:
+    """스펙 §4.4 부수 산출물 페이로드 — 사이드카 JSON과 콘솔 출력이 공유한다.
+
+    **여기서만 계산한다.** `bench/run.py`가 코퍼스를 다시 훑어 재계산하면
+    트랙과 통계의 출처가 둘로 갈라지고, 언젠가 두 숫자가 어긋난다(팀장
+    지적, fix 라운드 1). `main()`의 콘솔 출력(`100 * unfittable /
+    max(stats.kept, 1)`)과 같은 분자·분모를 그대로 옮겨 실어야 리포트
+    쪽에서 같은 비율을 재현할 수 있다.
+    """
+    return {
+        "total_pairs": stats.total,
+        "filtered_out": dict(stats.dropped),
+        "kept_after_filter": stats.kept,
+        "unfittable": unfittable,
+        "feasible": feasible,
+        "track_size": track_size,
+    }
 
 
 def assert_clean(
@@ -123,6 +145,15 @@ def main(argv: list[str] | None = None) -> int:
     out = args.out_dir / f"{args.pair}.clean.json"
     dump_track(segments, out)
 
+    # 스펙 §4.4 부수 산출물 — 트랙과 나란히 사이드카를 쓴다. `bench/run.py`가
+    # 이 파일을 읽어 리포트에 싣는다. 여기서 쓰지 않으면 이 실행에서만
+    # 존재하는 숫자(콘솔 출력)가 사라져 재현할 수 없다.
+    stats_payload = _corpus_stats(stats, unfittable, len(feasible), len(segments))
+    stats_path = args.out_dir / f"{args.pair}.clean.stats.json"
+    stats_path.write_text(
+        json.dumps(stats_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
     print(f"원본 {stats.total:,}쌍 -> 필터 후 {stats.kept:,}쌍")
     for reason, count in sorted(stats.dropped.items()):
         print(f"  제거 {reason}: {count:,}")
@@ -132,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"표본 {len(chosen):,} -> 트랙 {len(segments):,}")
     print(f"트랙 -> {out}")
+    print(f"통계 -> {stats_path}")
     return 0
 
 

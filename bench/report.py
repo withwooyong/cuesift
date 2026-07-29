@@ -37,6 +37,10 @@ _NEGATION_REFERENCE_BUDGET = 0.10
 # en-ko 9.86%, ja-ko 11.27% — 둘 다 20%에 한참 못 미친다).
 _NEGATION_COMPARISON_BUDGET = 0.20
 
+# §4.4 절 문구용 — 언어 코드를 그대로 조사 없이 붙이면("en로") 어색하다.
+# 현재 확정된 대상 언어(Q2: ko→en/ja)만 사람이 읽는 이름으로 옮긴다.
+_LANG_NAMES = {"en": "영어", "ja": "일본어", "ko": "한국어"}
+
 
 def _by_budget(results: Sequence[BudgetResult], budget: float) -> BudgetResult | None:
     """부동소수 오차를 허용해 예산으로 `BudgetResult`를 찾는다.
@@ -59,6 +63,19 @@ class RunMeta:
     `unmeasurable`·`caveats`는 이번 실행에 해당 사항이 없을 수 있어 기본값
     빈 튜플을 둔다 — `unmeasured`(FR-3.5, 일부러 뺀 신호)와 달리 이쪽은
     "데이터가 답할 수 없다"·"측정 조건에 편향이 있다"는 사유다.
+
+    `injection_skipped`(옛 이름 `excluded`)는 **주입 자격 미달** 건수다 —
+    "표본에서 제외됐다"가 아니라 "해당 유형의 주입 조건을 만족하지 않았다"다.
+    fix 라운드 1(팀장 지적): 옛 이름 `excluded`와 옛 절 제목 "제외 건수"가
+    `glossary 4,041`을 "5,000건 트랙에서 4,041건이 빠졌다"로 오독시켰다.
+
+    `corpus_stats`는 스펙 §4.4의 부수 산출물 — ko 자막이 그대로 en·ja로
+    옮겨질 때 몇 %가 TED 규격에 물리적으로 담기지 않는지(`build_track`의
+    `unfittable`/`kept_after_filter`)를 담는다. **`bench/build_track.py`가
+    쓴 사이드카 JSON(`{pair}.clean.stats.json`)에서 그대로 읽어 온 값이어야
+    한다** — 여기서 다시 계산하면 트랙과 통계의 출처가 둘로 갈라진다.
+    없을 수 있으므로(사이드카가 없는 옛 트랙) 기본값 `None`이고, 그때는
+    §4.4 절 자체를 생략한다.
     """
 
     pair: str
@@ -66,12 +83,13 @@ class RunMeta:
     manifest_sha256: str
     commit: str
     sample_size: int
-    excluded: dict[str, int]
+    injection_skipped: dict[str, int]
     injected: dict[str, int]
     unmeasured: tuple[str, ...]
     hard_fail_false_positive_rate: float
     unmeasurable: tuple[str, ...] = ()
     caveats: tuple[str, ...] = ()
+    corpus_stats: dict[str, object] | None = None
 
 
 def render_markdown(
@@ -99,13 +117,60 @@ def render_markdown(
         "",
         "**가중치 미튜닝** — 스펙 §6.3에 따라 균등 가중으로 첫 숫자를 낸다. "
         "같은 데이터에서 맞춘 가중치는 새 데이터에서 재현되지 않는다.",
+    ]
+
+    # fix 라운드 1(팀장) — 스펙 §4.4의 부수 산출물. `bench/build_track.py`가
+    # 사이드카(`{pair}.clean.stats.json`)에 쓴 값을 그대로 옮겨 싣는다.
+    # **비율은 여기서 계산한다** — `build_track.py` 콘솔 출력과 같은 공식
+    # (unfittable / kept_after_filter)을 써야 두 출처가 어긋나지 않는다.
+    # `corpus_stats`가 없으면(사이드카 없는 옛 트랙) 절 자체를 생략한다 —
+    # 숫자 없이 주장만 내는 것보다 낫다.
+    if meta.corpus_stats:
+        cs = meta.corpus_stats
+        kept = cs.get("kept_after_filter", 0) or 0
+        unfittable = cs.get("unfittable", 0)
+        ratio = unfittable / kept if kept else 0.0
+        target_lang = meta.pair.split("-")[0]
+        target_name = _LANG_NAMES.get(target_lang, target_lang)
+        lines += [
+            "",
+            "### 코퍼스 제외 (스펙 §4.4)",
+            "",
+            f"**제외 건수 자체가 결과다.** ko 자막을 그대로 {target_name}로 "
+            f"옮겼을 때 **{ratio:.2%}**가 TED 규격(21자 × 2줄)에 물리적으로 담기지 않는다. "
+            "자막 현업에서 재분절이 왜 필요한지를 보여주는 숫자이며 "
+            "**FR-5.4(v0.2 규격 자동 교정)를 정량적으로 정당화한다.**",
+            "",
+            "| 항목 | 건수 |",
+            "| --- | --- |",
+            f"| 원본 쌍 | {cs.get('total_pairs', 0):,} |",
+        ]
+        filtered_out = cs.get("filtered_out")
+        if isinstance(filtered_out, Mapping):
+            for reason, count in sorted(filtered_out.items()):
+                lines.append(f"| 필터 제거 · {reason} | {count:,} |")
+        lines += [
+            f"| 필터 통과 | {kept:,} |",
+            f"| 규격 미충족(unfittable) | {unfittable:,} |",
+            f"| 가용(feasible) | {cs.get('feasible', 0):,} |",
+            f"| 트랙 크기 | {cs.get('track_size', 0):,} |",
+        ]
+
+    # ⑨ 주입 자격 미달 건수(옛 이름 "제외 건수") — `inject`가 해당 유형의
+    # 주입 조건을 만족하지 못해 건너뛴 횟수다. **표본에서 빠진 게 아니다** —
+    # 옛 제목은 `glossary 4,041`을 "5,000건 트랙에서 4,041건이 빠졌다"로
+    # 읽히게 했다(팀장 지적, fix 라운드 1).
+    lines += [
         "",
-        "### 제외 건수",
+        "### 주입 자격 미달 건수",
         "",
-        "| 사유 | 건수 |",
+        "해당 유형의 주입 조건을 만족하지 않아 건너뛴 세그먼트 수다. "
+        "**표본에서 제외된 것이 아니다** — 다른 유형으로는 정상 주입됐다.",
+        "",
+        "| 유형 | 건수 |",
         "| --- | --- |",
     ]
-    for reason, count in sorted(meta.excluded.items()):
+    for reason, count in sorted(meta.injection_skipped.items()):
         lines.append(f"| {reason} | {count:,} |")
 
     lines += ["", "### 유형별 실주입 건수", "", "| 유형 | 건수 |", "| --- | --- |"]

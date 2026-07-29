@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +62,27 @@ def _commit() -> str:
         return "unknown"
 
 
+def _load_corpus_stats(track_path: Path) -> dict[str, object] | None:
+    """`bench/build_track.py`가 트랙과 나란히 쓴 사이드카(§4.4)를 읽는다.
+
+    **재계산하지 않는다** — 여기서 코퍼스를 다시 훑으면 트랙을 만든 실행과
+    측정 실행이 서로 다른 숫자를 낼 수 있고, 그때 어느 쪽이 맞는지 알 수
+    없다(팀장 지적, fix 라운드 1). 사이드카가 없으면(옛 트랙) `None`을
+    돌리고 **경고를 출력한다** — 조용히 빠지면 §4.4 산출물이 리포트에서
+    또 사라진다.
+    """
+    stats_path = track_path.with_name(f"{track_path.stem}.stats.json")
+    if not stats_path.exists():
+        print(
+            f"경고: 코퍼스 통계 사이드카가 없다({stats_path}) — "
+            "§4.4 '코퍼스 제외' 절을 리포트에서 생략한다. "
+            "bench.build_track을 다시 실행하면 생긴다.",
+            file=sys.stderr,
+        )
+        return None
+    return json.loads(stats_path.read_text(encoding="utf-8"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="벤치마크 전체 실행")
     parser.add_argument("--pair", required=True, choices=["en-ko", "ja-ko"])
@@ -103,18 +125,20 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     manifest = load_manifest(Path("bench/manifest.json"))
+    corpus_stats = _load_corpus_stats(track_path)
     meta = RunMeta(
         pair=args.pair,
         seed=args.seed,
         manifest_sha256=manifest.get(args.pair, {}).get("sha256", "unknown"),
         commit=_commit(),
         sample_size=len(segments),
-        excluded=dict(skipped),
+        injection_skipped=dict(skipped),
         injected=label_counts(labels),
         unmeasured=UNMEASURED,
         hard_fail_false_positive_rate=fp_rate,
         unmeasurable=UNMEASURABLE,
         caveats=CAVEATS,
+        corpus_stats=corpus_stats,
     )
     md_path, json_path = write_report(
         meta, results, drops, baseline, args.out_dir, by_kind_baseline=by_kind_baseline

@@ -26,6 +26,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/).
 - `bench/results/{en-ko,ja-ko}-2026-07-29.{md,json}` — 재현 정보(코퍼스 SHA-256·시드·커밋)·예산 스윕(1~30%)·유형별 Recall·오라클 대비 달성률·신호별 ablation을 담은 실측 리포트. 결과는 숫자라 리포에 커밋한다(가공 코퍼스와 달리 저작권 문제가 없다)
 - `bench/report.py`에 "오라클 대비 달성률" 절 추가 — 예산이 낮을수록(hard fail 위주) 오라클 대비 달성률이 높고 예산 10% 부근(가중평균 순 채움 구간)에서 저점을 찍는 **U자 곡선**을 표로 남긴다. 계획 A 재리뷰가 남긴 미결 항목("가중평균 vs noisy-or 융합")에 대한 정량 근거다
 - `bench/report.py`에 "`negation` 무작위 기준선과의 비교" 절 추가, `bench/run.py`가 유형별 무작위 기준선을 계산해 넘긴다(기존 `random_baseline`을 negation 라벨로만 좁힌 `error_ids`로 재사용). **Tier 0는 의미 반전(`negation`)에서 무작위보다 못하다** — 예산 10%에서 1.41% vs 무작위 9.61%(en-ko), 예산 20%에서도 9.86%/11.27% vs 무작위 19.49%/19.85%(en-ko/ja-ko, 100시드 재측정). Tier 0가 다른 오류를 상위로 올리며 문법적으로 완벽한 문장(의미만 뒤집힌 것)을 오히려 큐에서 밀어내기 때문이다
+- `bench/build_track.py` — 트랙과 나란히 **사이드카** `{pair}.clean.stats.json`을 쓴다(스펙 §4.4 부수 산출물). `_corpus_stats()`가 콘솔 출력과 같은 공식으로 계산해 두 출처가 갈라지지 않는다. **실측: en-ko 원본 399,414쌍 중 194,463쌍(49.91%)이, ja-ko는 358,635쌍 중 168,613쌍(48.09%)이 TED 규격(21자×2줄)에 물리적으로 담기지 않아 트랙에서 빠졌다** — FR-5.4(v0.2 규격 자동 교정)를 정량적으로 정당화하는 숫자다
+- `bench/report.py`에 "코퍼스 제외 (스펙 §4.4)" 절 추가 — `RunMeta.corpus_stats`(사이드카에서 읽은 값)가 있을 때만 렌더링하고, 비율은 리포트가 다시 계산하지 않는다
 
 ### Changed
 
@@ -55,6 +57,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/).
 - `length.ratio`가 짧은 원문에서 계통 오탐했다 — 깨끗한 400건 트랙에서 33건 발화, 전부 오탐(`네` → `Yes`가 비율 3.0) (`3718e3a`)
 - `select_by_threshold`에 인자 검증이 없어 `threshold=nan`이 hard fail 외 전량을 조용히 검수에서 뺐다 (`8b9af8f`)
 - `docs/번역관리_TMS_솔루션_비교.md:5`의 깨진 링크 처리 — `글로벌_OTT_플랫폼.md`는 이 저장소에 존재한 적이 없다. 링크에서 일반 텍스트로 강등하고 외부 문서임을 명시했다
+- `bench/report.py`의 `RunMeta.excluded` → `injection_skipped`로 이름을 바로잡았다(fix 라운드 1, 팀장 지적). 옛 이름과 절 제목 "제외 건수"는 `glossary 4,041`을 "5,000건 트랙에서 4,041건이 빠졌다"로 읽히게 했다 — 실은 "용어집 주입 자격이 없었다"이며 다른 유형으로는 정상 주입됐다. 또한 §4.4 부수 산출물(코퍼스 규격 미충족률)이 어느 리포트에도 실리지 않았던 것을 사이드카 도입으로 바로잡았다
 
 ### Removed
 

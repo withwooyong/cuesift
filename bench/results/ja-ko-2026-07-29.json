@@ -3,9 +3,9 @@
     "pair": "ja-ko",
     "seed": 20260729,
     "manifest_sha256": "f7a3a4b7f4d02532d4eb253fb0e474f7d15f1d14cb26ced39bc37fdbf40c7b9d",
-    "commit": "cb3ed4b",
+    "commit": "6ccd867",
     "sample_size": 5000,
-    "excluded": {
+    "injection_skipped": {
       "degeneration": 0,
       "empty": 0,
       "glossary": 3606,
@@ -33,7 +33,19 @@
     "caveats": [
       "`negation`은 주입 결과가 규격을 위반하지 않는 세그먼트에만 넣는다. 부정어 삽입이 CPS를 넘기면 `spec.violation`이 발화해 **의미 반전이 아니라 길이 증가를 잡은 것**이 Recall로 집계되기 때문이다(정정 전 실측: en 79.7% / ja 93.7%가 `spec.violation`으로 발화). 그 결과 이 유형의 표본은 CPS 여유가 큰 짧은 세그먼트로 기운다.",
       "용어집 30개는 en·ja 양쪽에서 대응률 79.8% 이상인 것만 채택했다. 그래도 **용어를 포함한 세그먼트의 약 20%는 깨끗한 트랙에서도 위반으로 잡힌다** — 대응어 목록이 실제 번역의 다양성을 다 담지 못하기 때문이다. `glossary.miss`는 hard fail이 아니라 예산을 우회하지 않는다."
-    ]
+    ],
+    "corpus_stats": {
+      "total_pairs": 358635,
+      "filtered_out": {
+        "empty": 3386,
+        "duplicate": 4528,
+        "ratio": 87
+      },
+      "kept_after_filter": 350634,
+      "unfittable": 168613,
+      "feasible": 182021,
+      "track_size": 5000
+    }
   },
   "results": [
     {

@@ -23,7 +23,7 @@ META = RunMeta(
     manifest_sha256="a" * 64,
     commit="deadbeef",
     sample_size=5000,
-    excluded={"unfittable": 12},
+    injection_skipped={"glossary": 4041, "negation": 237},
     injected={"untranslated": 71, "negation": 71},
     unmeasured=("struct.tag_lost",),
     hard_fail_false_positive_rate=_HARD_FAIL_FP_RATE,
@@ -215,3 +215,73 @@ def test_report_states_measured_negation_recall():
     assert "예산 10%" in md
     assert "예산을 20%로 늘려도" in md
     assert "Tier 1" in md
+
+
+# --- fix 라운드 1: §4.4 코퍼스 제외 통계, 필드명 정정 -----------------------
+
+
+def test_report_renames_excluded_section_to_injection_skipped():
+    """`excluded` → `injection_skipped`. 제목·설명 문구가 의미를 바로잡는다.
+
+    옛 제목 "제외 건수"는 `glossary 4,041`을 "5,000건 트랙에서 4,041건이
+    빠졌다"로 읽히게 한다 — 실은 "용어집 주입 자격이 없었다"이다. 표본에서
+    빠진 게 아니라는 것을 절 제목과 설명 둘 다에 못박는다.
+    """
+    md = render_markdown(META, RESULTS, DROPS, BASELINE)
+    assert "주입 자격 미달 건수" in md
+    assert "표본에서 제외된 것이 아니다" in md
+    assert "glossary" in md and "4,041" in md
+    # 옛 제목이 신규 제목의 부분 문자열이 아니므로 남아 있으면 잘못 고친 것이다.
+    assert "### 제외 건수" not in md
+
+
+def test_report_omits_corpus_stats_section_when_absent():
+    """`corpus_stats=None`(기본값)이면 §4.4 절을 조용히 생략한다.
+
+    기존 12건 픽스처(`META`)가 `corpus_stats`를 넘기지 않으므로, 이 테스트가
+    통과해야 그 12건도 계속 통과한다.
+    """
+    assert META.corpus_stats is None
+    md = render_markdown(META, RESULTS, DROPS, BASELINE)
+    assert "코퍼스 제외" not in md
+
+
+def test_report_renders_corpus_stats_section_when_present():
+    """§4.4 — ko 자막의 몇 %가 물리적으로 규격에 담기지 않는지는 그 자체가 결과다.
+
+    비율은 `corpus_stats`에서 **계산**해야 한다(하드코딩 금지) — 그래야
+    재측정 때마다 자동으로 맞는다. 이 테스트는 렌더링 결과에서 그 계산값을
+    직접 검증해 하드코딩 회귀를 잡는다.
+    """
+    corpus_stats = {
+        "total_pairs": 400_000,
+        "filtered_out": {"empty": 100, "duplicate": 200, "ratio": 300},
+        "kept_after_filter": 389_598,
+        "unfittable": 194_463,
+        "feasible": 195_135,
+        "track_size": 5000,
+    }
+    meta = dataclasses.replace(META, corpus_stats=corpus_stats)
+    md = render_markdown(meta, RESULTS, DROPS, BASELINE)
+
+    assert "코퍼스 제외" in md
+    assert "FR-5.4" in md
+    assert "194,463" in md and "195,135" in md and "389,598" in md
+    expected_ratio = corpus_stats["unfittable"] / corpus_stats["kept_after_filter"]
+    assert f"{expected_ratio:.2%}" in md
+
+
+def test_write_report_round_trips_corpus_stats(tmp_path):
+    """JSON 산출물에 `corpus_stats`가 그대로 실려야 §4.4 숫자가 재현된다."""
+    corpus_stats = {
+        "total_pairs": 100,
+        "filtered_out": {"empty": 1},
+        "kept_after_filter": 99,
+        "unfittable": 49,
+        "feasible": 50,
+        "track_size": 10,
+    }
+    meta = dataclasses.replace(META, corpus_stats=corpus_stats)
+    _, json_path = write_report(meta, RESULTS, DROPS, BASELINE, tmp_path)
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["meta"]["corpus_stats"] == corpus_stats
