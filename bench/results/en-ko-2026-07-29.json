@@ -3,7 +3,7 @@
     "pair": "en-ko",
     "seed": 20260729,
     "manifest_sha256": "c7bda45c82aa8a57d662ece2a58ec11826a161628423e20bd58cbdd692e77cbf",
-    "commit": "da2a76d",
+    "commit": "1caab34",
     "sample_size": 5000,
     "injection_skipped": {
       "degeneration": 0,

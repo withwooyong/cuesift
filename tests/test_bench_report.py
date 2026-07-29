@@ -332,6 +332,23 @@ def test_negation_baseline_flags_statistically_indistinguishable_budget():
     assert "예산 30%(29.58% vs 29.68% ±5.92%)" in md
     # 예산 10%는 크게 벌어져 있으므로 구분 불가 목록에 실리면 안 된다.
     assert "예산 10%(0.00%" not in md
+    # if/else는 배타적이어야 한다 — 구분되는 예산이 있으면 "전 구간 미만" 문구는 없다.
+    assert "무작위 기준선 미만으로 유지된다" not in md
+
+
+def test_negation_baseline_states_stronger_result_when_no_budget_converges():
+    """리뷰어 Important — `indistinguishable`가 비면(ja-ko처럼 전 구간에서 무작위
+
+    미만 유지) 문단을 통째로 생략하던 것을 고쳤다. 생략하면 독자가 "구분 불가
+    절이 없네, 뭔가 덜 확인됐나"로 정반대로 읽는다 — 실제로는 **더 강한
+    결과**인데도. `else` 분기가 그 사실을 명시적으로 말해야 한다.
+    """
+    by_kind_baseline = {"negation": {0.05: (0.05, 0.005), 0.10: (0.20, 0.01)}}
+    md = render_markdown(META, RESULTS, DROPS, BASELINE, by_kind_baseline=by_kind_baseline)
+
+    assert "측정한 모든 예산에서 negation Recall이 무작위 기준선 미만으로 유지된다" in md
+    # if/else는 배타적이어야 한다 — "구분되지 않는다" 문단이 함께 나오면 안 된다.
+    assert "통계적으로 구분되지 않는다" not in md
 
 
 def test_write_report_round_trips_corpus_stats(tmp_path):
