@@ -3,7 +3,7 @@
     "pair": "en-ko",
     "seed": 20260729,
     "manifest_sha256": "c7bda45c82aa8a57d662ece2a58ec11826a161628423e20bd58cbdd692e77cbf",
-    "commit": "b6285ca",
+    "commit": "1c6473f",
     "sample_size": 5000,
     "injection_skipped": {
       "degeneration": 0,
@@ -99,16 +99,16 @@
     {
       "budget": 0.1,
       "review_ratio": 0.1,
-      "recall": 0.696,
-      "lift": 6.959999999999999,
+      "recall": 0.724,
+      "lift": 7.239999999999999,
       "oracle": 1.0,
       "by_kind": {
         "degeneration": 1.0,
         "empty": 1.0,
-        "glossary": 0.3333333333333333,
+        "glossary": 0.5694444444444444,
         "negation": 0.014084507042253521,
-        "number": 0.8309859154929577,
-        "spec": 0.6901408450704225,
+        "number": 0.8028169014084507,
+        "spec": 0.676056338028169,
         "untranslated": 1.0
       }
     },
@@ -146,15 +146,15 @@
     }
   ],
   "ablation": {
-    "glossary.miss": 0.006000000000000005,
-    "length.ratio": -0.06000000000000005,
+    "glossary.miss": 0.03400000000000003,
+    "length.ratio": -0.05600000000000005,
     "spec.overlap": 0.0,
-    "spec.violation": 0.05399999999999994,
-    "struct.degeneration": 0.0020000000000000018,
-    "struct.empty": 0.07599999999999996,
-    "struct.number_missing": -0.02400000000000002,
+    "spec.violation": 0.07999999999999996,
+    "struct.degeneration": 0.0,
+    "struct.empty": 0.07999999999999996,
+    "struct.number_missing": 0.0040000000000000036,
     "struct.tag_lost": 0.0,
-    "struct.untranslated": 0.07599999999999996
+    "struct.untranslated": 0.08199999999999996
   },
   "baseline": {
     "0.01": [

@@ -3,7 +3,7 @@
     "pair": "ja-ko",
     "seed": 20260729,
     "manifest_sha256": "f7a3a4b7f4d02532d4eb253fb0e474f7d15f1d14cb26ced39bc37fdbf40c7b9d",
-    "commit": "b6285ca",
+    "commit": "1c6473f",
     "sample_size": 5000,
     "injection_skipped": {
       "degeneration": 0,
@@ -26,7 +26,7 @@
     "unmeasured": [
       "struct.tag_lost"
     ],
-    "hard_fail_false_positive_rate": 0.009111111111111111,
+    "hard_fail_false_positive_rate": 0.0077777777777777776,
     "unmeasurable": [
       "spec.overlap"
     ],
@@ -50,14 +50,14 @@
   "results": [
     {
       "budget": 0.01,
-      "review_ratio": 0.0582,
-      "recall": 0.5,
-      "lift": 8.59106529209622,
-      "oracle": 0.582,
+      "review_ratio": 0.0568,
+      "recall": 0.498,
+      "lift": 8.767605633802816,
+      "oracle": 0.568,
       "by_kind": {
         "degeneration": 1.0,
         "empty": 1.0,
-        "glossary": 0.013888888888888888,
+        "glossary": 0.0,
         "negation": 0.014084507042253521,
         "number": 0.4647887323943662,
         "spec": 0.0,
@@ -66,14 +66,14 @@
     },
     {
       "budget": 0.02,
-      "review_ratio": 0.0582,
-      "recall": 0.5,
-      "lift": 8.59106529209622,
-      "oracle": 0.582,
+      "review_ratio": 0.0568,
+      "recall": 0.498,
+      "lift": 8.767605633802816,
+      "oracle": 0.568,
       "by_kind": {
         "degeneration": 1.0,
         "empty": 1.0,
-        "glossary": 0.013888888888888888,
+        "glossary": 0.0,
         "negation": 0.014084507042253521,
         "number": 0.4647887323943662,
         "spec": 0.0,
@@ -82,14 +82,14 @@
     },
     {
       "budget": 0.05,
-      "review_ratio": 0.0582,
-      "recall": 0.5,
-      "lift": 8.59106529209622,
-      "oracle": 0.582,
+      "review_ratio": 0.0568,
+      "recall": 0.498,
+      "lift": 8.767605633802816,
+      "oracle": 0.568,
       "by_kind": {
         "degeneration": 1.0,
         "empty": 1.0,
-        "glossary": 0.013888888888888888,
+        "glossary": 0.0,
         "negation": 0.014084507042253521,
         "number": 0.4647887323943662,
         "spec": 0.0,
@@ -99,16 +99,16 @@
     {
       "budget": 0.1,
       "review_ratio": 0.1,
-      "recall": 0.706,
-      "lift": 7.06,
+      "recall": 0.752,
+      "lift": 7.52,
       "oracle": 1.0,
       "by_kind": {
         "degeneration": 1.0,
         "empty": 1.0,
-        "glossary": 0.6666666666666666,
+        "glossary": 0.9583333333333334,
         "negation": 0.014084507042253521,
-        "number": 0.4788732394366197,
-        "spec": 0.7746478873239436,
+        "number": 0.49295774647887325,
+        "spec": 0.7887323943661971,
         "untranslated": 1.0
       }
     },
@@ -131,43 +131,43 @@
     {
       "budget": 0.3,
       "review_ratio": 0.3,
-      "recall": 0.856,
-      "lift": 2.8533333333333335,
+      "recall": 0.852,
+      "lift": 2.84,
       "oracle": 1.0,
       "by_kind": {
         "degeneration": 1.0,
         "empty": 1.0,
         "glossary": 1.0,
-        "negation": 0.22535211267605634,
-        "number": 0.7605633802816901,
+        "negation": 0.2112676056338028,
+        "number": 0.7464788732394366,
         "spec": 1.0,
         "untranslated": 1.0
       }
     }
   ],
   "ablation": {
-    "glossary.miss": 0.0,
-    "length.ratio": -0.06000000000000005,
+    "glossary.miss": 0.0020000000000000018,
+    "length.ratio": -0.06799999999999995,
     "spec.overlap": 0.0,
-    "spec.violation": 0.09799999999999998,
+    "spec.violation": 0.07599999999999996,
     "struct.degeneration": -0.0020000000000000018,
-    "struct.empty": 0.08599999999999997,
-    "struct.number_missing": -0.014000000000000012,
+    "struct.empty": 0.07399999999999995,
+    "struct.number_missing": 0.03200000000000003,
     "struct.tag_lost": 0.0,
-    "struct.untranslated": 0.03599999999999992
+    "struct.untranslated": 0.02400000000000002
   },
   "baseline": {
     "0.01": [
-      0.05606,
-      0.008116427785670247
+      0.05486,
+      0.007930977241172742
     ],
     "0.02": [
-      0.05606,
-      0.008116427785670247
+      0.05486,
+      0.007930977241172742
     ],
     "0.05": [
-      0.05606,
-      0.008116427785670247
+      0.05486,
+      0.007930977241172742
     ],
     "0.1": [
       0.0967,
@@ -185,16 +185,16 @@
   "by_kind_baseline": {
     "negation": {
       "0.01": [
-        0.05774647887323944,
-        0.025076751851781487
+        0.05676056338028169,
+        0.024914453915069735
       ],
       "0.02": [
-        0.05774647887323944,
-        0.025076751851781487
+        0.05676056338028169,
+        0.024914453915069735
       ],
       "0.05": [
-        0.05774647887323944,
-        0.025076751851781487
+        0.05676056338028169,
+        0.024914453915069735
       ],
       "0.1": [
         0.09605633802816901,
