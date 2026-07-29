@@ -106,10 +106,14 @@ def test_report_states_hard_fail_false_positive_rate():
     최종 리뷰 지적(I-2) — 옛 테스트는 `assert "billion" in md`로 "검출기
     버그가 아니라 한국어 만·억 vs 영어 billion 표기 차이 때문"이라는 특정
     문구를 회귀 방지선으로 고정했는데, 그 문구 자체가 틀렸다(ja-ko 자연
-    오탐 41건 중 0건이 그 원인이었고, "검출기 버그가 아니다"도 거짓이었다
-    — `struct.number_missing`이 NFKC 정규화를 안 해 전각 숫자를 놓친다).
+    오탐 41건 중 0건이 그 원인이었고, "검출기 버그가 아니다"도 거짓이었다).
     특정 언어쌍에 묶인 문구가 아니라 **값 자체**가 실렸는지로 검증해야
     이 절이 다시 언어쌍 무관한 사실로 바뀌어도 테스트가 안전하다.
+
+    **그 판단이 실제로 값을 했다.** 당시 지목된 검출기 결함(NFKC 미정규화)은
+    이후 수정됐고 원인 목록이 한자 수사로 교체됐는데, 이 테스트는 한 줄도
+    고칠 필요가 없었다. `assert "NFKC" in md`로 고정했다면 수정과 함께
+    실패했을 것이다 — **회귀 방지선은 사실이 아니라 계약을 고정해야 한다.**
 
     **픽스처가 하나면 "값에서 뽑은 것"과 "그 값을 박은 것"이 구분되지 않는다.**
     옛 버전은 `META` 하나로만 렌더해 `render_markdown`이 `"0.96%"`를 리터럴로
@@ -120,8 +124,9 @@ def test_report_states_hard_fail_false_positive_rate():
     md = render_markdown(META, RESULTS, DROPS, BASELINE)
     assert "hard fail 자연 오탐률" in md
     assert f"{META.hard_fail_false_positive_rate:.2%}" in md
-    # 검출기의 알려진 한계(NFKC 미정규화)를 인정하고, "검출기 버그가
-    # 아니라"는 부인은 더 이상 하지 않는다.
+    # 검출기의 알려진 한계(현재는 한자 수사)를 인정하고, "검출기 버그가
+    # 아니라"는 부인은 더 이상 하지 않는다. 어느 한계인지는 수정에 따라
+    # 바뀌므로 **한계를 인정한다는 사실**만 고정한다.
     assert "검출기의 알려진 한계" in md
     assert "검출기 버그가 아니라" not in md
 
