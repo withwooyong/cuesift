@@ -1,0 +1,136 @@
+# TED2020 벤치마크 용어집 (설계 스펙 §5.6)
+#
+# 자동 후보 추출 + 수동 확정. 전자동 통계 정렬을 쓰지 않는 이유는 오대응이
+# 섞이면 "용어집이 틀려서 생긴 오탐"과 "검출기 성능"을 구분할 수 없기 때문이다.
+#
+# **채택 기준에 대응률을 넣었다.** 판정 규칙이 "원문에 키가 있는데 번역문에
+# 대응어가 하나도 없으면 위반"이므로, 대응률이 낮은 용어는 깨끗한 트랙에서
+# 정상 번역을 대량으로 위반 판정한다. 실측 예: `의사`는 en 대응률 56.1%라
+# 정상 번역의 44%를 오탐한다(영어가 physician·surgeon으로 쓰거나 재구성한다).
+# 아래 30개는 en·ja 양쪽에서 등장 20회 이상 · 대응률 79.8% 이상인 것만 남긴 것이다.
+# 괄호 안 숫자는 TED2020 전체에서 실측한 (en 대응률 / ja 대응률)이다.
+#
+# 대응어가 여러 개면 하나만 나와도 통과다(cuesift.glossary의 판정 규칙).
+# 그래서 흔한 표기 변형을 함께 적어야 정상 번역이 오탐으로 잡히지 않는다 —
+# 대응어 목록을 넓히는 것이 곧 대응률을 올리는 수단이었다.
+entries:
+  - source: 당뇨병          # 94.8 / 98.1
+    targets:
+      en: [diabetes, diabetic]
+      ja: [糖尿病]
+  - source: 기후 변화        # 96.2 / 92.8
+    targets:
+      en: [climate change, climate, global warming]
+      ja: [気候変動, 気候, 地球温暖化]
+  - source: 항생제          # 91.8 / 91.6
+    targets:
+      en: [antibiotic, antibiotics]
+      ja: [抗生物質, 抗生剤]
+  - source: 뉴런            # 91.6 / 94.0
+    targets:
+      en: [neuron, neurons, neural, nerve cell]
+      ja: [ニューロン, 神経細胞, 神経]
+  - source: 경제학          # 90.7 / 90.5
+    targets:
+      en: [economics, economist, economists, economic]
+      ja: [経済学, 経済]
+  - source: 자본주의         # 92.9 / 89.9
+    targets:
+      en: [capitalism, capitalist, capitalistic]
+      ja: [資本主義]
+  - source: 소프트웨어        # 93.8 / 89.5
+    targets:
+      en: [software, program, programs, app]
+      ja: [ソフトウェア, ソフト, プログラム]
+  - source: 민주주의         # 95.0 / 88.3
+    targets:
+      en: [democracy, democratic, democracies]
+      ja: [民主主義, 民主的]
+  - source: 자연선택         # 88.0 / 90.9
+    targets:
+      en: [natural selection, selection]
+      ja: [自然選択, 自然淘汰, 淘汰]
+  - source: 은하            # 87.9 / 90.5
+    targets:
+      en: [galaxy, galaxies, galactic, milky way]
+      ja: [銀河, 天の川]
+  - source: 알고리즘         # 91.5 / 87.8
+    targets:
+      en: [algorithm, algorithms, algorithmic]
+      ja: [アルゴリズム]
+  - source: 데이터          # 86.2 / 86.9
+    targets:
+      en: [data, dataset, datasets]
+      ja: [データ]
+  - source: 단백질          # 93.4 / 86.1
+    targets:
+      en: [protein, proteins]
+      ja: [タンパク質, 蛋白質, たんぱく質]
+  - source: 난민            # 85.8 / 86.7
+    targets:
+      en: [refugee, refugees, asylum]
+      ja: [難民, 亡命]
+  - source: 빈곤            # 85.3 / 85.5
+    targets:
+      en: [poverty, poor, impoverished]
+      ja: [貧困, 貧しい, 貧乏]
+  - source: 암세포          # 90.8 / 85.1
+    targets:
+      en: [cancer cell, cancer cells, cancer, tumor, malignant]
+      ja: [がん細胞, 癌細胞, がん, 腫瘍]
+  - source: 이민자          # 90.4 / 84.7
+    targets:
+      en: [immigrant, immigrants, migrant, migrants, immigration]
+      ja: [移民, 移住者]
+  - source: 백신            # 83.9 / 87.9
+    targets:
+      en: [vaccine, vaccines, vaccination, vaccinate]
+      ja: [ワクチン, 予防接種]
+  - source: 온실가스         # 86.2 / 83.8
+    targets:
+      en: [greenhouse gas, greenhouse gases, greenhouse]
+      ja: [温室効果ガス, 温室]
+  - source: 심장            # 83.5 / 83.6
+    targets:
+      en: [heart, cardiac, cardiovascular]
+      ja: [心臓, 心]
+  - source: 원자력          # 88.5 / 83.3
+    targets:
+      en: [nuclear, nuclear power, atomic]
+      ja: [原子力, 核, 原発]
+  - source: 진화            # 86.2 / 82.9
+    targets:
+      en: [evolution, evolutionary, evolve, evolved, evolving]
+      ja: [進化]
+  - source: 인터넷          # 86.8 / 82.8
+    targets:
+      en: [internet, web, online, net]
+      ja: [インターネット, ネット, ウェブ]
+  - source: 탄소            # 90.2 / 82.8
+    targets:
+      en: [carbon, co2, carbon dioxide]
+      ja: [炭素, 二酸化炭素, CO2]
+  - source: 유전자          # 82.5 / 87.7
+    targets:
+      en: [gene, genes, genetic, genome, genomic, dna]
+      ja: [遺伝子, ゲノム, DNA]
+  - source: 빙하            # 82.4 / 87.8
+    targets:
+      en: [glacier, glaciers, ice sheet, ice, glacial]
+      ja: [氷河, 氷床, 氷]
+  - source: 불평등          # 81.4 / 83.6
+    targets:
+      en: [inequality, inequalities, unequal, disparity, gap]
+      ja: [不平等, 格差, 不均衡]
+  - source: 에너지          # 89.0 / 81.2
+    targets:
+      en: [energy, energies, power]
+      ja: [エネルギー, 電力]
+  - source: 면역            # 80.3 / 86.4
+    targets:
+      en: [immune, immunity, immunology, immunize]
+      ja: [免疫]
+  - source: 농업            # 85.0 / 79.8
+    targets:
+      en: [agriculture, agricultural, farming, farm, farmer]
+      ja: [農業, 農家, 農場]
