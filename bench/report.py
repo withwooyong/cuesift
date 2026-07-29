@@ -351,6 +351,46 @@ def render_markdown(
                     base_str = f"{base[0]:.2%} ±{base[1]:.2%}" if base else "—"
                     lines.append(f"| {r.budget:.0%} | {kind_recall:.2%} | {base_str} |")
 
+                # 리뷰어 지적(Important) — 이 표만 두면 "1%·2%·5% 행이 왜 전부
+                # 같은가"·"30%는 왜 못 미치는데도 유의미해 보이는가"가 설명
+                # 없이 남는다. 위 'Recall @ Budget' 표에는 같은 현상("예산이
+                # 낮으면 구분되지 않는다")에 이미 문단이 달려 있는데 이 표에는
+                # 짝이 없어 같은 리포트 안에서 설명 수준이 비대칭이었다.
+                lines += [
+                    "",
+                    "**무작위 기준선은 요청 예산이 아니라 실제 검수 비율로 샘플링한다.** "
+                    '비교 대상이 "같은 수를 무작위로 검수했다면 몇 건 잡았을까"이므로, '
+                    "실제로 검수하지 않은 요청 예산을 기준으로 삼으면 비교가 성립하지 "
+                    "않는다. 위 표에서 낮은 예산 행들의 기준선이 서로 같은 것은 그 예산들의 "
+                    "실제 검수 비율이 모두 hard fail로 채워진 동일한 값이기 때문이다"
+                    "(위 'Recall @ Budget' 표 참고).",
+                ]
+
+                # 예산이 커지면 무작위 기준선도 base rate로 함께 올라 Recall과
+                # 구분되지 않는 지점이 생긴다. **"구분되지 않는다"를 하드코딩
+                # 하지 않는다** — 차이가 기준선 표준편차(1σ) 이내면 그렇게
+                # 판정한다. 재측정으로 표준편차가 좁아지거나 넓어지면 이 문장도
+                # 자동으로 나타나거나 사라진다.
+                indistinguishable = [
+                    (r.budget, r.by_kind["negation"], base[0], base[1])
+                    for r in results
+                    if "negation" in r.by_kind
+                    and (base := neg_baseline.get(r.budget)) is not None
+                    and base[1] > 0
+                    and abs(r.by_kind["negation"] - base[0]) <= base[1]
+                ]
+                if indistinguishable:
+                    parts = "; ".join(
+                        f"예산 {b:.0%}({recall:.2%} vs {mean:.2%} ±{stdev:.2%})"
+                        for b, recall, mean, stdev in indistinguishable
+                    )
+                    lines += [
+                        "",
+                        f"**{parts}에서는 두 값이 통계적으로 구분되지 않는다**(차이가 무작위 "
+                        "기준선의 표준편차 이내). 그 구간의 Recall은 검출이 아니라 base "
+                        "rate다 — 예산이 크면 무작위로 뽑아도 그만큼의 오류가 딸려 들어온다.",
+                    ]
+
             sentence = (
                 f"결정론적 신호 9종을 전부 동원해도 의미 반전은 예산 "
                 f"{_NEGATION_REFERENCE_BUDGET:.0%}에서 **{ref_recall:.2%}**만 잡는다."

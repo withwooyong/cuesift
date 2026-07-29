@@ -271,6 +271,54 @@ def test_report_renders_corpus_stats_section_when_present():
     assert f"{expected_ratio:.2%}" in md
 
 
+# --- 리뷰어 Important: negation 기준선 표에 방법론·구분불가 판정 누락 -------
+
+
+def test_negation_baseline_explains_review_ratio_sampling_methodology():
+    """무작위 기준선이 **요청 예산이 아니라 실제 검수 비율**로 샘플링됐다는 것을
+
+    본문에 명시한다. 없으면 예산 1%·2%·5% 행이 왜 전부 같은 값인지(hard fail로
+    채워진 동일한 실제 검수 비율) 독자가 알 길이 없다 — 위 'Recall @ Budget'
+    표에는 같은 설명이 이미 있는데 이 표에만 짝이 없으면 설명 수준이 비대칭이다.
+    """
+    by_kind_baseline = {"negation": {0.05: (0.05, 0.01), 0.10: (0.10, 0.02)}}
+    md = render_markdown(META, RESULTS, DROPS, BASELINE, by_kind_baseline=by_kind_baseline)
+    assert "요청 예산이 아니라 실제 검수 비율로 샘플링한다" in md
+
+
+def test_negation_baseline_flags_statistically_indistinguishable_budget():
+    """예산이 크면 Recall이 무작위 기준선과 구분되지 않는다 — **하드코딩 금지**,
+
+    `|recall - mean| <= stdev`로 판정해야 한다. 이 테스트는 예산 10%(크게 벌어짐)와
+    30%(기준선 표준편차 이내)를 함께 넣어, 판정이 문구가 아니라 실제 값에서
+    계산됐는지 확인한다.
+    """
+    results = [
+        *RESULTS,
+        BudgetResult(
+            budget=0.30,
+            review_ratio=0.30,
+            recall=0.894,
+            lift=2.98,
+            oracle=1.0,
+            by_kind={"negation": 0.2958},
+        ),
+    ]
+    by_kind_baseline = {
+        "negation": {
+            0.05: (0.02, 0.01),
+            0.10: (0.10, 0.02),  # recall 0% vs 기준선 10% — 크게 벌어짐
+            0.30: (0.2968, 0.0592),  # recall 29.58% vs 기준선 29.68%±5.92% — 표준편차 이내
+        }
+    }
+    md = render_markdown(META, results, DROPS, BASELINE, by_kind_baseline=by_kind_baseline)
+
+    assert "통계적으로 구분되지 않는다" in md
+    assert "예산 30%(29.58% vs 29.68% ±5.92%)" in md
+    # 예산 10%는 크게 벌어져 있으므로 구분 불가 목록에 실리면 안 된다.
+    assert "예산 10%(0.00%" not in md
+
+
 def test_write_report_round_trips_corpus_stats(tmp_path):
     """JSON 산출물에 `corpus_stats`가 그대로 실려야 §4.4 숫자가 재현된다."""
     corpus_stats = {
