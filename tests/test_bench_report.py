@@ -235,6 +235,21 @@ def test_report_renames_excluded_section_to_injection_skipped():
     assert "### 제외 건수" not in md
 
 
+def test_report_does_not_overclaim_other_kinds_absorbed_the_skips():
+    """fix 라운드 2(리뷰어) — "다른 유형으로는 정상 주입됐다"는 산술적으로 틀렸다.
+
+    en-ko에서 glossary가 스킵한 4,041건 중 다른 유형이 흡수할 수 있는 최대치는
+    (전체 주입 500건 − glossary quota 72건) = 428건뿐이다. 나머지 3,613건 이상은
+    끝까지 어느 유형에도 배정되지 않아 **오류 없이 깨끗한 채로 트랙에 남는다** —
+    "다른 유형으로는 정상 주입됐다"라고 말하면 안 된다. 옛 문구가 조용히 되돌아오는
+    것을 잡기 위해 부재도 함께 단언한다.
+    """
+    md = render_markdown(META, RESULTS, DROPS, BASELINE)
+    assert "표본에서 제외된 것이 아니다" in md
+    assert "다른 유형으로는 정상 주입됐다" not in md
+    assert "오류 없이 깨끗한 상태로 트랙에 남는다" in md
+
+
 def test_report_omits_corpus_stats_section_when_absent():
     """`corpus_stats=None`(기본값)이면 §4.4 절을 조용히 생략한다.
 
