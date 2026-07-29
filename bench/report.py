@@ -20,15 +20,32 @@ from pathlib import Path
 
 from bench.measure import BudgetResult
 
-# ⑥ negation 실측 상한을 읽는 기준 예산. bench/measure.py의 `ablation()` 기본값,
+# ⑥ negation 실측값을 읽는 기준 예산. bench/measure.py의 `ablation()` 기본값,
 # Task 7 리포트의 "유형별 Recall (예산 10%)" 절과 맞춘다.
 #
 # **이 값이 `max(budget별 recall)`이면 안 된다.** 실측(en-ko, budget=30%)에서
 # negation Recall이 29.6%까지 올라가는데, 이는 검출이 아니라 예산 자체가 30%라
 # 코퍼스의 30%를 뽑으면 negation 라벨도 base rate로 그만큼 딸려 들어오기
-# 때문이다(무작위 기준선도 같은 예산에서 ~30%를 낸다). 이걸 "1.41%" 대신 쓰면
+# 때문이다(무작위 기준선도 같은 예산에서 ~30%를 낸다). 이걸 대신 쓰면
 # "Tier 0로도 29.6%나 잡는다"로 정반대로 읽혀 스펙 §5.4의 논지가 뒤집힌다.
 _NEGATION_REFERENCE_BUDGET = 0.10
+
+# ⑥ "예산을 늘려도 소용없다"를 보여줄 비교 예산. 30%가 아니라 20%인 이유는
+# 위와 같다 — 30%는 이미 base rate 혼입 구간이라 비교 자체가 무의미해진다.
+# 20%는 여전히 review_ratio(20%)보다 뚜렷이 낮은 값을 내 신호가 실제로 얼마간의
+# 판별력을 갖되 크게 부족하다는 것을 보여준다(Task 7 리뷰어 재측정:
+# en-ko 9.86%, ja-ko 11.27% — 둘 다 20%에 한참 못 미친다).
+_NEGATION_COMPARISON_BUDGET = 0.20
+
+
+def _by_budget(results: Sequence[BudgetResult], budget: float) -> BudgetResult | None:
+    """부동소수 오차를 허용해 예산으로 `BudgetResult`를 찾는다.
+
+    `results`가 항상 `_NEGATION_REFERENCE_BUDGET`·`_NEGATION_COMPARISON_BUDGET`을
+    포함한다고 가정하지 않는다 — 호출자가 다른 예산 스윕을 넘기면 조용히
+    `None`을 반환해 ⑥ 문단을 생략한다(숫자 없이 문구만 내는 것보다 낫다).
+    """
+    return next((r for r in results if abs(r.budget - budget) < 1e-9), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,25 +207,28 @@ def render_markdown(
             "결정론적 코드로 원리상 구분되지 않는다. **이 유형의 Recall이 0에 수렴하는 것이 "
             "Tier 1·QE 투자를 정당화하는 근거 숫자**다(스펙 §5.4).",
         ]
-        # ⑥ negation의 실측값 — 정성적 설명("0에 수렴")만으로는 검증할 수 없다.
-        # 기준 예산(10%)의 값을 쓴다 — 그 이하(1~5%)는 hard fail만으로 채워지는
-        # 바닥이라 0으로 뭉개지고, 그 이상은 예산 자체가 커서 base rate로
-        # negation 라벨이 딸려 들어와 recall이 review_ratio에 수렴한다(무작위
-        # 기준선과 같은 값에 가까워짐 — 실측 30% 예산에서 negation 29.6% vs
-        # random 29.9%). `_NEGATION_REFERENCE_BUDGET`가 신호 자체의 판별력을
-        # 보는 유일하게 깨끗한 지점이다.
-        negation_result = next(
-            (r for r in results if abs(r.budget - _NEGATION_REFERENCE_BUDGET) < 1e-9), None
-        )
-        if "negation" in kinds and negation_result is not None:
-            negation_recall = negation_result.by_kind.get("negation", 0.0)
-            lines += [
-                "",
-                f"결정론적 신호 9종을 전부 동원해도(예산 {_NEGATION_REFERENCE_BUDGET:.0%} 기준) "
-                f"의미 반전은 **{negation_recall:.2%}**만 잡는다. 그중 대부분은 자연 오탐"
-                "(`struct.number_missing`)이고 의미를 본 것이 아니다. **이 숫자가 Tier 1·QE "
-                "투자를 정당화하는 근거다**(스펙 §5.4).",
-            ]
+        # ⑥ negation의 실측값 — 정성적 설명("0에 수렴")만으로는 검증할 수 없고,
+        # 예산을 명시하지 않은 채 숫자만 적으면 위 표(예산별로 다른 값)와
+        # 어긋나 오독한다(정정 — 팀장이 "1.41%"를 예산 무관 상수로 오인될
+        # 문구로 지적). 기준 예산(10%)과 비교 예산(20%) 둘 다 `results`에서
+        # 직접 뽑는다 — 상수로 박으면 재측정 때마다 조용히 거짓이 된다.
+        ref = _by_budget(results, _NEGATION_REFERENCE_BUDGET)
+        cmp = _by_budget(results, _NEGATION_COMPARISON_BUDGET)
+        if "negation" in kinds and ref is not None:
+            ref_recall = ref.by_kind.get("negation", 0.0)
+            sentence = (
+                f"결정론적 신호 9종을 전부 동원해도 의미 반전은 예산 "
+                f"{_NEGATION_REFERENCE_BUDGET:.0%}에서 **{ref_recall:.2%}**만 잡는다. "
+                "그중 대부분은 자연 오탐(`struct.number_missing`)이고 의미를 본 것이 아니다."
+            )
+            if cmp is not None:
+                cmp_recall = cmp.by_kind.get("negation", 0.0)
+                sentence += (
+                    f" 예산을 {_NEGATION_COMPARISON_BUDGET:.0%}로 늘려도 **{cmp_recall:.2%}**에 "
+                    "그친다 — 예산을 두 배로 써도 이 유형은 거의 잡히지 않는다."
+                )
+            sentence += " **이 숫자가 Tier 1·QE 투자를 정당화하는 근거다**(스펙 §5.4)."
+            lines += ["", sentence]
 
     # ④·⑤ 측정 방법의 한계 — negation 표본 편향, 용어집 대응률의 대가 등
     # 호출자가 실측한 방법론적 주의사항. 리포트는 내용을 하드코딩하지 않고

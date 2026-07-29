@@ -172,10 +172,13 @@ def test_report_includes_glossary_tradeoff_caveat():
 
 
 def test_report_states_measured_negation_recall():
-    """⑥ `negation` Recall의 실측값(1.41%)을 유형별 Recall 절에 함께 적는다.
+    """⑥ `negation` Recall의 실측값을 예산과 함께 유형별 Recall 절에 적는다.
 
-    브리프 원문의 정성적 설명("0에 수렴")만으로는 이 값이 정말 낮은지
-    검증할 수 없다 — 실측 숫자가 있어야 Tier 1·QE 투자 근거로 인용 가능하다.
+    정정(팀장, Task 7 리뷰어 재측정) — 예산 없이 숫자만 적으면 위 표(예산별로
+    다른 값)와 어긋나 오독한다. 리포트 문구는 `results`에서 직접 값을 뽑아야
+    재측정할 때마다 자동으로 맞는다 — 상수를 하드코딩하면 다음 실행에서
+    조용히 거짓이 된다. 이 테스트는 그 값을 문자열로 재입력하지 않고
+    `results`에서 계산한 값으로 검증해 그 회귀를 잡는다.
     """
     results = [
         BudgetResult(
@@ -194,7 +197,21 @@ def test_report_states_measured_negation_recall():
             oracle=1.0,
             by_kind={"negation": 0.0141},
         ),
+        BudgetResult(
+            budget=0.20,
+            review_ratio=0.20,
+            recall=0.866,
+            lift=4.3,
+            oracle=1.0,
+            by_kind={"negation": 0.0986},
+        ),
     ]
     md = render_markdown(META, results, DROPS, BASELINE)
-    assert "1.41%" in md
+
+    ref = next(r for r in results if r.budget == 0.10).by_kind["negation"]
+    cmp = next(r for r in results if r.budget == 0.20).by_kind["negation"]
+    assert f"{ref:.2%}" in md
+    assert f"{cmp:.2%}" in md
+    assert "예산 10%" in md
+    assert "예산을 20%로 늘려도" in md
     assert "Tier 1" in md
