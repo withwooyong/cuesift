@@ -18,7 +18,7 @@ from scripts.fetch_ted2020 import load_manifest
 from bench.inject import inject
 from bench.measure import ablation, check_invariants, label_counts, measure, random_baseline
 from bench.report import RunMeta, write_report
-from bench.track_io import load_track
+from bench.track_io import dump_audit, load_track
 from cuesift.glossary import load_glossary
 from cuesift.risk import fuse
 from cuesift.signals import SignalContext, collect_all
@@ -90,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=20260729)
     parser.add_argument("--rate", type=float, default=0.10)
     parser.add_argument("--out-dir", type=Path, default=Path("bench/results"))
+    # 감사 산출물(스펙 §5.7)은 트랙과 같은 디렉터리에 둔다 — 둘은 같은
+    # 가공물 계열이고 `data/`는 .gitignore라 리포를 오염시키지 않는다.
+    # `--out-dir`(리포트)와 분리한 이유: 리포트는 커밋되지만 변조 트랙은
+    # 코퍼스 파생물이라 CC BY-NC-ND 4.0에 걸려 커밋할 수 없다.
+    parser.add_argument("--audit-dir", type=Path, default=None)
     args = parser.parse_args(argv)
 
     target_lang = args.pair.split("-")[0]
@@ -102,6 +107,20 @@ def main(argv: list[str] | None = None) -> int:
 
     segments = load_track(track_path)
     mutated, labels, skipped = inject(segments, glossary, profile, rate=args.rate, seed=args.seed)
+
+    # 스펙 §5.7 — **측정 전에** 감사 산출물을 남긴다. 측정이 불변식에서
+    # 실패해도(`check_invariants`) 무엇을 주입했는지는 디스크에 남아야
+    # 원인을 볼 수 있다. 뒤로 미루면 실패한 실행은 아무것도 남기지 않는다.
+    commit = _commit()
+    injected_path, labels_path = dump_audit(
+        mutated,
+        labels,
+        args.audit_dir or track_path.parent,
+        args.pair,
+        seed=args.seed,
+        commit=commit,
+    )
+    print(f"감사 산출물 -> {injected_path}\n              {labels_path}")
 
     results = measure(mutated, labels, ctx, list(BUDGETS))
 
@@ -130,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         pair=args.pair,
         seed=args.seed,
         manifest_sha256=manifest.get(args.pair, {}).get("sha256", "unknown"),
-        commit=_commit(),
+        commit=commit,
         sample_size=len(segments),
         injection_skipped=dict(skipped),
         injected=label_counts(labels),
