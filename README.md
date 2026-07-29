@@ -59,6 +59,64 @@
 표본에서 애초에 빠졌습니다** — 남은 표본이 짧은 문장으로 기울어 있다는
 뜻입니다(리포트의 "코퍼스 제외" 절 참고).
 
+### 재현
+
+코퍼스(TED2020/OPUS)는 **CC BY-NC-ND 4.0**이라 원본도 가공물도 이 리포에
+포함하지 않습니다. 아래 3단계로 직접 내려받아 재현합니다.
+
+```mermaid
+flowchart LR
+    A["① scripts.fetch_ted2020"] --> B["② bench.build_track"]
+    B --> C["③ bench.run"]
+    A -.-> AM["bench/manifest.json<br/>코퍼스 SHA-256"]
+    B -.-> BT["data/bench/{pair}.clean.json<br/>+ .clean.stats.json"]
+    C -.-> CR["bench/results/{pair}-{날짜}.md<br/>+ .json"]
+    C -.-> CA["data/bench/{pair}.injected.json<br/>+ {pair}.labels.json"]
+```
+
+| 단계 | 하는 일 | 산출물 |
+| --- | --- | --- |
+| ① `fetch_ted2020` | 코퍼스 획득(약 78MB)·SHA-256 기록 | `bench/manifest.json` |
+| ② `build_track` | 언어쌍당 5,000건 합성. **규격 위반 0건을 단언** | `{pair}.clean.json` · 코퍼스 제외 통계 |
+| ③ `run` | 오류 7종 주입 → Tier 0 측정 → 리포트 | 리포트 `.md`/`.json` · **감사 산출물** |
+
+②의 "규격 위반 0건" 단언이 전제입니다 — 깨끗하지 않은 트랙에서는 검출된 위반이
+주입분인지 합성 실패인지 구분할 수 없습니다.
+
+```bash
+# ① 코퍼스 획득
+python -m scripts.fetch_ted2020
+
+# ② 깨끗한 트랙 합성
+python -m bench.build_track --pair en-ko
+python -m bench.build_track --pair ja-ko
+
+# ③ 주입 · 측정 · 리포트
+python -m bench.run --pair en-ko
+python -m bench.run --pair ja-ko
+```
+
+> `python bench/run.py`가 아니라 **`python -m bench.run`** 이어야 합니다.
+> 스크립트를 직접 실행하면 리포 루트가 `sys.path`에서 빠져 `cuesift`·`bench`
+> 패키지를 찾지 못합니다.
+
+시드는 기본값(`20260729`)이 위 표의 숫자를 냅니다. `--seed`를 바꾸면 다른 표본이
+나오므로 값도 달라집니다.
+
+**감사 산출물** — ③은 변조된 트랙과 정답 라벨을 `data/bench/`에 함께 남깁니다
+(`{pair}.injected.json` · `{pair}.labels.json`). 라벨 파일에는 시드·커밋과 **변조
+트랙의 SHA-256**이 기록되어 있어, 벤치를 다시 돌리지 않고도 정답을 검증할 수
+있습니다 — 깨끗한 트랙과 변조 트랙을 비교하면 라벨과 정확히 일치해야 합니다.
+
+**용어집(`bench/glossary.ted.yaml`)을 고치면** 회귀 게이트를 다시 돌립니다.
+돌리지 않으면 대응률이 낮은 용어가 섞여 "용어집이 틀려서 생긴 오탐"과 "검출기
+성능"을 구분할 수 없게 됩니다.
+
+```bash
+python -m scripts.glossary_verify --pair en-ko   # 등장 20건 이상 · 대응률 79.8% 이상
+python -m scripts.glossary_verify --pair ja-ko
+```
+
 ---
 
 ## 문제

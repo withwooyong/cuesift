@@ -28,6 +28,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/).
 - `bench/report.py`에 "`negation` 무작위 기준선과의 비교" 절 추가, `bench/run.py`가 유형별 무작위 기준선을 계산해 넘긴다(기존 `random_baseline`을 negation 라벨로만 좁힌 `error_ids`로 재사용). **Tier 0는 의미 반전(`negation`)에서 무작위보다 못하다** — 예산 10%에서 1.41% vs 무작위 9.61%(en-ko), 예산 20%에서도 9.86%/11.27% vs 무작위 19.49%/19.85%(en-ko/ja-ko, 100시드 재측정). Tier 0가 다른 오류를 상위로 올리며 문법적으로 완벽한 문장(의미만 뒤집힌 것)을 오히려 큐에서 밀어내기 때문이다
 - `bench/build_track.py` — 트랙과 나란히 **사이드카** `{pair}.clean.stats.json`을 쓴다(스펙 §4.4 부수 산출물). `_corpus_stats()`가 콘솔 출력과 같은 공식으로 계산해 두 출처가 갈라지지 않는다. **실측: en-ko 필터 후 389,598쌍 중 194,463쌍(49.91%)이, ja-ko는 필터 후 350,634쌍 중 168,613쌍(48.09%)이 TED 규격(21자×2줄)에 물리적으로 담기지 않아 트랙에서 빠졌다** — FR-5.4(v0.2 규격 자동 교정)를 정량적으로 정당화하는 숫자다
 - `bench/report.py`에 "코퍼스 제외 (스펙 §4.4)" 절 추가 — `RunMeta.corpus_stats`(사이드카에서 읽은 값)가 있을 때만 렌더링하고, 비율은 리포트가 다시 계산하지 않는다
+- **주입 감사 산출물** (스펙 §5.7) — `bench/track_io.py`의 `dump_audit()`이 변조 트랙(`data/bench/{pair}.injected.json`)과 정답 라벨(`{pair}.labels.json`)을 **한 번의 호출로 함께** 쓴다. 둘을 각각 쓰는 함수 두 개로 두지 않은 이유는 짝이 아닌 산출물이 감사에 쓸 수 없기 때문이다 — 함수가 둘이면 한쪽만 호출하는 실수가 구조적으로 가능하다. 변조 트랙은 `dump_track`과 같은 형식이라 `load_track`으로 그대로 읽힌다(감사자가 새 파서를 짜야 한다면 감사 수단이 아니다). 라벨 파일에는 시드·커밋과 **변조 트랙의 SHA-256**이 함께 기록되고 `load_labels()`가 이를 대조한다 — 해시를 적기만 하고 아무도 대조하지 않으면 없는 게이트와 같다. `bench.run`은 **측정 전에** 이 산출물을 남긴다(불변식에서 실패한 실행도 무엇을 주입했는지는 남아야 한다). `--audit-dir`로 위치를 바꿀 수 있고 기본값은 트랙과 같은 디렉터리다. **실행 검증**: en-ko·ja-ko 양쪽에서 깨끗한 트랙과 변조 트랙의 차집합이 라벨 500건과 양방향으로 완전히 일치했고, Recall 값은 기존 리포트와 동일했다(산출물 추가가 측정을 바꾸지 않았다)
+- `README.md`에 **"재현"** 절 추가 — 실측 절이 배수 7배를 인용하면서 독자가 재현할 명령이 없었다. 3단계 파이프라인(`scripts.fetch_ted2020` → `bench.build_track` → `bench.run`)을 Mermaid 흐름도·표·실행 명령으로 싣고, `python -m`으로 실행해야 하는 이유(`sys.path`에서 리포 루트가 빠진다)와 용어집 회귀 게이트 `scripts/glossary_verify.py`를 함께 문서화했다. 적은 명령 4개는 전부 실제로 실행해 동작을 확인했다
 
 ### Changed
 
@@ -66,6 +68,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/).
 - `inject`의 가드가 "실주입 0건"만 보고 quota 부분 미달은 보지 않았다 (`b6285ca`). 용어집 자격이 89건(quota 72)으로 여유가 1.24배뿐이라, 표본이나 용어집이 바뀌면 라벨 총계가 조용히 목표에 미달해 오류율이 10% 아래로 내려가고 오라클 상한·배수의 분모 관계가 바뀐다. `achieved[k] < quota[k]`도 같은 예외로 올렸다 — 스펙 §5.5가 "0 broken이 통과로 읽혔던 것처럼"이라며 세운 원칙의 연장이다
 - 리포트의 커밋 스탬프가 항상 한 커밋 뒤처졌다 (I-1, `f4b32ca`). `report.py`를 고치는 커밋에서는 리포트 재생성이 커밋보다 먼저라 스탬프가 직전 커밋을 가리켰고, **그 커밋의 `report.py`는 방금 지운 거짓 문장을 렌더링한다.** 리포트만 재생성하는 기계적 커밋으로 구조적으로 닫았다
 - `scripts/__init__.py`에 `from __future__ import annotations`가 없었고, docstring "표준 라이브러리만 쓴다"가 같은 패키지의 `glossary_verify.py`(`bench.corpus`·`cuesift.glossary` 임포트)에 대해 거짓이었다 (`b6285ca`)
+
+아래 한 건은 성격이 다르다 — **구현이 아니라 테스트 자체의 결함**이며 대상 코드는 처음부터 옳았다.
+
+- **리포트 테스트 2건이 독스트링의 주장과 달리 하드코딩 회귀를 못 잡았다.** `test_report_states_hard_fail_false_positive_rate`는 픽스처 `META` 하나로만 렌더해 `render_markdown`이 `"0.96%"`를 리터럴로 박아도 통과했다. `test_ablation_explains_negative_drops_as_harmful_not_just_unhelpful`은 **두 가지가 겹쳐** 무력했다 — 검증에 쓴 신호 이름 `length.ratio`가 실측에서 실제로 음수가 나오는 이름이라 제품 코드가 하드코딩할 수 있었고, 잘라내는 지점(`## 신호별 기여도` 이후)이 ablation **표**를 포함해 어떤 이름을 넣어도 거기 나타났다. HANDOFF가 남긴 수정 제안("픽스처 이름을 `zz.synthetic.probe`로", 1줄)은 전자만 고쳐 **뮤테이션이 여전히 통과했다** — 지적이 옳아도 해법은 틀릴 수 있다. 고친 뒤 두 결함을 실제로 `bench/report.py`에 심어 RED(2 failed)를 확인하고 복원했다. **교훈: 값 연동만으로는 부족하고 값이 두 가지 이상이어야 하며, 잘라내는 범위도 함께 검증해야 한다** — 픽스처가 하나면 "값에서 뽑은 것"과 "그 값을 박은 것"이 구분되지 않는다
 
 ### Removed
 
