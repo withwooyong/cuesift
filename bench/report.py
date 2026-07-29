@@ -79,6 +79,8 @@ def render_markdown(
     results: Sequence[BudgetResult],
     drops: Mapping[str, float],
     baseline: Mapping[float, tuple[float, float]],
+    *,
+    by_kind_baseline: Mapping[str, Mapping[float, tuple[float, float]]] | None = None,
 ) -> str:
     lines: list[str] = [
         f"# 벤치마크 결과 — {meta.pair}",
@@ -246,21 +248,71 @@ def render_markdown(
         # 어긋나 오독한다(정정 — 팀장이 "1.41%"를 예산 무관 상수로 오인될
         # 문구로 지적). 기준 예산(10%)과 비교 예산(20%) 둘 다 `results`에서
         # 직접 뽑는다 — 상수로 박으면 재측정 때마다 조용히 거짓이 된다.
+        #
+        # ⑧ **유형별 무작위 기준선** — Task 8 리뷰어가 100시드로 재측정해 드러난
+        # 사실이다: Tier 0는 `negation`에서 **무작위보다 못하다**(en-ko 예산10%
+        # 1.41% vs 무작위 9.61%). Tier 0가 다른 오류를 상위로 올리며 문법적으로
+        # 완벽한 문장(=의미만 뒤집힌 것)을 오히려 큐에서 밀어내기 때문이다.
+        # 위 'Recall @ Budget' 표의 '무작위 기준' 열은 **전체 오류 기준**이라
+        # 이 값과 다르다 — `by_kind_baseline`을 못 받으면(레거시 호출) 이 절과
+        # 비교 문장을 조용히 생략한다(숫자 없이 주장만 내는 것보다 낫다).
         ref = _by_budget(results, _NEGATION_REFERENCE_BUDGET)
         cmp = _by_budget(results, _NEGATION_COMPARISON_BUDGET)
+        neg_baseline: Mapping[float, tuple[float, float]] = (by_kind_baseline or {}).get(
+            "negation", {}
+        )
         if "negation" in kinds and ref is not None:
             ref_recall = ref.by_kind.get("negation", 0.0)
+            ref_base = neg_baseline.get(_NEGATION_REFERENCE_BUDGET)
+            cmp_base = neg_baseline.get(_NEGATION_COMPARISON_BUDGET) if cmp is not None else None
+
+            if neg_baseline:
+                lines += [
+                    "",
+                    "### `negation` 무작위 기준선과의 비교",
+                    "",
+                    "**유의**: 아래 '무작위 기준선'은 `negation` 라벨만 대상으로 한 **유형별** "
+                    "값이다. 위 'Recall @ Budget' 표의 '무작위 기준' 열(전체 오류 기준)과는 "
+                    "다른 값이니 혼동하지 말 것.",
+                    "",
+                    "| 예산 | `negation` Recall | `negation` 무작위 기준선 |",
+                    "| --- | --- | --- |",
+                ]
+                for r in results:
+                    kind_recall = r.by_kind.get("negation")
+                    if kind_recall is None:
+                        continue
+                    base = neg_baseline.get(r.budget)
+                    base_str = f"{base[0]:.2%} ±{base[1]:.2%}" if base else "—"
+                    lines.append(f"| {r.budget:.0%} | {kind_recall:.2%} | {base_str} |")
+
             sentence = (
                 f"결정론적 신호 9종을 전부 동원해도 의미 반전은 예산 "
-                f"{_NEGATION_REFERENCE_BUDGET:.0%}에서 **{ref_recall:.2%}**만 잡는다. "
-                "그중 대부분은 자연 오탐(`struct.number_missing`)이고 의미를 본 것이 아니다."
+                f"{_NEGATION_REFERENCE_BUDGET:.0%}에서 **{ref_recall:.2%}**만 잡는다."
             )
+            if ref_base is not None:
+                sentence += (
+                    f" **같은 예산에서 무작위로 뽑았을 때의 {ref_base[0]:.2%}보다도 낮다** — "
+                    "Tier 0가 다른 오류(미번역·빈 값·규격 위반 등)를 상위로 올리면서, "
+                    "문법적으로 완벽한 문장인 의미 반전을 큐에서 오히려 밀어내기 때문이다."
+                )
+            else:
+                sentence += (
+                    " 그중 대부분은 자연 오탐(`struct.number_missing`)이고 의미를 본 것이 아니다."
+                )
             if cmp is not None:
                 cmp_recall = cmp.by_kind.get("negation", 0.0)
                 sentence += (
                     f" 예산을 {_NEGATION_COMPARISON_BUDGET:.0%}로 늘려도 **{cmp_recall:.2%}**에 "
-                    "그친다 — 예산을 두 배로 써도 이 유형은 거의 잡히지 않는다."
+                    "그친다"
                 )
+                if cmp_base is not None and cmp_base[0] > 0:
+                    ratio = cmp_recall / cmp_base[0]
+                    sentence += (
+                        f" — 같은 예산의 무작위 기준선 {cmp_base[0]:.2%}의 {ratio:.0%}에 불과하다."
+                    )
+                else:
+                    sentence += " — 예산을 두 배로 써도 이 유형은 거의 잡히지 않는다."
             sentence += " **이 숫자가 Tier 1·QE 투자를 정당화하는 근거다**(스펙 §5.4)."
             lines += ["", sentence]
 
@@ -286,13 +338,22 @@ def write_report(
     drops: Mapping[str, float],
     baseline: Mapping[float, tuple[float, float]],
     out_dir: Path,
+    *,
+    by_kind_baseline: Mapping[str, Mapping[float, tuple[float, float]]] | None = None,
 ) -> tuple[Path, Path]:
-    """`{pair}-{date}.md`와 같은 이름의 `.json`을 낸다."""
+    """`{pair}-{date}.md`와 같은 이름의 `.json`을 낸다.
+
+    `by_kind_baseline`은 유형별 무작위 기준선(예: `negation`이 무작위보다
+    못하다는 실측)을 실을 때만 넘긴다 — 없으면 그 절을 조용히 생략한다.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{meta.pair}-{date.today().isoformat()}"
 
     md_path = out_dir / f"{stem}.md"
-    md_path.write_text(render_markdown(meta, results, drops, baseline), encoding="utf-8")
+    md_path.write_text(
+        render_markdown(meta, results, drops, baseline, by_kind_baseline=by_kind_baseline),
+        encoding="utf-8",
+    )
 
     json_path = out_dir / f"{stem}.json"
     json_path.write_text(
@@ -302,6 +363,10 @@ def write_report(
                 "results": [asdict(r) for r in results],
                 "ablation": dict(drops),
                 "baseline": {str(k): list(v) for k, v in baseline.items()},
+                "by_kind_baseline": {
+                    kind: {str(b): list(v) for b, v in d.items()}
+                    for kind, d in (by_kind_baseline or {}).items()
+                },
             },
             ensure_ascii=False,
             indent=2,

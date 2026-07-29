@@ -92,6 +92,16 @@ def main(argv: list[str] | None = None) -> int:
     error_ids = {lb.segment_id for lb in labels}
     baseline = {r.budget: random_baseline(mutated, error_ids, r.review_ratio) for r in results}
 
+    # 유형별 무작위 기준선(negation) — Task 8 리뷰어가 발견: Tier 0는 의미
+    # 반전에서 무작위보다 못하다. `error_ids`를 negation 라벨로만 좁혀 같은
+    # `random_baseline`을 재사용한다(전용 함수를 새로 만들 필요가 없다).
+    negation_ids = {lb.segment_id for lb in labels if lb.kind == "negation"}
+    by_kind_baseline = {
+        "negation": {
+            r.budget: random_baseline(mutated, negation_ids, r.review_ratio) for r in results
+        }
+    }
+
     manifest = load_manifest(Path("bench/manifest.json"))
     meta = RunMeta(
         pair=args.pair,
@@ -106,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
         unmeasurable=UNMEASURABLE,
         caveats=CAVEATS,
     )
-    md_path, json_path = write_report(meta, results, drops, baseline, args.out_dir)
+    md_path, json_path = write_report(
+        meta, results, drops, baseline, args.out_dir, by_kind_baseline=by_kind_baseline
+    )
     print(f"리포트 -> {md_path}\n         {json_path}")
     for r in results:
         print(
