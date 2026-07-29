@@ -110,6 +110,12 @@ def test_report_states_hard_fail_false_positive_rate():
     — `struct.number_missing`이 NFKC 정규화를 안 해 전각 숫자를 놓친다).
     특정 언어쌍에 묶인 문구가 아니라 **값 자체**가 실렸는지로 검증해야
     이 절이 다시 언어쌍 무관한 사실로 바뀌어도 테스트가 안전하다.
+
+    **픽스처가 하나면 "값에서 뽑은 것"과 "그 값을 박은 것"이 구분되지 않는다.**
+    옛 버전은 `META` 하나로만 렌더해 `render_markdown`이 `"0.96%"`를 리터럴로
+    하드코딩해도 통과했다(뮤테이션으로 실증). 서로 다른 두 값으로 렌더해야
+    비로소 게이트가 된다 — 값 연동만으로는 부족하고 **값이 두 가지 이상**이어야
+    한다.
     """
     md = render_markdown(META, RESULTS, DROPS, BASELINE)
     assert "hard fail 자연 오탐률" in md
@@ -118,6 +124,12 @@ def test_report_states_hard_fail_false_positive_rate():
     # 아니라"는 부인은 더 이상 하지 않는다.
     assert "검출기의 알려진 한계" in md
     assert "검출기 버그가 아니라" not in md
+
+    # 두 번째 값 — `report.py`가 실측값을 하드코딩할 리 없는 수치를 골랐다.
+    other = dataclasses.replace(META, hard_fail_false_positive_rate=0.0123)
+    other_md = render_markdown(other, RESULTS, DROPS, BASELINE)
+    assert "1.23%" in other_md
+    assert f"{META.hard_fail_false_positive_rate:.2%}" not in other_md
 
 
 def test_report_notes_budget_floor_indistinguishable():
@@ -388,13 +400,23 @@ def test_ablation_explains_negative_drops_as_harmful_not_just_unhelpful():
     표가 내림차순이라 음수 항목이 맨 아래에 몰려 "가장 덜 유용함"으로 읽히지만
     실제로는 "가장 해로움"이다. `+0.0%`(`spec.overlap`)에는 이미 오독 방지 절이
     있는데 음수에는 짝이 없었다(최종 리뷰 I-3) — 이 절이 그 짝이다. 신호 이름은
-    `drops`에서 뽑아야 한다(하드코딩 금지) — 이 테스트는 `DROPS`에 없는 신호
-    이름(`length.ratio`)으로 검증해 하드코딩 회귀를 잡는다.
+    `drops`에서 뽑아야 한다(하드코딩 금지).
+
+    **실재하는 신호 이름을 쓰면 하드코딩 회귀를 잡지 못한다.** 옛 버전은
+    `length.ratio`로 검증했는데 그것은 실측에서 실제로 음수가 나오는 신호라
+    `report.py`가 그대로 박아 두어도 통과했다(뮤테이션으로 실증). 제품 코드가
+    **알 리 없는 이름**(`zz.synthetic.probe`)이어야 "`drops`에서 뽑았다"가
+    증명된다.
+
+    **잘라내는 지점도 같이 고쳐야 한다.** `## 신호별 기여도` 이후를 보면
+    ablation **표**가 포함되는데, 표는 `drops`를 순회해 렌더하므로 어떤 이름을
+    넣어도 거기 나타난다 — 검증 대상은 표가 아니라 그 아래 문단의 신호 이름
+    목록이다. 이름만 바꾸고 분할 지점을 그대로 두면 뮤테이션이 여전히 통과한다.
     """
-    drops = {"struct.untranslated": 0.21, "spec.overlap": 0.0, "length.ratio": -0.06}
+    drops = {"struct.untranslated": 0.21, "spec.overlap": 0.0, "zz.synthetic.probe": -0.06}
     md = render_markdown(META, RESULTS, drops, BASELINE)
     assert "가장 해로움" in md
-    assert "`length.ratio`" in md.split("## 신호별 기여도", 1)[1]
+    assert "`zz.synthetic.probe`" in md.split("**음수는", 1)[1]
 
 
 def test_ablation_omits_harmful_paragraph_when_no_negative_drops():
