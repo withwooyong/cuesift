@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 
 from cuesift.segment import Segment, Signal
@@ -95,8 +96,25 @@ def _longest_consecutive_repeat(tokens: list[str]) -> tuple[int, str | None]:
 
 
 def _numbers(text: str) -> list[str]:
-    """텍스트의 숫자를 천 단위 구분자를 제거한 형태로 뽑는다."""
-    return [m.group().replace(",", "") for m in _NUMBER.finditer(text)]
+    """텍스트의 숫자를 천 단위 구분자를 제거하고 NFKC 정규화해 뽑는다.
+
+    **정규화하지 않으면 전각과 반각이 다른 수가 된다** — `'５０' != '50'`이라
+    일본어 자막의 정상 번역이 누락으로 판정되고, 두 자리 이상이라
+    `multi_digit`에 걸려 hard fail이 난다. hard fail은 검수 예산을
+    우회하므로(FR-6.2) 이 오탐이 실제 검수 비율을 부풀려 §9.1의 배수를
+    파괴한다. ja-ko 자연 오탐 41건 중 13건(31.7%)이 이 경로였다.
+
+    **추출한 뒤에 정규화한다.** 텍스트 전체를 먼저 정규화하면 `½`(U+00BD,
+    카테고리 No)가 `1⁄2`가 되어 **원문에 없던 숫자 1과 2가 생긴다.**
+    `\\d`는 카테고리 Nd만 잡으므로 추출 후 정규화는 그 경로를 열지 않는다.
+
+    **한계**: 한자 수사(`十代`)는 NFKC의 대상이 아니라 여전히 미탐이다.
+    아라비아 매핑에는 파서가 필요하고 `十分に`(≠ 10분)·`万一`(≠ 10001) 같은
+    관용구에서 hard fail 신호에 새 오탐을 만든다.
+    """
+    return [
+        unicodedata.normalize("NFKC", m.group()).replace(",", "") for m in _NUMBER.finditer(text)
+    ]
 
 
 def _tag_names(text: str) -> Counter[str]:

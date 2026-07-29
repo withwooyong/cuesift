@@ -22,6 +22,15 @@ def ctx():
     )
 
 
+@pytest.fixture
+def ctx_ja():
+    """ko→ja. `NumberMissing`은 profile을 보지 않지만, 전각 숫자가
+    일본어 자막의 현상이라는 것을 테스트가 스스로 설명하게 둔다."""
+    return SignalContext(
+        profile=load_builtin("ja"), glossary=None, source_lang="ko", target_lang="ja"
+    )
+
+
 def _seg(source: str, target: str | None) -> Segment:
     return Segment(
         id="s1", index=0, start_ms=0, end_ms=2000, source_text=source, target_text=target
@@ -184,6 +193,34 @@ def test_number_missing_stays_hard_when_a_multi_digit_number_is_missing(ctx):
     sig = NumberMissing().collect(_seg("2023년 매출", "Revenue was strong"), ctx)
     assert sig is not None
     assert sig.hard_fail is True
+
+
+def test_number_missing_silent_on_fullwidth_digits(ctx_ja):
+    """전각 숫자는 반각과 같은 수다.
+
+    NFKC 정규화 없이 집합 비교하면 `'５０' != '50'`이라 누락 판정되고,
+    두 자리라 `multi_digit` → **hard fail**이다. hard fail은 검수 예산을
+    우회하므로(FR-6.2) 이 오탐 하나가 실제 검수 비율을 부풀려
+    Recall@Budget의 배수를 파괴한다.
+
+    ja-ko 자연 오탐 41건 중 13건(31.7%)이 이 경로였다.
+    """
+    sig = NumberMissing().collect(
+        _seg("지금은 하루 50센트 이하입니다.", "今では一日５０セント以下になりました"), ctx_ja
+    )
+    assert sig is None
+
+
+def test_number_missing_still_hard_when_number_truly_absent(ctx_ja):
+    """정규화가 오탐을 없애면서 미탐을 만들면 안 된다.
+
+    이 테스트가 없으면 위 테스트는 **'검사를 껐다'로도 통과한다** —
+    `_numbers`가 빈 리스트를 반환하게 만들어도 녹색이 된다.
+    """
+    sig = NumberMissing().collect(_seg("2023년 매출", "売上は好調でした"), ctx_ja)
+    assert sig is not None
+    assert sig.hard_fail is True
+    assert sig.detail["missing"] == ["2023"]
 
 
 # --- FR-3.5 태그 손실 ---
