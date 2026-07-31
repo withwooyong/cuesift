@@ -7,6 +7,7 @@
 *.srt -text
 *.vtt -text
 *.ass -text
+*.ssa -text
 *.ttml -text
 
 # 바이너리

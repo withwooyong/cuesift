@@ -1,0 +1,11 @@
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize
+Style: Default,Arial,20
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,주석뿐인 파일
+Comment: 0,0:00:03.00,0:00:05.00,Default,,0,0,0,,표시할 큐가 없다
