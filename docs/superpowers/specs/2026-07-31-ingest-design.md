@@ -60,7 +60,7 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult
 class IngestResult:
     segments: list[Segment]        # 하위 파이프라인이 쓰는 순수 데이터
     source_path: Path
-    format: str                    # "srt" | "vtt" | "ass"
+    format: str                    # "srt" | "vtt" | "ass" | "ssa" (실측 §12)
     source_lang: str
     subs: pysubs2.SSAFile          # 원본 — WP5(FR-7.1) 라운드트립 전용
     event_index: dict[str, int]    # segment.id → subs 내 이벤트 위치
@@ -71,11 +71,11 @@ class IngestResult:
 FR-7.1이 **"번역된 자막 파일을 언어별로 출력한다(입력과 동일 포맷 기본)"** 를 요구한다.
 즉 cuesift는 자막 파일을 다시 쓴다. `.plaintext`만 남기면 아래가 전부 사라진다.
 
-| 잃는 것 | 예 | 복구 가능성 |
+| 잃는 것 | 예 | `subs`를 들고 있으면 |
 | --- | --- | --- |
-| ASS 배치·스타일 | `{\an8}` (화면 상단) | 원본 재파싱으로만 |
-| VTT cue settings | `line:0 position:20%` | 원본 재파싱으로만 |
-| 화자 태그 | `<v Alice>` | **pysubs2가 이미 버린다** — 원본 텍스트 재파싱 필요 |
+| ASS 배치·스타일 | `{\an8}` (화면 상단) | 보존된다 |
+| VTT cue settings | `line:0 position:20%` | 보존된다 |
+| 화자 태그 | `<v Alice>` | **보존되지 않는다** — pysubs2가 로드 시점에 버린다(§10) |
 
 WP4는 지금 만들고 WP5는 나중에 만든다. **지금 버린 정보는 WP5 시점에 파일을 다시
 읽는 우회로를 부르고, 그 순간 같은 파일이 두 번 파싱되어 두 표현이 갈릴 수 있다.**
@@ -153,6 +153,9 @@ class IngestError(Exception):
 | `empty` | 필터 후 큐 0개 | 경로 + 감지된 포맷 |
 | `bad_timecode` | `start > end` | **1-based 큐 번호** + 실제 두 값 |
 
+**`empty`는 "큐가 0개"이지 "텍스트가 빈 큐"가 아니다.** 텍스트가 빈 큐는 §4에서
+보존한다 — 이름이 비슷해 반대로 읽히기 쉬우므로 명시한다.
+
 ### 5.2 테스트는 `reason`을 단언하고 문구는 단언하지 않는다
 
 지난 세션의 교훈을 그대로 적용한 것이다 — 리포트 테스트가 `"검출기의 알려진 한계"`라는
@@ -177,7 +180,7 @@ pysubs2는 자막이 아닌 텍스트도, 빈 문자열도, 타임코드 없는 
 
 | 필드 | 값 | 근거 |
 | --- | --- | --- |
-| `id` | `f"{index:05d}"` | §7.3 "안정적 식별자". v0.1은 한 번에 파일 하나만 처리 |
+| `id` | `f"{index:05d}"` | 요구사항정의서 §7.3 "안정적 식별자". v0.1은 한 번에 파일 하나만 처리 |
 | `index` | 필터 후 **0부터 연속 재부여** | 구멍이 있으면 리포트·정렬이 혼란스럽다. 원본 위치는 `event_index`가 보존 |
 | `start_ms` · `end_ms` | `e.start` · `e.end` | pysubs2가 **이미 정수 밀리초**로 준다 — 변환 없음 |
 | `source_text` | `e.plaintext` | 태그 제거 + `\N` → `\n`. `check_text`가 `split("\n")`하므로 그대로 맞는다 |
@@ -237,7 +240,7 @@ FR-1.5의 문구는 *"자동 감지**하거나** 명시적으로 지정받는다
 | `check --spec` | 규격 프로파일을 사용자가 이미 지정한다 |
 | 직접 구현의 실패 양상 | 한자만 있는 짧은 자막에서 ko/ja가 갈리지 않고, **그 실패는 조용하다** |
 
-`ingest`는 CLI나 설정 파일을 읽지 않는다(§7.2 모듈 경계). "어느 경로에서 온 값인가"의
+`ingest`는 CLI나 설정 파일을 읽지 않는다(요구사항정의서 §7.2 모듈 경계). "어느 경로에서 온 값인가"의
 추적도 WP6이 가질 관심사이므로 여기서 만들지 않는다.
 
 ## 9. 테스트 전략
@@ -253,7 +256,7 @@ FR-1.5의 문구는 *"자동 감지**하거나** 명시적으로 지정받는다
 | `minimal.srt` | 정상 2큐 · 2줄 |
 | `crlf_bom.srt` | CRLF + BOM |
 | `overlap.vtt` | **겹치는 큐 2개** |
-| `tags.ass` | `{\an8}` · 이탤릭 · `Comment:` 줄 · 벡터 드로잉 |
+| `tags.ass` | `{\an8}` · 이탤릭 · `Comment:` 줄 · 벡터 드로잉. **`[V4+ Styles]` 섹션 필수**(§12) |
 | `empty_cue.srt` | 빈 텍스트 큐 |
 | `reversed.srt` | `start > end` |
 | `not_subtitle.txt` | 자막이 아닌 텍스트 |
@@ -319,6 +322,8 @@ HANDOFF의 지침대로 **분할과 리뷰 3축을 적용**한다. 규모를 S�
 | 오버라이드 태그 | `.plaintext`가 제거 + `\N` → `\n` | §6 — `source_text`에 그대로 쓴다 |
 | `start > end` | **통과시킨다** | `Segment.__post_init__`가 `ValueError` → §5 `bad_timecode`로 감싼다 |
 | 자막이 아닌 텍스트 | **예외 없이 0큐** | §5.4 — 인제스트가 판단한다 |
+| `SSAFile.format` 값 | `"srt"` · `"vtt"` · `"ass"` · `"ssa"` **4종** | §2 — `.ssa`는 `"ass"`가 아니라 `"ssa"`다 |
+| `[V4+ Styles]` 없는 ASS | **`FormatAutodetectionError`** | §5 `parse`로 감싼다. `tags.ass` 픽스처에 스타일 섹션이 있어야 한다 |
 
 **CRLF 항목은 첫 판단을 뒤집은 것이다.** `from_string`으로 본 `\r`을 결함으로 오인했으나
 파일 경로로 다시 확인하니 파이썬 텍스트 모드가 처리하고 있었다. 실측하지 않았다면
