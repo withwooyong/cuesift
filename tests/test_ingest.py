@@ -166,3 +166,17 @@ def test_all_comment_file_raises_empty():
         load_subtitle(FIXTURES / "all_comments.ass")
 
     assert exc.value.reason == "empty"
+
+
+def test_reversed_timecode_raises_bad_timecode_with_cue_number():
+    """pysubs2는 역전 타임코드를 통과시킨다(설계 §12).
+
+    `Segment.__post_init__`가 ValueError를 던지지만 그 메시지에는
+    **몇 번째 큐인지가 없어** 사람이 파일에서 찾을 수 없다.
+    1-based는 SRT 파일의 인덱스 표기와 맞춘 것이다.
+    """
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(FIXTURES / "reversed.srt")
+
+    assert exc.value.reason == "bad_timecode"
+    assert "2" in str(exc.value), "몇 번째 큐인지가 메시지에 없다"

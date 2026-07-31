@@ -71,7 +71,7 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
             f"{path}: 표시할 자막 큐가 0개다 (포맷 {subs.format}). "
             "0개 수집은 통과가 아니라 입력 오류다.",
         )
-    segments, event_index = _to_segments(events)
+    segments, event_index = _to_segments(events, path)
     return IngestResult(
         segments=segments,
         source_path=path,
@@ -135,17 +135,26 @@ def _keep_displayed(subs: pysubs2.SSAFile) -> list[tuple[int, pysubs2.SSAEvent]]
 
 
 def _to_segments(
-    events: list[tuple[int, pysubs2.SSAEvent]],
+    events: list[tuple[int, pysubs2.SSAEvent]], path: Path
 ) -> tuple[list[Segment], dict[str, int]]:
     """이벤트를 `Segment`로 바꾸고 원본 위치 대응표를 함께 만든다 (설계 §6).
 
     `index`는 **필터 후 0부터 연속 재부여**한다. 구멍이 있으면 리포트와
     정렬이 혼란스러워진다. 원본 위치는 `event_index`가 보존하므로
     라운드트립에 필요한 정보는 잃지 않는다.
+
+    역전 타임코드는 여기서 잡는다. `Segment`에 맡기면 `ValueError`가 나지만
+    **몇 번째 큐인지가 메시지에 없어** 사람이 파일에서 찾을 수 없다.
     """
     segments: list[Segment] = []
     event_index: dict[str, int] = {}
     for index, (raw_index, event) in enumerate(events):
+        if event.end < event.start:
+            raise IngestError(
+                "bad_timecode",
+                f"{path}: {raw_index + 1}번째 큐의 타임코드가 역전됐다 "
+                f"(start={event.start}ms > end={event.end}ms)",
+            )
         seg_id = f"{index:05d}"
         segments.append(
             Segment(
