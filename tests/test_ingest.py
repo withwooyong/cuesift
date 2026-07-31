@@ -96,3 +96,24 @@ def test_all_media_suffixes_are_rejected(tmp_path, suffix):
         load_subtitle(media)
 
     assert exc.value.reason == "video_input"
+
+
+def test_cp949_file_raises_decode():
+    """설계 §5.3 — utf-8 고정이다. `--encoding` 플래그가 없으므로
+    설정할 수 없는 인자를 만들지 않는다. 진단 메시지가 변환을 안내한다.
+    """
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(FIXTURES / "cp949.srt")
+
+    assert exc.value.reason == "decode"
+
+
+def test_non_subtitle_text_raises_parse():
+    """`load()`는 자동 판별을 하므로 FormatAutodetectionError를 던진다(설계 §12).
+
+    초판 스펙은 이것을 "0큐"로 적었으나 그 측정은 `format_`을 강제한 것이었다.
+    """
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(FIXTURES / "not_subtitle.txt")
+
+    assert exc.value.reason == "parse"

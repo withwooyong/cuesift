@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pysubs2
+from pysubs2.exceptions import Pysubs2Error
 
 from cuesift.segment import Segment
 
@@ -62,7 +63,7 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
     우선순위 해결은 WP6의 몫이며 이 모듈은 둘 다 읽지 않는다.
     """
     _reject_non_subtitle(path)
-    subs = pysubs2.load(path, encoding="utf-8")
+    subs = _load(path)
     segments, event_index = _to_segments(list(enumerate(subs)))
     return IngestResult(
         segments=segments,
@@ -72,6 +73,27 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
         subs=subs,
         event_index=event_index,
     )
+
+
+def _load(path: Path) -> pysubs2.SSAFile:
+    """파일을 읽어 pysubs2 표현으로 만들고, 실패를 `IngestError`로 번역한다.
+
+    번역하지 않으면 호출자가 pysubs2 예외 계층을 알아야 하고,
+    그 순간 §7.2의 "외부 의존을 인터페이스 뒤로 격리"가 무너진다.
+    """
+    try:
+        return pysubs2.load(path, encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # UnicodeDecodeError는 ValueError의 하위다 — 아래 절보다 먼저 와야 한다.
+        # 순서를 바꾸면 cp949 파일이 decode가 아니라 parse로 보고되고,
+        # 사용자는 "인코딩을 바꿔라"라는 조언을 못 받는다.
+        raise IngestError(
+            "decode",
+            f"{path}: utf-8로 읽을 수 없다 (바이트 {exc.start}). "
+            "파일을 utf-8로 변환한 뒤 다시 시도한다.",
+        ) from exc
+    except (Pysubs2Error, ValueError) as exc:
+        raise IngestError("parse", f"{path}: 자막으로 해석할 수 없다 — {exc}") from exc
 
 
 def _reject_non_subtitle(path: Path) -> None:
