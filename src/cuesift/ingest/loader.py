@@ -14,6 +14,28 @@ import pysubs2
 
 from cuesift.segment import Segment
 
+# 영상·오디오를 명시적으로 거른다 (FR-1.3, 설계 §7.2).
+# 이 목록이 없으면 mp4가 텍스트로 열려 UnicodeDecodeError가 나고,
+# 사용자에게 "utf-8로 변환하라"는 **틀린 조언**이 간다.
+#
+# 자막 확장자 화이트리스트는 두지 않는다 — pysubs2가 내용으로 판별하므로
+# 확장자가 없거나 `.vtt`인데 SRT 내용이어도 제대로 읽는다(실측 설계 §12).
+_MEDIA_SUFFIXES = frozenset(
+    {".mp4", ".mkv", ".mov", ".webm", ".m4v", ".avi", ".mp3", ".m4a", ".wav"}
+)
+
+
+class IngestError(Exception):
+    """인제스트 실패 (설계 §5).
+
+    **`reason`이 계약이고 메시지는 사람용이다.** 테스트는 `reason`만 단언한다 —
+    문구를 고정하면 메시지를 개선할 때 회귀 테스트가 함께 실패해 개선을 방해한다.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
@@ -39,6 +61,7 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
     `source_lang`은 값을 받아 기록만 한다 (FR-1.5). CLI·설정 파일의
     우선순위 해결은 WP6의 몫이며 이 모듈은 둘 다 읽지 않는다.
     """
+    _reject_non_subtitle(path)
     subs = pysubs2.load(path, encoding="utf-8")
     segments, event_index = _to_segments(list(enumerate(subs)))
     return IngestResult(
@@ -49,6 +72,23 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
         subs=subs,
         event_index=event_index,
     )
+
+
+def _reject_non_subtitle(path: Path) -> None:
+    """읽기 전에 걸러야 하는 입력 (FR-1.3).
+
+    FR-1.3의 문구는 "자막과 영상이 모두 주어지면 자막 우선"이지만 v0.1의 CLI는
+    입력을 하나만 받는다(설계 §7.1). 여기서는 **입력이 영상이면 자막 경로가
+    아님을 알린다**로 구현하고, 진짜 "둘 다 주어짐"은 WP9에서 다시 본다.
+    """
+    if not path.is_file():
+        raise IngestError("not_found", f"{path}: 파일이 없다")
+    if path.suffix.lower() in _MEDIA_SUFFIXES:
+        raise IngestError(
+            "video_input",
+            f"{path}: 영상·오디오 입력이다. STT는 v0.1에 없다(WBS WP9). "
+            "FR-1.3에 따라 자막 파일이 있으면 그것을 넣는다.",
+        )
 
 
 def _to_segments(

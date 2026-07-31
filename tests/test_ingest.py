@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cuesift.ingest import load_subtitle
+import pytest
+
+from cuesift.ingest import IngestError, load_subtitle
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 
@@ -59,3 +61,38 @@ def test_vtt_multiline_keeps_newlines():
 
     assert result.format == "vtt"
     assert result.segments[0].source_text == "첫째 줄\n둘째 줄\n셋째 줄"
+
+
+def test_missing_file_raises_not_found(tmp_path):
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(tmp_path / "없는파일.srt")
+
+    assert exc.value.reason == "not_found"
+
+
+def test_video_input_raises_video_input(tmp_path):
+    """FR-1.3 — 영상은 STT 경로이고 v0.1에 STT가 없다.
+
+    확장자로 먼저 거르지 않으면 mp4가 텍스트로 열려 UnicodeDecodeError가 나고,
+    사용자에게 "utf-8로 변환하라"는 **틀린 조언**이 간다.
+    """
+    video = tmp_path / "episode01.mp4"
+    video.write_bytes(b"\x00\x00\x00\x20ftypisom")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(video)
+
+    assert exc.value.reason == "video_input"
+
+
+@pytest.mark.parametrize(
+    "suffix", [".mkv", ".mov", ".webm", ".m4v", ".avi", ".mp3", ".m4a", ".wav"]
+)
+def test_all_media_suffixes_are_rejected(tmp_path, suffix):
+    media = tmp_path / f"episode01{suffix}"
+    media.write_bytes(b"\x00\x01\x02")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(media)
+
+    assert exc.value.reason == "video_input"

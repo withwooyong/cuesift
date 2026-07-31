@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from cuesift.ingest.loader import IngestResult, load_subtitle
+from cuesift.ingest.loader import IngestError, IngestResult, load_subtitle
 
-__all__ = ["IngestResult", "load_subtitle"]
+__all__ = ["IngestError", "IngestResult", "load_subtitle"]
