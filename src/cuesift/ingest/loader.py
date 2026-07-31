@@ -64,7 +64,14 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
     """
     _reject_non_subtitle(path)
     subs = _load(path)
-    segments, event_index = _to_segments(list(enumerate(subs)))
+    events = _keep_displayed(subs)
+    if not events:
+        raise IngestError(
+            "empty",
+            f"{path}: 표시할 자막 큐가 0개다 (포맷 {subs.format}). "
+            "0개 수집은 통과가 아니라 입력 오류다.",
+        )
+    segments, event_index = _to_segments(events)
     return IngestResult(
         segments=segments,
         source_path=path,
@@ -111,6 +118,20 @@ def _reject_non_subtitle(path: Path) -> None:
             f"{path}: 영상·오디오 입력이다. STT는 v0.1에 없다(WBS WP9). "
             "FR-1.3에 따라 자막 파일이 있으면 그것을 넣는다.",
         )
+
+
+def _keep_displayed(subs: pysubs2.SSAFile) -> list[tuple[int, pysubs2.SSAEvent]]:
+    """화면에 나오는 이벤트만 남기고 원본 위치를 함께 돌려준다 (설계 §4).
+
+    `is_comment`는 ASS의 `Comment:` 줄, `is_drawing`은 벡터 드로잉이다.
+    드로잉을 남기면 `m 0 0 l 100 0`이 **자막 문자로 세어져** CPS를 부풀리고,
+    그 오탐은 hard fail이라 FR-6.2에 따라 검수 예산을 우회한다 —
+    실제 검수 비율이 부풀면 Recall@Budget 지표 자체가 무너진다.
+
+    둘 다 SRT·VTT에서는 항상 False이므로(실측 §12) 포맷 분기 없이 적용한다.
+    **텍스트가 빈 큐는 남긴다** — FR-3.2가 hard fail로 잡을 대상이다.
+    """
+    return [(i, e) for i, e in enumerate(subs) if not e.is_comment and not e.is_drawing]
 
 
 def _to_segments(

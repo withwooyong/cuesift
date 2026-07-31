@@ -117,3 +117,52 @@ def test_non_subtitle_text_raises_parse():
         load_subtitle(FIXTURES / "not_subtitle.txt")
 
     assert exc.value.reason == "parse"
+
+
+def test_comments_and_drawings_are_excluded_from_segments():
+    """설계 §4 — 화면에 나오지 않는 것은 세그먼트가 아니다."""
+    result = load_subtitle(FIXTURES / "tags.ass")
+
+    assert result.format == "ass"
+    assert [s.source_text for s in result.segments] == ["기울임 대사", "두 번째 대사"]
+
+
+def test_filtered_events_survive_in_subs_for_roundtrip():
+    """설계 §2.1 — FR-7.1이 원본 포맷 출력을 요구하므로 원본은 온전해야 한다."""
+    result = load_subtitle(FIXTURES / "tags.ass")
+
+    assert len(result.subs) == 4
+    assert any(e.is_comment for e in result.subs)
+    assert any(e.is_drawing for e in result.subs)
+
+
+def test_event_index_maps_to_the_right_original_event():
+    """설계 §2.2 — 필터가 segments와 subs를 어긋나게 한다.
+
+    이 대응표가 틀리면 WP5가 번역문을 한 칸씩 밀어서 되쓰고,
+    **예외 없이 조용히** 밀린다.
+    """
+    result = load_subtitle(FIXTURES / "tags.ass")
+
+    assert result.event_index == {"00000": 0, "00001": 3}
+    for seg in result.segments:
+        assert result.subs[result.event_index[seg.id]].plaintext == seg.source_text
+
+
+def test_empty_text_cue_is_preserved():
+    """설계 §4 — FR-3.2가 hard fail로 잡을 대상을 인제스트가 미리 지우지 않는다."""
+    result = load_subtitle(FIXTURES / "empty_cue.srt")
+
+    assert len(result.segments) == 2
+    assert result.segments[1].source_text == ""
+
+
+def test_all_comment_file_raises_empty():
+    """설계 §5.4 — 파싱은 됐는데 표시할 큐가 0개인 유일한 실측 경로.
+
+    CLAUDE.md의 "0개 수집은 통과가 아니라 설정 오류다"가 이 지점이다.
+    """
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(FIXTURES / "all_comments.ass")
+
+    assert exc.value.reason == "empty"
