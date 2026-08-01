@@ -68,3 +68,17 @@ src = ["src", "tests", "bench", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+# 마크다운 안의 파이썬 코드 블록은 포매팅하지 않는다.
+#
+# ruff 0.16이 `.md`의 코드 블록을 포매팅 대상에 넣으면서 CI의
+# `ruff format --check .`가 깨졌다. 이 저장소의 문서 코드 블록은 프로덕션
+# 코드가 아니다 — 계획서의 블록은 **구현자에게 준 그대로**가 기록이고,
+# "초판은 이랬다"로 남긴 폐기 형태와 스펙의 안티패턴 예시도 있다.
+# 재포맷하면 기록이 사실과 달라진다.
+#
+# 린트(`ruff check .`)는 마크다운을 건드리지 않으므로 그대로 둔다.
+# 이 줄을 지우면 `docs/superpowers/{plans,specs}/*.md` 4개 이상에서
+# `ruff format --check .`가 즉시 실패한다.
+exclude = ["*.md"]
