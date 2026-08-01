@@ -10,10 +10,10 @@
 
 > [!WARNING]
 > **개발 이전 단계(pre-alpha)입니다.** Tier 0 신호 엔진(무료 결정론적 신호 9종 ·
-> 위험도 융합 · 트리아지 선별)은 구현·**실측까지 끝났지만**(아래 참고) **CLI에
-> 배선되지 않았습니다** — 모든 서브커맨드는 여전히 종료 코드 `70`(미구현)을
-> 반환합니다. 자막 파일 파싱(`ingest`)과 번역(`translate`) 계층이 없어 아직
-> 사용할 수 없습니다.
+> 위험도 융합 · 트리아지 선별)은 구현·**실측까지 끝났고**(아래 참고) 자막 파일
+> 파싱(`ingest`, SRT·WebVTT·ASS/SSA)도 들어왔지만 **CLI에 배선되지 않았습니다** —
+> 모든 서브커맨드는 여전히 종료 코드 `70`(미구현)을 반환합니다. 번역(`translate`)
+> 계층도 아직 없어 사용할 수 없습니다.
 
 ---
 
@@ -187,6 +187,8 @@ ruff check .
 | [벤치마크 하네스 설계](docs/superpowers/specs/2026-07-28-ted2020-benchmark-harness-design.md) | TED2020 코퍼스 · 오류 주입 · Recall@Budget 측정 |
 | [Tier 0 신호 엔진 구현 계획](docs/superpowers/plans/2026-07-28-tier0-signal-engine.md) | 구현 계획과 실행 중 바뀐 결정 |
 | [벤치마크 하네스 구현 계획](docs/superpowers/plans/2026-07-29-ted2020-benchmark-harness.md) | 구현 계획과 실행 중 바뀐 결정 (계획 결함 12건·프로세스 기록) |
+| [인제스트 설계](docs/superpowers/specs/2026-07-31-ingest-design.md) | 자막 파일 → `Segment` · pysubs2 실측 근거 · 오류 계약 |
+| [인제스트 구현 계획](docs/superpowers/plans/2026-07-31-ingest.md) | 태스크 8개 · 계획 결함 4건과 정정 기록 |
 
 ## 라이선스
 
