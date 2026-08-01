@@ -24,6 +24,8 @@ EXPECTED = (
     "not_subtitle.txt",
     "cp949.srt",
     "multiline.vtt",
+    "basic.ssa",
+    "comment_then_reversed.ass",
 )
 
 

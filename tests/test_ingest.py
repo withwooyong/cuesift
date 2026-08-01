@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from cuesift.ingest import IngestError, load_subtitle
+from cuesift.spec import check_overlaps
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 
@@ -180,3 +181,55 @@ def test_reversed_timecode_raises_bad_timecode_with_cue_number():
 
     assert exc.value.reason == "bad_timecode"
     assert "2" in str(exc.value), "몇 번째 큐인지가 메시지에 없다"
+
+
+def test_ssa_format_is_reported_as_ssa_not_ass():
+    """FR-1.1은 ASS와 **SSA**를 함께 요구한다.
+
+    `SSAFile.format`은 `.ssa`에 대해 `"ass"`가 아니라 `"ssa"`를 낸다(설계 §12).
+    이 단언이 없으면 4개 포맷 중 3개만 검증된 채 FR-1.1이 완료로 표시된다 —
+    이 저장소가 금지하는 "검사하지 않고 통과하는 게이트"다.
+    """
+    result = load_subtitle(FIXTURES / "basic.ssa")
+
+    assert result.format == "ssa"
+    assert len(result.segments) == 1
+    assert result.segments[0].source_text == "에스에스에이 대사"
+    assert result.segments[0].start_ms == 1000
+    assert result.segments[0].end_ms == 3000
+
+
+def test_bad_timecode_reports_original_cue_number_not_filtered_index():
+    """필터가 앞 이벤트를 걸러도 큐 번호는 **원본 위치**여야 한다.
+
+    `comment_then_reversed.ass`는 원본 0=주석·1=정상·2=역전이다. 주석이 걸리므로
+    역전 큐의 `index`는 1이고 `raw_index`는 2다 — 1-based 보고는 **3**이어야 한다.
+    `index + 1`을 쓰면 2가 나와 사용자가 엉뚱한 줄을 본다.
+
+    `reversed.srt`는 주석이 없어 두 값이 같으므로 이 축을 구분하지 못한다.
+    """
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(FIXTURES / "comment_then_reversed.ass")
+
+    assert exc.value.reason == "bad_timecode"
+    assert "3번째" in str(exc.value)
+    assert "2번째" not in str(exc.value)
+
+
+def test_overlapping_cues_reach_spec_check_overlaps():
+    """설계 §9.3 — 겹침이 있는 실제 트랙이 처음으로 파이프라인에 들어온다.
+
+    벤치 하네스는 `build_track`이 겹침 0건으로 트랙을 합성했고 주입기의 `spec`
+    유형은 duration을 줄일 뿐이라 겹침을 만들지 못했다. 그래서 `spec.overlap`의
+    기여도 `+0.0%`는 "쓸모없다"가 아니라 **"측정하지 못했다"** 였다.
+
+    이 테스트가 그 경로를 처음으로 연다 — 인제스트가 낸 `Segment`가
+    `check_overlaps`에 그대로 들어가고 겹침 1000ms가 검출된다.
+    """
+    result = load_subtitle(FIXTURES / "overlap.vtt")
+
+    violations = check_overlaps(result.segments)
+
+    assert len(violations) == 1
+    assert violations["00001"].kind == "overlap"
+    assert violations["00001"].measured == 1000.0
