@@ -53,9 +53,21 @@ def test_unfiltered_drawing_would_violate_cps_and_line_length():
     assert "line_length" in kinds
 
 
-def test_comment_line_would_be_spec_checked_if_kept():
-    """주석 줄은 화면에 안 나오는데 필터가 없으면 규격 검사를 받는다."""
+def test_unfiltered_comment_would_inflate_segment_count():
+    """주석을 안 거르면 세그먼트 수가 부풀고, 그것이 검수 비율의 분모를 오염시킨다.
+
+    **실측(`ko` 프로파일): `tags.ass`의 주석 줄은 폭 9.5 · CPS 4.75로 규격 위반을
+    내지 않는다**(한계 16.0 · 12.0). 즉 주석의 해악은 규격 위반이 아니라 **개수**다 —
+    화면에 나오지 않는 줄이 세그먼트로 세어지면 전체 세그먼트 수가 부풀고,
+    `review_ratio()`의 분모가 커져 무작위 대비 배수가 왜곡된다(FR-6.3).
+
+    마지막 단언이 이 테스트의 전제를 고정한다. 픽스처의 주석 텍스트를 길게 바꿔
+    규격 위반이 나기 시작하면 여기가 먼저 깨지고, 위 서술이 낡았음을 알린다.
+    """
     result = load_subtitle(FIXTURES / "tags.ass")
 
+    assert len(result.subs) == 4
+    assert len(result.segments) == 2
+
     comment = next(e for e in result.subs if e.is_comment)
-    assert comment.plaintext not in [s.source_text for s in result.segments]
+    assert check_text(comment.plaintext, comment.duration, load_builtin("ko")) == []
