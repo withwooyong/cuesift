@@ -44,19 +44,57 @@ README 최상단에 들어갈 숫자는 **무작위 베이스라인 대비 배�
 
 **Python 실행은 반드시 `.venv/Scripts/python.exe`를 쓴다.** 시스템 Python은 3.14라 다르다.
 
+**로컬 게이트는 CI가 돌리는 명령과 대상이 같아야 한다.** 아래는 `.github/workflows/ci.yml`에서
+그대로 옮긴 것이다 — 임의로 좁히지 말 것.
+
 ```bash
-.venv/Scripts/python.exe -m pytest -q
-.venv/Scripts/python.exe -m ruff check src tests
-.venv/Scripts/python.exe -m ruff format --check src tests
+.venv/Scripts/python.exe -m ruff check .
+.venv/Scripts/python.exe -m ruff format --check .
+.venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 python scripts/check_links.py
 npx --yes markdownlint-cli2
 ```
+
+**`src tests`로 좁히면 안 된다.** 2026-07-29부터 8월 1일까지 CI가 **5회 연속 실패**했는데
+아무도 몰랐다 — 로컬은 `ruff format --check src tests`를 돌려 통과했고 CI는 `.`을 돌려
+실패했다. 원인은 ruff 0.16이 마크다운의 파이썬 코드 블록을 포매팅 대상에 넣은 것이었고,
+지금은 `[tool.ruff.format] exclude = ["*.md"]`로 닫혀 있다.
+**"통과했나"가 아니라 "무엇을 대상으로 통과했나"가 이 사건의 교훈이다.**
 
 **의존성은 고정이다.** 런타임 4개(`typer`·`pysubs2`·`pyyaml`·`httpx`), dev 3개(`pytest`·`pytest-cov`·`ruff`).
 추가하지 않는다 — `scripts/check_links.py`가 표준 라이브러리만 쓰는 것도 같은 이유다.
 
 CI는 3잡이다: `test 3.11` · `test 3.12` · `docs`(markdownlint + 링크 검사).
 로컬 venv는 3.14라 **CI와 다른 버전에서 테스트한다**는 점에 유의할 것.
+
+## PR 절차 — 작업 패키지 단위
+
+**PR은 리뷰를 받기 위한 것이 아니라 게이트와 기록을 위한 것이다.** 이 구분이 절차를 정한다.
+혼자 개발해도 아래 넷은 유효하다.
+
+| 목적 | 혼자일 때 |
+| --- | --- |
+| 남의 리뷰를 받는다 | ❌ 무효 — 리뷰어가 없다 |
+| **CI를 머지 전에 돌린다** | ✅ 유효 — `test 3.11`·`test 3.12`·`docs`가 로컬 3.14와 다른 것을 검증한다 |
+| **변경 묶음의 서술을 남긴다** | ✅ 유효 — 커밋 여러 개를 "무엇을 왜"로 요약한 문서가 생긴다 |
+| **되돌리기 단위를 만든다** | ✅ 유효 — "이 PR을 revert"가 한 번에 된다 |
+| **미래의 자신에게 설명한다** | ✅ 유효 — 6개월 뒤엔 남이다 |
+
+```bash
+git checkout -b feat/xxx          # 1. 브랜치를 판다
+# ... 작업하고 커밋 ...
+git push -u origin feat/xxx       # 2. 푸시
+gh pr create --base main          # 3. PR 생성
+gh pr checks --watch              # 4. CI 통과 대기
+gh pr merge --squash              # 5. 머지 (또는 --merge)
+git checkout main && git pull && git branch -d feat/xxx   # 6. 로컬 정리
+```
+
+**`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거는 `branches: [main]`뿐이라
+직접 푸시하면 **머지된 뒤에야** CI가 돈다 — 게이트가 아니라 사후 통보가 된다.
+5회 연속 실패가 숨은 것이 정확히 이 구조 때문이다.
+
+PR 본문에는 **무엇을 · 근거 문서 · 게이트 수치**를 담는다. 게이트 수치는 개수를 그대로 적는다.
 
 ## 코드 규약
 
