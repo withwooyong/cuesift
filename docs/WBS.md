@@ -46,7 +46,7 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 | **3** | 융합·검출 정정 | 6.1 · 3.4 | ✅ | S | 1·2 | `risk/fuse.py` noisy-or · `signals/structural.py` NFKC · `bench/results/` 재측정 (`2314fc6`·`78921d4`·`57bbded`) |
 | **4** | 인제스트 | 1.1 · 1.3 · 1.5 | ✅ | S | — | `src/cuesift/ingest/{__init__,loader}.py` · `tests/fixtures/ingest/`(픽스처 10종) · `tests/test_ingest.py` · `tests/test_ingest_fixtures.py` · `tests/test_ingest_contamination.py` (`42a126f`·`bb105b7`·`be51706`·`52acf5b`·`d51cb3c`·`1cbc21a`·`26f7517`·`6ad9366`) |
 | **5** | 출력 | 7.1~7.5 | ⬜ | M | 4 | `review.json` · `report.html` · 요약 통계 |
-| **6** | CLI 배선 | 8.1~8.5 | ⬜ | M | 4·5 | `cli.py` 실동작 · `cuesift.yaml` 로더 |
+| **6** | CLI 배선 | 8.1~8.5 | ⬜ | M | 4·5 | `cli.py` 실동작 · `cuesift.yaml` 로더. **FR-8.2 부분은 설계 확정** — [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) |
 | **7** | 번역 계층 | 2.1~2.8 | ⬜ | L | 4 | `src/cuesift/translate/` — LLM 어댑터·컨텍스트 윈도우·재개 |
 | **8** | Tier 1 신호 | 4.1~4.3 | ⬜ | M | 7 | 자가일관성 N회 호출 · 역번역 · 적용 상한 |
 | **9** | STT | 1.2 · 1.4 | ⬜ | M | 4 | Whisper 계열 어댑터 · `원문 검수 필요` 플래그 |
@@ -119,7 +119,7 @@ v0.1 전체를 기다리지 않고 중간 산출물을 낼 수 있는 유일한 
 | --- | --- | --- |
 | ~~1~~ | ~~WP3~~ | ✅ 완료 (2026-07-29). 벤치 컨텍스트가 살아 있을 때 끝냈다 |
 | ~~2~~ | ~~WP4~~ | ✅ 완료 (2026-08-01). 병목이 풀려 WP5·WP7·WP9가 착수 가능해졌다 |
-| 1 | WP6 부분 (FR-8.2 `check`) | 최초로 **쓸 수 있는 제품**이 나온다 |
+| 1 | WP6 부분 (FR-8.2 `check`) | 최초로 **쓸 수 있는 제품**이 나온다. 설계 확정(2026-08-03) — 구현 계획 대기 |
 | 2 | WP7 → WP8 | Tier 1은 번역 계층 없이는 만들 수 없다. Q4가 여기서 닫힌다 |
 | 3 | WP5 → WP6 전체 | 리포트와 나머지 서브커맨드 |
 | 4 | WP9 | STT는 FR-1.3이 "자막 우선"이라 마지막이어도 S1이 성립한다 |
