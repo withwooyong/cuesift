@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from typer.testing import CliRunner
 
 from cuesift.cli import (
     _format_detail,
+    _format_ratio,
     _format_report,
     _format_timecode,
     _harden_output_streams,
@@ -276,6 +278,43 @@ def test_format_detail_renders_duration_long_with_the_opposite_sign():
     assert _format_detail(SpecViolation("duration_short", 500.0, 833.0)) == "500ms < 833ms"
 
 
+def test_a_nonzero_violation_ratio_never_prints_as_zero():
+    """2001큐 중 1개는 0.049%다 — `f"{x:.1f}%"`면 `0.0%`가 된다.
+
+    이 저장소는 "0으로 보이는 수치"를 1급 결함으로 취급한다. 검수자가 위반 목록을
+    눈앞에 두고 요약만 보면 "0%니까 통과"로 읽는다.
+
+    **경계를 값으로 지나간다** — 0.05% 미만만 `<0.1%`이고 그 이상은 반올림 표기다.
+    """
+    assert _format_ratio(0.0) == "0.0%"
+    assert _format_ratio(1 / 2001 * 100) == "<0.1%"
+    assert _format_ratio(0.049) == "<0.1%"
+    assert _format_ratio(0.05) == "0.1%"
+    assert _format_ratio(100.0) == "100.0%"
+
+
+def test_format_report_prints_a_tiny_ratio_as_less_than_a_tenth():
+    """`_format_ratio`가 실제로 리포트에 걸려 있는지 본다 — 순수 함수만 테스트하면
+    호출부가 옛 포맷을 그대로 써도 통과한다.
+    """
+    event_index = {f"{i:05d}": i for i in range(2001)}
+    violations = [TrackViolation("00000", 1000, SpecViolation("empty_cue", 0.0, 0.0))]
+
+    body = "\n".join(
+        _format_report(
+            source_name="big.srt",
+            fmt="srt",
+            profile_label="ko",
+            cue_total=2001,
+            violations=violations,
+            event_index=event_index,
+        )
+    )
+
+    assert "위반 1건 · 위반 큐 1/2001개 (<0.1%)" in body
+    assert "(0.0%)" not in body
+
+
 def test_format_report_denominator_stays_the_filtered_cue_count():
     """`검사 큐 N개`가 아래의 `#N`보다 작은 것은 정상이다 — 분모를 바꾸면 안 된다.
 
@@ -457,6 +496,85 @@ def test_an_unreadable_file_exits_66_not_1(monkeypatch):
     result = runner.invoke(app, ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko"])
 
     assert result.exit_code == 66, f"exit {result.exit_code} — 1이면 규격 위반으로 오보된다"
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["12바이트", "events 키 없음", "events가 null", "다른 도구 스키마", "styles가 리스트"],
+)
+def test_json_shaped_garbage_exits_66_not_1(tmp_path, label: str):
+    """`{"info": {}}` 12바이트가 exit 1을 내면 자막 결함으로 오보된다.
+
+    pysubs2가 JSON을 **내용으로** 판별하므로 확장자로 막을 수 없다.
+    자세한 근거는 `test_ingest.py`의 같은 이름 계열 테스트에 있다.
+    """
+    payloads = {
+        "12바이트": '{"info": {}}',
+        "events 키 없음": '{"info": {}, "styles": {}}',
+        "events가 null": '{"info": {}, "styles": {}, "events": null}',
+        "다른 도구 스키마": '{"info": {}, "styles": {}, "events": [{"begin": 0, "end": 1}]}',
+        "styles가 리스트": '{"info": {}, "styles": [], "events": []}',
+    }
+    target = tmp_path / "input.json"
+    target.write_text(payloads[label], encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    assert result.exit_code == 66, f"exit {result.exit_code} — 1이면 규격 위반으로 오보된다"
+
+
+def test_json_shaped_garbage_named_srt_also_exits_66(tmp_path):
+    """확장자를 믿을 수 없다는 것을 CLI 층에서도 고정한다."""
+    target = tmp_path / "looks_like_a_subtitle.srt"
+    target.write_text('{"info": {}}', encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    assert result.exit_code == 66
+
+
+def test_permission_denied_at_the_access_gate_exits_66_not_2(tmp_path, monkeypatch):
+    """`os.access` 관문에서 걸려도 66이어야 한다 — 66/2가 플랫폼에 따라 갈리면 안 된다.
+
+    typer의 `TyperPath`는 `readable=True`(기본값)일 때 **본문에 닿기 전에**
+    `os.access(path, os.R_OK)`를 본다(`typer/models.py:729`). 그래서 POSIX의
+    `chmod 000` 파일은 66이 아니라 **2**로 나가고, Windows의 배타 잠금은
+    `os.access`를 통과해 66으로 나간다 — **같은 사고가 플랫폼마다 다른 코드를 낸다.**
+
+    `cli.py` 모듈 독스트링의 표가 이미 "읽을 수 없음 = 66"이라고 단언하므로
+    `readable=False`로 관문을 열어 판정을 인제스트 한 곳으로 모은다.
+
+    `test_an_unreadable_file_exits_66_not_1`은 `pysubs2.load`만 갈아 끼우므로
+    **관문을 통과한 뒤**를 본다. 그 테스트만으로는 이 분기가 검증되지 않는다 —
+    Linux CI에서 초록인데 실제 트리거는 2를 내는 상태가 그대로 남는다.
+    `os.access`를 monkeypatch하는 것이 플랫폼과 무관하게 관문 자체를 겨냥한다.
+    """
+    import pysubs2
+
+    target = tmp_path / "locked.srt"
+    target.write_bytes((FIXTURES / "minimal.srt").read_bytes())
+
+    # POSIX의 mode 000 파일을 두 층에서 그대로 흉내낸다. 한쪽만 흉내내면 반쪽짜리다 —
+    # `os.access`만 막으면 관문 통과 후 파일이 멀쩡히 읽혀 exit 0이 나고,
+    # `pysubs2.load`만 막으면 관문을 통과하는지를 보지 못한다.
+    real_access = os.access
+
+    def deny_read(path, mode, *args, **kwargs):
+        if mode == os.R_OK and Path(path) == target:
+            return False
+        return real_access(path, mode, *args, **kwargs)
+
+    def raise_permission_error(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "access", deny_read)
+    monkeypatch.setattr(pysubs2, "load", raise_permission_error)
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    # `readable=True`로 되돌리면 typer가 관문에서 걸러 2가 된다.
+    # `OSError` 정규화를 지우면 미처리 traceback으로 1이 된다. 둘 다 이 단언이 잡는다.
+    assert result.exit_code == 66, f"exit {result.exit_code} — 2면 '명령줄이 틀림'으로 오보된다"
 
 
 def test_violations_go_to_stdout_and_diagnostics_go_to_stderr():

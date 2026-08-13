@@ -21,11 +21,13 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import IO, Annotated
 
 import typer
 
@@ -104,12 +106,21 @@ def _harden_output_streams() -> None:
     **em dash 금지는 우리가 쓰는 리터럴만 통제하고 사용자 입력이 흐르는 이 경로는
     못 막는다.** 그래서 규칙이 아니라 스트림 설정으로 닫는다.
 
-    **`check()`가 아니라 그룹 콜백에서 부르는 이유**는 종료 코드 2가 여기 걸려 있기
-    때문이다. `exists=True` 위반 메시지는 click이 렌더하는데, 그 렌더는 서브커맨드
-    본문보다 **먼저** 일어난다(실측: 그룹 콜백 → 인자 검증 → 본문). `check()` 안에서
-    부르면 exit 2 경로는 이미 지나간 뒤라 손대지 못하고, 없는 파일 이름에 é가 있으면
-    2가 아니라 1이 나간다. stderr까지 함께 거는 것은 `IngestError` 메시지가 경로를
-    담아 stderr로 나가기 때문이다 — 그쪽이 죽으면 66이 1로 바뀐다.
+    **하중을 받는 것은 stdout 하나뿐이다.** 4방향 변이로 실측한 결과, 이 함수를 통째로
+    꺼도 깨지는 것은 `typer.echo`가 stdout에 쓰는 경로뿐이었다. stderr 경로(exit 66의
+    `IngestError` 메시지)와 click의 오류 렌더(exit 2)는 **click이 자기 스트림에 이미
+    `backslashreplace`를 걸어** 하드닝 없이도 통과한다.
+
+    그럼에도 stderr까지 걸고 `check()`가 아니라 그룹 콜백에서 부르는 이유는 둘이다.
+
+    1. click 내부 동작에 기대는 것은 이 저장소가 반복해 지적한 "열거는 계약이 아니라
+       관찰"과 같은 형태다. click이 stderr를 언제까지 감싸 줄지는 우리 계약이 아니다.
+    2. `translate`·`transcribe`가 구현되면 같은 문제를 각자 다시 풀어야 한다.
+
+    그룹 콜백은 서브커맨드 인자 검증보다 먼저 돈다(실측: 콜백 → 인자 검증 → 본문).
+    **다만 `--help`·`--version`은 eager 옵션이라 콜백보다도 먼저 렌더되므로 여기가
+    닿지 않는다** — 그쪽은 리터럴에서 em dash를 빼는 것으로만 막을 수 있고,
+    `test_help_output_is_encodable_in_the_cp949_locale`이 그것을 고정한다.
 
     `reconfigure`가 없는 스트림은 건너뛴다. `io.StringIO`로 stdout을 갈아 끼우고
     `app()`을 부르는 호출자가 있으면 `AttributeError`로 죽는데, 그것이야말로 이
@@ -119,6 +130,67 @@ def _harden_output_streams() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(errors="backslashreplace")
+
+
+# 하류가 파이프를 먼저 닫았을 때 나오는 errno. **플랫폼마다 다른 것이 함정이다.**
+# POSIX는 `BrokenPipeError`(EPIPE)지만 **Windows는 평범한 `OSError` errno 22(EINVAL)**이고
+# `isinstance(exc, BrokenPipeError)`가 False다(실측). `except BrokenPipeError`만 다는 해법은
+# Linux에서만 동작하고 개발 플랫폼에서는 조용히 안 먹는다.
+#
+# **`OSError`를 통째로 삼키지 않는 이유**는 디스크 가득 참(ENOSPC)이다. 리다이렉트 중
+# ENOSPC를 삼키면 잘린 출력이 종료 코드 0으로 나가 "검사하지 않고 통과하는 게이트"가 된다.
+_CLOSED_OUTPUT_ERRNOS = frozenset({errno.EPIPE, errno.EINVAL})
+
+
+def _is_closed_output(exc: OSError) -> bool:
+    """하류가 먼저 닫은 파이프인가. 그것은 오류가 아니라 `head`·`less`의 정상 동작이다."""
+    return exc.errno in _CLOSED_OUTPUT_ERRNOS
+
+
+def _discard_stream(stream: IO[str]) -> None:
+    """스트림의 fd를 `os.devnull`로 갈아 끼워 이후 쓰기를 무해하게 만든다.
+
+    **이것이 없으면 종료 코드가 120으로 덮인다.** 방출 지점에서 예외를 삼켜도
+    인터프리터가 종료할 때 `sys.stdout`을 다시 flush하고, 그 flush가 터지면 CPython이
+    "Exception ignored"를 찍고 **120으로 끝낸다**(실측: 그대로 두면 120, dup2하면 0).
+    파이썬 객체를 바꾸는 것으로는 부족하고 **fd 자체**를 갈아 끼워야 하는 이유가 그것이다.
+
+    **실패한 스트림만 넘겨야 한다.** stdout이 파이프이고 stderr가 터미널인
+    `cuesift check bad.srt --spec ko | head -1`에서 stderr까지 죽이면
+    사용자가 진단 메시지를 잃는다.
+
+    fd가 없는 스트림(`CliRunner`의 인메모리 래퍼, `io.StringIO`)은 건너뛴다 —
+    `fileno()`가 `io.UnsupportedOperation`을 내는데 그것은 `OSError`이자 `ValueError`다.
+    """
+    try:
+        fileno = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return
+
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+    except OSError:  # pragma: no cover - devnull을 못 여는 환경은 재현 수단이 없다
+        return
+    try:
+        os.dup2(devnull, fileno)
+    finally:
+        os.close(devnull)
+
+
+def _echo(message: str = "", *, err: bool = False) -> None:
+    """파이프가 닫혀도 **종료 코드를 지키며** 출력한다.
+
+    닫힌 파이프에서 예외가 커맨드 본문을 빠져나가면 `check()`가 `typer.Exit(1)`에
+    도달하지 못해 **위반을 찾고도 종료 코드가 1이 아니게 된다.** 그래서 삼키는 위치가
+    진입점이 아니라 여기여야 한다 — 진입점은 이미 "어떤 코드였어야 하는가"를 모른다.
+    """
+    stream = sys.stderr if err else sys.stdout
+    try:
+        typer.echo(message, err=err)
+    except OSError as exc:
+        if not _is_closed_output(exc):
+            raise
+        _discard_stream(stream)
 
 
 @app.callback()
@@ -200,6 +272,12 @@ def _resolve_profile(spec: str) -> tuple[SpecProfile, str]:
 
 
 # duration_short가 14자로 가장 길다. 한 칸을 더 둬야 수치와 붙지 않는다.
+#
+# **이 폭이 정렬을 지탱하는 것은 kind 7종이 전부 ASCII이기 때문이다.** `f"{kind:<15}"`는
+# **글자 수**로 패딩하는데 터미널은 **표시 폭**으로 그린다. 한글 kind(예: `줄길이초과`)를
+# 추가하면 5글자가 10칸을 차지해 그 줄만 5칸 밀리고, **부분 문자열 단언은 밀린 줄도
+# 통과시키므로 어느 테스트도 울리지 않는다.** 새 kind는 ASCII로 짓거나, 그럴 수 없다면
+# `spec/counting.py`의 `text_width`로 폭을 재서 패딩해야 한다.
 _KIND_WIDTH = 15
 
 
@@ -214,6 +292,20 @@ def _format_timecode(ms: int) -> str:
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _format_ratio(percent: float) -> str:
+    """위반 큐 비율을 적는다. **0이 아닌데 `0.0%`로 보이면 안 된다.**
+
+    `f"{x:.1f}%"`는 2001큐 중 1개(0.049%)를 `0.0%`로 떨어뜨린다. 이 저장소는 "0으로 보이는
+    수치"를 1급 결함으로 취급한다 — 검수자가 위반 목록을 눈앞에 두고 요약만 보면
+    "0%니까 통과"로 읽는다. 자릿수를 늘리는 대신 `<0.1%`로 적어 **0이 아님을 말한다.**
+
+    반올림이 아니라 절단으로 판정하는 이유는 0.04%와 0.06%가 모두 0이 아니기 때문이다.
+    """
+    if percent > 0 and percent < 0.05:
+        return "<0.1%"
+    return f"{percent:.1f}%"
 
 
 def _format_detail(violation: SpecViolation) -> str:
@@ -276,8 +368,11 @@ def _format_report(
     # 폭이 모자라면 자릿수가 큰 줄부터 뒤 열이 통째로 오른쪽으로 밀린다.
     cue_width = len(str(max(event_index.values(), default=0) + 1))
     for track_violation in violations:
-        # 원본 파일의 큐 번호다. `segment.index + 1`이 아니다 — 필터가 인덱스를
-        # 재부여하므로 주석이 있는 파일에서 둘이 갈라진다(설계 §4.1).
+        # **원본 파일의 "이벤트 순번"이지 SRT에 인쇄된 번호가 아니다.**
+        # `segment.index + 1`이 아닌 것은 맞다 — 필터가 인덱스를 재부여하므로 주석이 있는
+        # 파일에서 둘이 갈라진다(설계 §4.1). 다만 거기까지다: pysubs2가 SRT의 인쇄 번호를
+        # 버리므로 번호가 `1,2,4,5`인 파일(3번이 지워진 파일)에서는 파일의 `4`를 `#3`으로
+        # 부른다. 진짜 대응은 인쇄 번호를 보존해야 하고 v0.1 범위 밖이다.
         cue = event_index[track_violation.segment_id] + 1
         stamp = _format_timecode(track_violation.start_ms)
         kind = f"{track_violation.violation.kind:<{_KIND_WIDTH}}"
@@ -288,15 +383,30 @@ def _format_report(
     flagged = len({tv.segment_id for tv in violations})
     ratio = flagged / cue_total * 100 if cue_total else 0.0
     lines.append("")
-    lines.append(f"위반 {len(violations)}건 · 위반 큐 {flagged}/{cue_total}개 ({ratio:.1f}%)")
+    share = _format_ratio(ratio)
+    lines.append(f"위반 {len(violations)}건 · 위반 큐 {flagged}/{cue_total}개 ({share})")
     return lines
 
 
+# **아래 독스트링은 `cuesift check --help`의 첫 화면에 그대로 뜬다** — typer가 커맨드
+# 독스트링 **전체**를 help로 만든다. 그래서 설계 근거는 독스트링이 아니라 여기 둔다.
+# 사용자에게 `collect_all`·`fuse`·`triage`·`설계 D3`를 보여 줄 이유가 없다.
+#
+# **`check`는 신호 엔진을 통과하지 않는다**(설계 D3). `collect_all`→`fuse`→`triage`가
+# 얹는 넷(점수화·hard_fail·융합·트리아지)을 이 명령이 하나도 쓰지 않기 때문이다.
+# 심각도가 단일 등급이고 예산도 순위도 없다. 규격 판정의 원천은 `spec/check.py` 하나이고
+# translate 경로와 여기가 양쪽 다 그것을 쓴다.
 @app.command()
 def check(
     input: Annotated[
         Path,
-        typer.Argument(exists=True, dir_okay=False, help="검사할 자막 파일"),
+        # `readable=False`는 typer의 기본 `readable=True`를 끈다. 켜져 있으면 typer가
+        # 본문에 닿기 전에 `os.access(path, os.R_OK)`를 보고(`typer/models.py`)
+        # **읽을 수 없는 파일을 종료 코드 2로 낸다.** POSIX의 mode 000은 거기서 걸리고
+        # Windows의 배타 잠금은 `os.access`를 통과해 66이 되므로, 켜 두면 **같은 사고가
+        # 플랫폼마다 다른 코드**를 낸다. 위 표가 "읽을 수 없음 = 66"이라고 단언하므로
+        # 판정을 인제스트 한 곳으로 모은다.
+        typer.Argument(exists=True, dir_okay=False, readable=False, help="검사할 자막 파일"),
     ],
     spec: Annotated[
         str,
@@ -305,16 +415,13 @@ def check(
     fail_on: Annotated[
         FailOn,
         # help 문자열은 `--help`로 출력되므로 em dash를 쓰지 않는다(전역 제약).
-        typer.Option("--fail-on", help="hard와 any는 v0.1에서 같다. 위반 1건이면 종료 코드 1"),
+        typer.Option(
+            "--fail-on",
+            help="hard와 any는 v0.1에서 같다. 위반 1건이면 종료 코드 1. none은 보고만 하고 항상 0",
+        ),
     ] = FailOn.hard,
 ) -> None:
-    """FR-8.2: 자막 규격 검사만 수행합니다 (CI 게이트).
-
-    **신호 엔진을 통과하지 않는다**(설계 D3). `collect_all`→`fuse`→`triage`가
-    얹는 넷(점수화·hard_fail·융합·트리아지)을 이 명령이 하나도 쓰지 않기
-    때문이다. 심각도가 단일 등급이고 예산도 순위도 없다. 규격 판정의 원천은
-    `spec/check.py` 하나이고 translate 경로와 여기가 양쪽 다 그것을 쓴다.
-    """
+    """FR-8.2: 자막 규격 검사만 수행합니다 (CI 게이트)."""
     # `_resolve_profile`은 프로파일과 **표시용 라벨**을 함께 낸다. 라벨이 따로 필요한 것은
     # `profile.name`이 YAML의 `name` 필드라서, `--spec ./our-spec.yaml`인데 그 파일이
     # `name: ko`면 헤더가 내장 `ko`로 검사한 것과 **바이트 단위로 같아지기** 때문이다.
@@ -330,7 +437,7 @@ def check(
         # 타입으로 모으기 때문이다 — `OSError`까지 포함한다. 여기서 예외를 열거하기
         # 시작하면 로더가 새 실패를 낼 때마다 뒤처지고, 샌 예외는 미처리 traceback으로
         # 종료 코드 1이 되어 "규격 위반 발견"으로 오보된다.
-        typer.echo(str(exc), err=True)
+        _echo(str(exc), err=True)
         raise typer.Exit(EXIT_BAD_INPUT) from exc
 
     violations = check_track(result.segments, profile)
@@ -349,7 +456,7 @@ def check(
         violations=violations,
         event_index=result.event_index,
     ):
-        typer.echo(line)
+        _echo(line)
 
     if violations and fail_on is not FailOn.none:
         raise typer.Exit(1)
@@ -364,5 +471,43 @@ def transcribe(
     _not_implemented("transcribe")
 
 
+def run() -> None:
+    """콘솔 스크립트 진입점 (`pyproject.toml`의 `[project.scripts]`).
+
+    **`app`을 직접 진입점으로 두면 `cuesift --help | less`가 종료 코드 120을 낸다.**
+    `--help`·`--version`·사용법 오류의 출력은 click이 쓰므로 `_echo`가 닿지 않고,
+    커맨드 본문이 끝난 뒤의 인터프리터 종료 flush도 마찬가지다. 그 둘을 여기서 받는다.
+
+    **두 층이 각각 다른 것을 지킨다** — 하나로는 부족하다.
+
+    | 층 | 위치 | 지키는 것 |
+    | --- | --- | --- |
+    | 1 | `_echo` (커맨드 본문) | **종료 코드의 값.** 위반을 찾았으면 1로 끝나야 한다 |
+    | 2 | 여기 | **종료 코드가 덮이지 않는 것.** 종료 flush가 120으로 바꾸는 것을 막는다 |
+
+    `check`의 계약 코드(0·1·2·66)는 1층이 본문 안에서 지키므로 아래 `except`까지
+    오지 않는다. 여기 도달하는 것은 커맨드가 코드를 정하기 전에 출력이 끊긴 경우
+    (`--help | head -1` 등)뿐이고, 그때는 **하류가 원하는 만큼 받고 닫은 것**이므로 0이다.
+    """
+    try:
+        app()
+    except OSError as exc:
+        if not _is_closed_output(exc):
+            raise
+        _discard_stream(sys.stdout)
+        _discard_stream(sys.stderr)
+        raise SystemExit(0) from None
+    finally:
+        # 버퍼에 남은 것을 여기서 흘려보낸다. 실패하면 fd를 devnull로 바꿔 두어
+        # **인터프리터의 마지막 flush가 120을 만들지 못하게** 한다.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except OSError as exc:
+                if not _is_closed_output(exc):
+                    raise
+                _discard_stream(stream)
+
+
 if __name__ == "__main__":  # pragma: no cover
-    sys.exit(app())
+    run()

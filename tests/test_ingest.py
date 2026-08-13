@@ -123,6 +123,50 @@ def test_non_subtitle_text_raises_parse():
     assert exc.value.reason == "parse"
 
 
+# pysubs2의 JSON 포맷은 **내용으로** 판별된다 — `text.startswith('{"') and '"info":' in text`.
+# 따라서 확장자로는 막을 수 없고, 스키마가 조금이라도 어긋나면 파서가 KeyError·TypeError·
+# AttributeError를 낸다. 이것들은 Pysubs2Error도 ValueError도 아니다.
+_JSON_SHAPED = {
+    "12바이트": '{"info": {}}',
+    "events 키 없음": '{"info": {}, "styles": {}}',
+    "events가 null": '{"info": {}, "styles": {}, "events": null}',
+    "다른 도구 스키마": '{"info": {}, "styles": {}, "events": [{"begin": 0, "end": 1}]}',
+    "styles가 리스트": '{"info": {}, "styles": [], "events": []}',
+}
+
+
+@pytest.mark.parametrize("label", list(_JSON_SHAPED))
+def test_json_shaped_files_raise_ingest_error_not_a_bare_keyerror(tmp_path, label: str):
+    """JSON처럼 생긴 파일이 `IngestError` 밖으로 새면 안 된다 (설계 §5).
+
+    `_load`의 `except (Pysubs2Error, ValueError)`는 pysubs2의 JSON 파서가 내는
+    `KeyError`·`TypeError`·`AttributeError`를 **하나도 못 잡는다.** 새면 호출자의
+    `except IngestError`도 통과해 미처리 traceback이 되고 종료 코드 1이 된다 —
+    1은 "규격 위반 발견"이라 **12바이트짜리 쓰레기 파일이 자막 결함으로 오보된다.**
+
+    `tmp_path`에 내용을 직접 쓰는 것은 이 입력들이 자막 픽스처가 아니라 **퇴화 입력**이라
+    파일로 두면 `test_ingest_fixtures.py`의 목록만 6줄 늘고 내용은 안 보이기 때문이다.
+    """
+    target = tmp_path / "input.json"
+    target.write_text(_JSON_SHAPED[label], encoding="utf-8")
+
+    with pytest.raises(IngestError):
+        load_subtitle(target)
+
+
+def test_json_detection_ignores_the_extension(tmp_path):
+    """확장자로 막을 수 없다는 것이 이 결함의 핵심이다.
+
+    pysubs2는 **내용**으로 포맷을 고르므로 `.srt` 이름을 붙여도 JSON 파서로 간다.
+    확장자 화이트리스트를 대책으로 삼으면 이 경로가 그대로 열린 채 남는다.
+    """
+    target = tmp_path / "looks_like_a_subtitle.srt"
+    target.write_text('{"info": {}}', encoding="utf-8")
+
+    with pytest.raises(IngestError):
+        load_subtitle(target)
+
+
 def test_unreadable_file_raises_unreadable_not_a_bare_oserror(tmp_path):
     """읽을 수 없는 파일도 `IngestError`로 모은다 (설계 §5).
 

@@ -125,6 +125,23 @@ def _load(path: Path) -> pysubs2.SSAFile:
         ) from exc
     except (Pysubs2Error, ValueError) as exc:
         raise IngestError("parse", f"{path}: 자막으로 해석할 수 없다 - {exc}") from exc
+    except Exception as exc:
+        # **`except Exception`이 여기 있는 이유는 이 줄이 외부 라이브러리 경계이기 때문이다.**
+        # 우리 코드에 쓰면 프로그래밍 오류를 숨기지만, `pysubs2.load` **한 줄**에 쓰면
+        # "남의 파서가 무엇을 던지든 그것은 파싱 실패다"라는 정확한 계약이 된다.
+        #
+        # 열거로는 못 닫힌다는 것이 실측됐다 — pysubs2의 JSON 포맷은 내용으로 판별되는데
+        # (`{"` 로 시작하고 `"info":` 포함) 스키마가 어긋나면 `KeyError`·`TypeError`·
+        # `AttributeError`를 낸다. 셋 다 `Pysubs2Error`도 `ValueError`도 아니다.
+        # `{"info": {}}` **12바이트**면 충분하고 `.srt` 이름을 붙여도 같다.
+        # 위 절들을 남겨 둔 것은 reason과 메시지가 다르기 때문이지 그것들로 충분해서가 아니다.
+        #
+        # **`try` 범위를 넓히면 안 된다.** `_to_segments` 같은 우리 코드가 이 안에 들어오면
+        # 진짜 버그가 `parse` 오류로 뭉개져 영원히 안 보인다.
+        raise IngestError(
+            "parse",
+            f"{path}: 자막으로 해석할 수 없다 - {type(exc).__name__}: {exc}",
+        ) from exc
 
 
 def _reject_non_subtitle(path: Path) -> None:

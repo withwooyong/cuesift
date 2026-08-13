@@ -38,8 +38,11 @@ class TrackViolation:
 
     **큐 번호를 담지 않는 것이 계약이다.** 큐 번호는 `IngestResult.event_index`가
     있어야 계산되는데(필터가 세그먼트 인덱스를 재부여하므로 `segment.index + 1`은
-    원본 파일의 큐 번호가 아니다), 그것을 받으면 이 모듈이 인제스트 결과 구조에
+    원본 파일의 이벤트 순번이 아니다), 그것을 받으면 이 모듈이 인제스트 결과 구조에
     묶여 첫 줄의 "이 모듈은 순수하다"가 깨진다. 큐 번호는 `cli.py`가 붙인다.
+
+    `event_index`가 주는 것도 **이벤트 순번이지 SRT에 인쇄된 번호가 아니다** —
+    pysubs2가 인쇄 번호를 버린다. 자세한 근거는 `cli.py`의 `_format_report`에 있다.
     """
 
     segment_id: str

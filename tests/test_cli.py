@@ -75,7 +75,9 @@ def test_fail_on_accepts_the_documented_values():
             app,
             ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko", "--fail-on", value],
         )
-        assert result.exit_code != 2, f"--fail-on {value} 가 파싱되지 않았다"
+        # `!= 2`는 check가 골격이던 시절의 단언이다. 이제 세 값 모두 깨끗한 파일에서
+        # 정확히 0이므로 좁힌다 — `!= 2`는 70·1·66도 통과시켜 판별력이 거의 없다.
+        assert result.exit_code == 0, f"--fail-on {value} 가 파싱되지 않았다"
 
 
 def test_fail_on_rejects_the_removed_values():
