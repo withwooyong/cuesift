@@ -145,21 +145,36 @@ def check_empty_cues(segments: Sequence[Segment]) -> dict[str, SpecViolation]:
 
 
 def check_track(segments: Sequence[Segment], profile: SpecProfile) -> list[TrackViolation]:
-    """트랙 전체를 검사해 위반을 세그먼트 순서로 반환한다 (FR-5.1·설계 §4).
+    """트랙 전체를 검사해 위반을 리스트 순서로 반환한다 (FR-5.1·설계 §4).
 
-    **정렬 기준이 세그먼트 순서인 것은 사람이 파일을 위에서 아래로 읽기 때문이다.**
+    **정렬 기준이 리스트 순서인 것은 사람이 파일을 위에서 아래로 읽기 때문이다.**
     심각도 순으로 정렬하면 같은 큐의 위반들이 흩어져 파일에서 찾기 어려워진다.
     v0.1에는 심각도 등급 자체가 없기도 하다(설계 §5.1).
 
     새 규격 판정이 생기면 여기에 함께 넣는 것이 규약이다 — `check` 경로가
     신호 엔진을 통과하지 않으므로(설계 D3) 이 함수가 규격 판정의 집결지다.
+
+    전제 둘을 명시한다.
+
+    **`seg.id`가 트랙 안에서 유일하다고 전제한다.** `check_overlaps`·`check_empty_cues`가
+    id로 키잉한 dict를 돌려주므로, id가 중복되면 한 큐의 위반이 같은 id를 가진 **모든**
+    큐에 복제된다 — 위반이 없는 큐에도 붙고 그쪽 타임코드는 틀린 값이 된다.
+    인제스트는 `f"{index:05d}"`로 부여해 안전하지만 `bench/`는 `Segment`를 직접 만든다.
+
+    **리스트 순서가 시간 순서와 다를 수 있다.** 인제스트가 정렬하지 않으므로 리스트 순서가
+    곧 파일 순서다. 따라서 출력의 타임코드는 비단조일 수 있고 **그것이 옳다** —
+    `start_ms`로 정렬해 "고치면" 리포트가 파일과 다른 순서로 나와 검수자가 큐를 못 찾는다.
     """
+    # 입력을 3회 순회한다(겹침·빈 큐·본체 루프). 제너레이터를 그대로 쓰면 첫 순회에서
+    # 소진돼 본체 루프가 빈 채로 돌고, 위반 0건이 "깨끗한 파일"로 읽혀 종료 코드가 0이 된다.
+    segments = list(segments)
+
     overlaps = check_overlaps(segments)
     empties = check_empty_cues(segments)
 
     found: list[TrackViolation] = []
     for seg in segments:
-        for violation in check_text(seg.source_text, seg.end_ms - seg.start_ms, profile):
+        for violation in check_text(seg.source_text, seg.duration_ms, profile):
             found.append(TrackViolation(seg.id, seg.start_ms, violation))
         # 두 dict를 `{**overlaps, **empties}`로 합치면 안 된다 — 둘 다 `seg.id`로
         # 키잉하므로 빈 큐이면서 겹치는 큐에서 overlap이 조용히 소실된다.

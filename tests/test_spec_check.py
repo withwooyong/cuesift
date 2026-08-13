@@ -184,28 +184,36 @@ def test_check_empty_cues_is_silent_on_a_clean_track():
     assert check_empty_cues(segments) == {}
 
 
-def test_check_track_orders_violations_by_segment_then_by_kind():
-    """사람이 파일을 위에서 아래로 읽으므로 세그먼트 순서가 1차 정렬이다 (설계 §4).
+def test_check_track_orders_violations_by_list_order_not_by_time():
+    """리스트 순서가 1차 정렬이다. `start_ms`도 `segment_id`도 아니다 (설계 §4).
 
-    심각도 순으로 정렬하면 같은 큐의 위반들이 흩어져 파일에서 찾기 어려워진다.
+    **인제스트는 시간순을 보장하지 않는다** — pysubs2도 `_to_segments`도 정렬하지 않으므로
+    리스트 순서가 곧 **파일 순서**다. 사람이 파일을 위에서 아래로 읽으므로 그것이 맞다.
+
+    세 정렬 키(리스트·`start_ms`·`segment_id`)가 동시에 단조인 픽스처로는 무엇이 1차인지
+    구분할 수 없다. 여기서는 셋을 일부러 어긋나게 둔다.
     """
     segments = [
-        # 3줄 → line_count. 폭은 전부 16 미만이라 line_length는 나오지 않는다.
+        # 덮개 큐(00002) 안에 들어가 겹친다.
+        Segment(id="00000", index=0, start_ms=1000, end_ms=3000, source_text="본문"),
+        # 뒤의 둘을 통째로 덮는 긴 큐. 3줄이라 line_count. 폭은 전부 16 미만이다.
+        # **덮개를 리스트 가운데 두는 것이 이 픽스처의 요점이다.** 덮개는 반드시 가장
+        # 이른 start_ms를 갖는데, 그것을 리스트 맨 앞에 두면 리스트 순서와 start_ms
+        # 순서가 같아져 `sorted(key=start_ms)` 변이가 무탐지로 빠져나간다.
         Segment(
-            id="00000", index=0, start_ms=0, end_ms=3000, source_text="첫 줄\n둘째 줄\n셋째 줄"
+            id="00002", index=1, start_ms=0, end_ms=7000, source_text="첫 줄\n둘째 줄\n셋째 줄"
         ),
-        # 앞 큐(0~3000)와 1000ms 겹친다.
-        Segment(id="00001", index=1, start_ms=2000, end_ms=4000, source_text="겹치는 큐"),
-        # 빈 큐.
-        Segment(id="00002", index=2, start_ms=4500, end_ms=6000, source_text=""),
+        # 겹치면서 비어 있다. duration 1000ms는 min 833을 넘으므로 duration_short는 없다.
+        Segment(id="00001", index=2, start_ms=4000, end_ms=5000, source_text=""),
     ]
 
     found = check_track(segments, KO)
 
     assert [(tv.segment_id, tv.violation.kind) for tv in found] == [
-        ("00000", "line_count"),
+        ("00000", "overlap"),
+        ("00002", "line_count"),
         ("00001", "overlap"),
-        ("00002", "empty_cue"),
+        ("00001", "empty_cue"),
     ]
 
 
@@ -259,25 +267,55 @@ def test_check_track_is_silent_on_a_clean_track():
     assert check_track(segments, KO) == []
 
 
-def test_check_track_keeps_both_when_a_cue_is_empty_and_overlapping():
+def test_check_track_keeps_every_violation_of_one_cue_in_a_fixed_order():
     """`check_overlaps`와 `check_empty_cues`가 **같은 키 공간**을 쓴다.
 
     둘 다 `dict[str, SpecViolation]`을 `seg.id`로 키잉하므로 `{**overlaps, **empties}`로
     합치면 한쪽이 **조용히 소실된다.** 그것이 이 함수를 쓰는 가장 자연스러운 오답이다.
+
+    한 세그먼트 안의 순서도 계약이다 — `check_text`가 낸 것들 → `overlap` → `empty_cue`.
+    Task 5의 출력이 이 순서를 그대로 쓴다.
 
     빈 큐가 앞 큐의 타임코드를 복제한 채 남는 것은 흔한 저작 아티팩트라
     "빈 큐이면서 겹침"은 인위적 조합이 아니다.
     """
     segments = [
         Segment(id="00000", index=0, start_ms=0, end_ms=5000, source_text="본문"),
-        # 앞 큐(0~5000) 안에 들어가면서 텍스트가 없다.
-        Segment(id="00001", index=1, start_ms=1000, end_ms=3000, source_text=""),
+        # 앞 큐(0~5000) 안에 들어가고(겹침), 텍스트가 없고(빈 큐), 노출이 833ms 미만이다.
+        # 세 판정이 동시에 걸려야 세그먼트 내부 순서가 관찰된다 — 한 건만 나오는
+        # 픽스처로는 append 순서를 바꾸는 변이가 전부 통과한다.
+        Segment(id="00001", index=1, start_ms=1000, end_ms=1500, source_text=""),
     ]
 
     kinds = [tv.violation.kind for tv in check_track(segments, KO) if tv.segment_id == "00001"]
 
-    assert "overlap" in kinds, f"dict 병합으로 overlap이 소실됐다: {kinds}"
-    assert "empty_cue" in kinds, f"dict 병합으로 empty_cue가 소실됐다: {kinds}"
+    assert kinds == ["duration_short", "overlap", "empty_cue"]
+
+
+def test_check_track_accepts_a_generator_not_just_a_list():
+    """제너레이터를 넣어도 리스트와 결과가 같아야 한다.
+
+    `check_track`은 입력을 **3회 순회한다**(`check_overlaps` · `check_empty_cues` · 본체 루프).
+    제너레이터는 첫 순회에서 소진되므로 방어하지 않으면 본체 루프가 빈 채로 돌아
+    **위반 0건**이 되고, `check`는 그것을 "깨끗한 파일"로 읽어 종료 코드 0을 낸다.
+    실패가 예외가 아니라 **조용한 통과**라 이 저장소가 명시적으로 금지한 형태다.
+
+    `Sequence[Segment]` 애노테이션은 이것을 막지 못한다 — 이 리포에는 타입 검사 게이트가
+    없고(dev 의존성이 pytest·pytest-cov·ruff 셋뿐) ruff의 `E,F,I,UP,B,SIM`도 잡지 않는다.
+    """
+    segments = [
+        Segment(id="00000", index=0, start_ms=0, end_ms=5000, source_text="본문"),
+        Segment(id="00001", index=1, start_ms=1000, end_ms=1500, source_text=""),
+    ]
+
+    from_list = [(tv.segment_id, tv.violation.kind) for tv in check_track(segments, KO)]
+    from_generator = [
+        (tv.segment_id, tv.violation.kind) for tv in check_track((s for s in segments), KO)
+    ]
+
+    # 둘 다 빈 리스트면 위 단언은 아무것도 지키지 않는다. 픽스처가 위반을 내는지 먼저 못 박는다.
+    assert from_list != []
+    assert from_generator == from_list
 
 
 def test_translate_path_does_not_import_the_empty_cue_check():
