@@ -276,6 +276,12 @@ def test_check_track_keeps_every_violation_of_one_cue_in_a_fixed_order():
     한 세그먼트 안의 순서도 계약이다 — `check_text`가 낸 것들 → `overlap` → `empty_cue`.
     Task 5의 출력이 이 순서를 그대로 쓴다.
 
+    빈 큐가 `duration_short`와 함께 보고되는 것은 **의도된 동작이다.** `check_text`의
+    duration 분기가 `if text.strip():` 가드 밖에 있어서 그렇고, 둘 다 참인 위반이라
+    억제하지 않기로 했다(빈 큐를 채우면서 노출시간도 고쳐야 한다 — 사용자 승인 룰링).
+    **여기서 순서를 통째로 단언하는 것이 그 결정을 지키는 유일한 게이트다** —
+    빈 큐면 duration 위반을 삼키도록 바꿔도 다른 테스트는 전부 통과한다.
+
     빈 큐가 앞 큐의 타임코드를 복제한 채 남는 것은 흔한 저작 아티팩트라
     "빈 큐이면서 겹침"은 인위적 조합이 아니다.
     """
