@@ -4,12 +4,13 @@
 **인자 스키마와 종료 코드 계약이 유지된다**를 검증한다.
 """
 
+import inspect
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from cuesift import __version__
-from cuesift.cli import EXIT_NOT_IMPLEMENTED, app
+from cuesift.cli import EXIT_NOT_IMPLEMENTED, FailOn, app, check
 
 runner = CliRunner()
 
@@ -79,3 +80,22 @@ def test_fail_on_rejects_the_removed_values():
             ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko", "--fail-on", value],
         )
         assert result.exit_code == 2, f"--fail-on {value} 가 아직 받아들여진다"
+        assert value in result.stderr, f"거부 사유가 --fail-on {value} 가 아니다"
+
+
+def test_fail_on_members_match_the_requirements_doc():
+    """FR-7.5가 정한 목록은 hard|any|none **뿐**이다.
+
+    종료 코드를 보지 않으므로 Task 6이 exit 2의 의미를 넓혀도 판별력이 남는다.
+    수용·거부만 보는 테스트는 네 번째 값이 추가돼도 전부 통과한다 —
+    FR-7.5는 목록을 확정한 것이므로 집합 동등성이 맞는 단언이다.
+    """
+    assert [member.value for member in FailOn] == ["hard", "any", "none"]
+
+
+def test_fail_on_defaults_to_hard():
+    """설계 §5.1 — 기본값이 none으로 바뀌면 check가 항상 exit 0이 되어
+    '검사하지 않고 통과하는 게이트'가 된다.
+    """
+    default = inspect.signature(check).parameters["fail_on"].default
+    assert default is FailOn.hard
