@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
 
 from cuesift import __version__
 from cuesift.spec import SpecProfile, load_builtin, load_profile
@@ -111,19 +112,24 @@ def _resolve_profile(spec: str) -> SpecProfile:
     경로가 "내장 이름이 없다"는 틀린 진단을 받는다 — 인제스트가 mp4를
     `decode` 오류로 보고하지 않으려고 확장자를 먼저 본 것과 같은 판단이다.
 
-    **두 로더가 서로 다른 예외를 던진다** — `load_builtin`은 `FileNotFoundError`,
-    `load_profile`은 `ValueError`(파일이 없으면 `OSError`)다. 한쪽만 잡으면
-    처리되지 않은 traceback이 사용자에게 그대로 나간다. 전부 `BadParameter`로
-    모아 종료 코드 2(명령줄이 틀림)로 낸다.
+    **두 분기가 같은 예외 집합을 잡아야 해서 try를 하나로 묶었다.** 분기마다
+    except를 따로 두면 한쪽만 넓히다 어긋나고, 어긋난 쪽으로 샌 예외는 미처리
+    traceback이 되어 **종료 코드 1**로 나간다. 이 저장소에서 1은 "규격 위반
+    발견"이라 프로파일 사고가 자막 결함으로 오보되고, 사용자는 멀쩡한 자막을
+    고치려 든다. `load_builtin`이 내부에서 `load_profile`을 부르므로 두 분기가
+    같은 실패를 공유한다는 점도 이유다.
+
+    잡는 셋은 전부 실측한 것이다. `OSError`는 파일이 없거나 못 읽을 때(`load_builtin`의
+    `FileNotFoundError`가 하위), `ValueError`는 필드 누락·값 오류·UTF-8 아님
+    (`UnicodeDecodeError`가 하위), `yaml.YAMLError`는 YAML 문법 오류다.
+    **셋째를 빼면 안 된다** — 문법 오류는 `OSError`도 `ValueError`도 아니라서
+    앞의 둘로는 못 잡는다.
     """
-    if spec.endswith((".yaml", ".yml")):
-        try:
-            return load_profile(Path(spec))
-        except (OSError, ValueError) as exc:
-            raise typer.BadParameter(str(exc), param_hint="--spec") from exc
     try:
+        if spec.endswith((".yaml", ".yml")):
+            return load_profile(Path(spec))
         return load_builtin(spec)
-    except FileNotFoundError as exc:
+    except (OSError, ValueError, yaml.YAMLError) as exc:
         raise typer.BadParameter(str(exc), param_hint="--spec") from exc
 
 
