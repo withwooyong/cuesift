@@ -164,6 +164,20 @@ def test_format_timecode_is_fixed_regardless_of_input_format():
     assert _format_timecode(3_661_007) == "01:01:01.007"
 
 
+def test_format_timecode_clamps_a_negative_to_zero():
+    """`max(ms, 0)`을 값으로 고정한다 — **이 줄이 유일하게 살아남은 변이였다.**
+
+    브랜치 최종 리뷰가 변이 13종을 심었는데 `max(ms, 0)` -> `ms` 하나만 아무 테스트도
+    울리지 않았다. 클램프는 절충이므로(독스트링 참조) **어느 쪽이든 값으로 못 박아야**
+    다음 사람이 무심코 바꿀 때 드러난다. 지금은 클램프가 계약이다.
+
+    클램프를 빼면 `divmod(-3000, 1000)`이 파이썬의 바닥 나눗셈 때문에 `(-3, 0)`이 되어
+    `-1:59:57.000`이 나온다 — 이 단언이 그 변이에서 실제로 실패하는 것을 확인했다.
+    """
+    assert _format_timecode(-3000) == "00:00:00.000"
+    assert _format_timecode(-1) == "00:00:00.000"
+
+
 def test_format_report_uses_the_original_cue_number_not_the_filtered_index():
     """설계 §10.3 — diff로는 판정할 수 없는 항목이다.
 
@@ -710,6 +724,79 @@ def test_violations_go_to_stdout_and_diagnostics_go_to_stderr():
     assert bad.exit_code == 66
     assert "utf-8" in bad.stderr
     assert bad.stdout.strip() == ""
+
+
+def test_config_is_not_silently_ignored(tmp_path):
+    """설계 D12 — **조용한 무시는 이 저장소의 규율에 어긋난다.**
+
+    FR-8.4 로더는 아직 없다. 경고가 없으면 사용자는 `--config`로 자기 규격을 지정했다고
+    믿는데 실제로는 내장 기본값으로 검사되고 **종료 코드 0**이 나간다. 그것이 이 저장소가
+    1급으로 금지한 "검사하지 않고 통과하는 게이트"이며, D12가 적은 근거와 같은 문장이다.
+
+    **경고는 stderr다** — 산출물이 아니라 실행 조건 보고이기 때문이다(설계 §7.1 표).
+    stdout 산출물과 종료 코드는 `--config`가 있든 없든 **바이트 단위로 같아야** 한다.
+    경고를 stdout에 내면 `cuesift check ... > violations.txt`가 오염된다.
+    """
+    missing = tmp_path / "no-such-config.yaml"
+    target = str(FIXTURES / "minimal.srt")
+
+    without = runner.invoke(app, ["check", target, "--spec", "ko"])
+    with_config = runner.invoke(app, ["--config", str(missing), "check", target, "--spec", "ko"])
+
+    assert "--config" in with_config.stderr, "경고가 없으면 조용한 무시다"
+    assert "FR-8.4" in with_config.stderr, "왜 무시되는지가 없으면 사용자가 대응할 수 없다"
+    # 존재하지 않는 경로를 그대로 되돌려 준다 — 오타를 사용자가 알아볼 수 있어야 한다.
+    assert str(missing) in with_config.stderr
+
+    # 경고가 산출물이나 종료 코드를 건드리지 않는다.
+    assert with_config.stdout == without.stdout
+    assert with_config.exit_code == without.exit_code == 0
+    assert without.stderr.strip() == "", "--config 없이는 경고가 나오면 안 된다"
+
+
+def test_config_warning_does_not_leak_into_stdout_on_violations(tmp_path):
+    """위반이 있을 때도 경고가 stdout을 오염시키지 않는다.
+
+    위 테스트는 깨끗한 파일만 본다. 위반 경로는 출력 줄 수가 달라 `>` 리다이렉트로
+    갈무리한 파일에 경고가 섞이면 **위반 목록을 기계로 파싱하는 CI가 깨진다.**
+    """
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(tmp_path / "x.yaml"),
+            "check",
+            str(FIXTURES / "overlap.vtt"),
+            "--spec",
+            "ko",
+        ],
+    )
+
+    assert result.exit_code == 1, "경고가 종료 코드를 바꾸면 안 된다"
+    assert "--config" in result.stderr
+    assert "--config" not in result.stdout
+    assert "경고" not in result.stdout
+
+
+def test_a_non_utf8_profile_gets_the_same_diagnostic_as_a_non_utf8_subtitle(tmp_path):
+    """`read_text`가 `try` 밖에 있으면 진단이 자막 경로보다 나빠진다.
+
+    `UnicodeDecodeError`는 `ValueError`의 자식이라 **종료 코드는 이미 2로 맞다.**
+    고친 것은 메시지다 — 정규화 전에는 `'utf-8' codec can't decode byte 0xc0 in
+    position 6`이 나가 **어느 파일인지도, 무엇을 하라는 것인지도** 알 수 없었다.
+    `load_profile` 독스트링의 "내용이 잘못된 경우는 전부 `ValueError`" 계약과도 맞다.
+    """
+    spec = tmp_path / "cp949-spec.yaml"
+    spec.write_bytes("name: ko\nsource: https://example.invalid/한글\n".encode("cp949"))
+
+    result = runner.invoke(app, ["check", str(FIXTURES / "minimal.srt"), "--spec", str(spec)])
+
+    assert result.exit_code == 2
+    message = result.stderr
+    # 자막 경로(`loader.py`의 decode 오류)와 같은 세 요소: 파일 · 위치 · 해법.
+    assert "cp949-spec.yaml" in message, "어느 파일인지 없으면 사용자가 찾을 수 없다"
+    assert "utf-8로 읽을 수 없다" in message
+    assert "변환한 뒤 다시 시도한다" in message, "해법이 없는 진단은 절반이다"
 
 
 def test_harden_output_streams_covers_stderr_too():

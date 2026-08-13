@@ -95,7 +95,19 @@ def load_profile(path: Path) -> SpecProfile:
     여기를 느슨하게 만들면 그쪽이 조용히 무방비가 된다 — 호출부에는 아무 표시도
     나지 않고 새 예외가 그대로 통과한다. 정규화를 줄이려면 `cli.py`를 함께 봐야 한다.
     """
-    text = path.read_text(encoding="utf-8")
+    # **`read_text`가 `try` 밖에 있으면 진단이 자막 경로보다 나빠진다.**
+    # `UnicodeDecodeError`는 `ValueError`의 자식이라 종료 코드는 이미 2로 맞지만,
+    # 메시지가 `'utf-8' codec can't decode byte 0xc0 in position 6`으로 나가
+    # **어느 파일인지도 무엇을 하라는 것인지도 알 수 없다.** `loader.py`의 `decode`
+    # 오류와 같은 형태로 정규화해 두 경로의 진단을 일치시킨다.
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"{path}: utf-8로 읽을 수 없다 (바이트 {exc.start}). "
+            "파일을 utf-8로 변환한 뒤 다시 시도한다."
+        ) from exc
+
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
