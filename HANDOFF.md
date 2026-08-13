@@ -1,9 +1,11 @@
 # Session Handoff
 
 > Last updated: 2026-08-13 (KST)
-> Branch: **`feat/check-cli`** (작업 트리 깨끗, stash 없음) — **아직 푸시하지 않았다. PR 없음**
-> Latest commit: `a3d941b` 최종 리뷰 fix (D12 구현 · 진단 정규화 · 이 인수인계 커밋)
-> **다음 세션은 푸시 승인을 받아 PR을 만드는 것부터 시작한다** — 코드는 끝났다
+> Branch: **`feat/check-cli`** (작업 트리 깨끗, stash 없음)
+> Latest commit: `8199887` 최종 리뷰 fix (D12 구현 · 진단 정규화)
+> **원격은 `092a399`에 멈춰 있다 — 로컬이 35커밋 앞선다.** [PR #2](https://github.com/withwooyong/cuesift/pull/2)가
+> **DRAFT로 열려 있고 커밋 2개만 담고 있다**(제목도 "설계 확정" 시점 그대로다).
+> **다음 세션은 푸시 승인을 받는 것부터 시작한다** — 코드는 끝났다
 
 ## Current Status
 
@@ -14,9 +16,9 @@
 | | 이전 세션 | 이번 세션 |
 | --- | --- | --- |
 | v0.1 FR 완료 | 19/42 (45%) | **21/42 (50%)** — FR-8.2 · FR-7.5 |
-| 테스트 | 316 | **481** |
+| 테스트 | 316 | **485** |
 | 제품 상태 | 모든 서브커맨드가 `70` | **`check`는 동작 · `translate`·`transcribe`만 `70`** |
-| 산출물 | 설계 스펙 1건 | 구현 계획 1건 + 코드 + 테스트 165건 + 문서 정정 |
+| 산출물 | 설계 스펙 1건 | 구현 계획 1건 + 코드 + 테스트 169건 + 문서 정정 |
 
 ```bash
 cuesift check dist/episode01.ja.srt --spec ja --fail-on hard
@@ -48,7 +50,7 @@ cuesift check dist/episode01.ja.srt --spec ja --fail-on hard
 | 5 | `_format_report` 순수 함수 | `800d17c`·`ca29ef5`·`7d3e5f6` |
 | 6 | `check()` 배선 · 종료 코드 5종 (fix 6라운드) | `4899fec`·`59c7b51`·`955b4cd`·`6b45f95`·`c61a067`·`819b861` |
 | 7 | 문서 정정과 진척 기록 | `a205bd4`·`c228dbf` |
-| — | 최종 브랜치 리뷰 fix (Important 2 · Minor 2) | `a3d941b` |
+| — | 최종 브랜치 리뷰 fix (Important 2 · Minor 2) | `8199887` |
 
 **요구사항정의서 §3.2 S3 정정은 닫혔다** — `--spec th` → `--spec ja`, **사용자 승인 2026-08-13**.
 파일명도 함께 바꿨다(`--spec`만 고치면 "태국어 파일을 일본어 규격으로 검사"가 된다).
@@ -57,7 +59,7 @@ cuesift check dist/episode01.ja.srt --spec ja --fail-on hard
 
 | # | 작업 | 상태 | 비고 |
 | --- | --- | --- | --- |
-| 1 | **푸시 → PR 생성 → CI 통과 대기** | ⬜ **다음** | **푸시는 사용자 승인 후.** `main` 직접 푸시 금지 — CI가 게이트가 아니라 사후 통보가 된다 |
+| 1 | **푸시 → PR #2 갱신 → CI 통과 대기** | ⬜ **다음** | **푸시는 사용자 승인 후.** PR은 **새로 만들지 말 것** — [#2](https://github.com/withwooyong/cuesift/pull/2)가 이미 열려 있고 푸시하면 35커밋이 거기 들어간다. 제목·본문을 "설계 확정"에서 **구현 완료**로 고치고 DRAFT를 해제한다. `main` 직접 푸시 금지 — CI가 게이트가 아니라 사후 통보가 된다 |
 | 2 | WP5 나머지 (FR-7.1~7.4) | ⬜ | `review.json`·`report.html`·요약 통계. **WP7 뒤가 낫다** — 리포트에 실을 신호가 번역 계층에서 나온다 |
 | 3 | WP7 번역 → WP8 Tier 1 | ⬜ | **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나 |
 | 4 | WP6 나머지 (FR-8.1·8.3~8.5) | ⬜ | `translate`·`transcribe` 배선 · `cuesift.yaml` 로더 |
@@ -185,8 +187,8 @@ Critical 5건 중 2건(C1 파이프·C3 타임코드)이 같은 형태였다 —
 | --- | --- |
 | `ruff check .` | `All checks passed!` |
 | `ruff format --check .` | `57 files already formatted` |
-| `pytest --cov=cuesift` | **481 passed** · TOTAL 99% (`cli.py`·`spec/check.py`·`loader.py` 100%) |
-| `scripts/check_links.py` | 마크다운 **19개** · 상대 링크 **68개** · 깨진 링크 **0** |
+| `pytest --cov=cuesift` | **485 passed** · TOTAL 99% (`cli.py`·`spec/check.py`·`loader.py` 100%) |
+| `scripts/check_links.py` | 마크다운 **19개** · 상대 링크 **69개** · 깨진 링크 **0** |
 | `markdownlint-cli2` | **`Linting: 19 files`** · 0 issues |
 
 ## Files Modified This Session
