@@ -169,9 +169,15 @@ def check_track(segments: Sequence[Segment], profile: SpecProfile) -> list[Track
     `start_ms`로 정렬해 "고치면" 리포트가 파일과 다른 순서로 나와 검수자가 큐를 못 찾는다.
 
     **`start_ms`·`end_ms`가 `int`라고 전제한다.** `@dataclass`는 이 전제를 강제하지 않고
-    이 함수도 검사하지 않는다 — `float`이면 여기를 조용히 통과한 뒤 `cli.py`의 `#{cue:<d}`
-    포매팅에서 죽고, `str`이면 `duration_ms` 뺄셈에서 죽는다. 어느 쪽도 `IngestError`가
-    아니라 **종료 코드 1**이 되어 "규격 위반 발견"으로 오보된다.
+    이 함수도 검사하지 않는다. 어기면 **종료 코드 1**(= "규격 위반 발견")로 오보되거나,
+    더 나쁘게는 **조용히 틀린 답**이 된다(전부 실측).
+
+    | 값 | 결과 |
+    | --- | --- |
+    | `float` · 위반이 있는 트랙 | `cli.py`의 `#{cue:<d}`에서 `ValueError` |
+    | `float` · **위반 0건 트랙** | 크래시 없음. `exit 0 · "위반 없음"`으로 **조용히 통과** |
+    | `str` | `duration_ms` 뺄셈에서 `TypeError` |
+    | `bool` | 크래시 없음. `false`/`true`는 **`cps 6500`** 같은 수치를 날조한다 |
     보증은 `ingest/loader.py`의 `_require_int_timecodes`가 경계에서 한다.
     `bench/`처럼 `Segment`를 직접 만드는 쪽은 그 보증을 받지 못하므로 스스로 지켜야 한다.
     """

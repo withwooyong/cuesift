@@ -216,18 +216,28 @@ def _require_int_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) 
 
     **진입로는 json 포맷 하나다.** srt·vtt·ass·ssa·microdvd·tmp·mpl2는
     `times_to_ms`·`make_time`·`frames_to_ms`가 전부 int를 반환하지만, json만
-    `SSAEvent(**fields)`로 파일의 값을 그대로 넣는다. 그래서 스키마가 **정상인** 파일이
-    `1000.0`을 담을 수 있고, 그때 인제스트와 규격 판정은 통과한 뒤 리포트에서 죽었다.
+    `SSAEvent(**fields)`로 파일의 값을 그대로 넣는다.
+
+    **증상이 타입마다 다르고, 그중 둘은 조용하다**(전부 실측).
+
+    | 값 | 증상 |
+    | --- | --- |
+    | `1000.0` (위반 있는 파일) | `#{cue:<d}` 포매팅에서 `ValueError` -> exit 1 |
+    | `1000.0` (**위반 0건 파일**) | **크래시 없음. exit 0 · "위반 없음"으로 조용히 통과** |
+    | `"1000"` | `duration_ms` 뺄셈에서 `TypeError` -> exit 1 (위반 유무와 무관) |
+    | `true`/`true` | 크래시 없음. 길이 0짜리 큐로 `duration_short` 1건 |
+    | `false`/`true` | 크래시 없음. **`cps 6500.0 > 12.0`** 이라는 날조된 수치까지 |
+
+    **`type(v) is not int`인 것은 `bool`을 막기 위해서다.** `isinstance(True, int)`가
+    참이라 `isinstance`로 "완화"하면 위 두 bool 케이스가 그대로 통과한다.
+    `false`/`true`가 특히 나쁘다 — `cps 6500`은 `duration_short` 하나보다 훨씬 그럴듯해
+    검수자가 의심하지 않는다. `profile.py`의 `_require_positive`가 bool을 먼저 막는 것과
+    같은 판단이다: **이 저장소에서 조용히 틀린 답은 크래시보다 나쁘다.**
 
     **`Segment.__post_init__`이 아니라 여기서 막는 것이 핵심이다.** `load_subtitle`은
     `_to_segments`를 `try` **밖에서** 부르므로 `Segment`가 던지는 `ValueError`는
     `IngestError`를 우회해 미처리 traceback이 되고 **종료 코드 1**이 된다 —
     1은 "규격 위반 발견"이다. 같은 검사라도 위치가 틀리면 아무것도 고쳐지지 않는다.
-
-    **`type(v) is not int`인 것은 `bool`을 막기 위해서다.** `isinstance(True, int)`가
-    참이라 `start: true`가 통과하는데, 그때는 크래시조차 나지 않고 **길이 0짜리 큐로
-    조용히 틀린 리포트**가 나온다(실측). `profile.py`의 `_require_positive`가 bool을
-    먼저 막는 것과 같은 판단이다 — 이 저장소에서 조용히 틀린 답은 크래시보다 나쁘다.
     """
     for field in ("start", "end"):
         value = getattr(event, field)
@@ -256,8 +266,14 @@ def _to_segments(
     segments: list[Segment] = []
     event_index: dict[str, int] = {}
     for index, (raw_index, event) in enumerate(events):
-        # 타입 검사가 **먼저다.** 아래 `event.end < event.start`는 str끼리면 TypeError를
-        # 내고 그것이 `IngestError`를 우회한다 — 순서를 바꾸면 str 경로가 그대로 뚫린다.
+        # **타입 검사가 역전 검사보다 먼저여야 한다.** 아래 `event.end < event.start`는
+        # **두 필드의 타입이 서로 다를 때** TypeError를 내고 그것이 `IngestError`를
+        # 우회한다 — `"1000" < 4000` · `None < 1000` · `1000.0 < "4000"`이 그렇다.
+        #
+        # **str끼리는 트리거가 아니다**(실측). `"4000" < "1000"`은 사전순으로 조용히
+        # `False`를 낸다. 그래서 두 필드가 **같은** 잘못된 타입인 케이스로는 순서를
+        # 뒤집어도 아무것도 드러나지 않는다 — 순서를 지키는 게이트는 반드시
+        # **혼합 타입** 입력이어야 한다(`test_mixed_type_timecodes_...`).
         _require_int_timecodes(event, raw_index, path)
         if event.end < event.start:
             raise IngestError(

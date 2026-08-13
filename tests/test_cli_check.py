@@ -534,7 +534,13 @@ def test_json_shaped_garbage_named_srt_also_exits_66(tmp_path):
     assert result.exit_code == 66
 
 
-def _json_track(start: object, end: object, text: object = "정상 큐입니다") -> str:
+# 기본 본문이 규격을 위반하는 긴 줄인 것은 의도적이다 — 근거는 `test_ingest.py`의 같은 상수.
+# 위반이 0건이면 리포트가 `#{cue:<d}`에 닿지 않아 float 타임코드가 수정 전에도
+# `exit 0 · "위반 없음"`으로 조용히 통과한다(실측).
+_VIOLATING_LINE = "열여섯 자를 확실히 넘기는 아주 긴 줄입니다 정말로"
+
+
+def _json_track(start: object, end: object, text: object = _VIOLATING_LINE) -> str:
     """스키마가 **정상인** JSON 한 큐. 타입만 바꾼다 (근거는 `test_ingest.py`)."""
     return json.dumps(
         {
@@ -566,25 +572,47 @@ def _json_track(start: object, end: object, text: object = "정상 큐입니다"
         ("float", 1000.0, 4000.0, ".json"),
         ("str", "1000", "4000", ".json"),
         ("bool", True, True, ".json"),
+        ("bool-false-true", False, True, ".json"),
+        ("mixed", "1000", 4000, ".json"),
         ("float", 1000.0, 4000.0, ".srt"),
         ("str", "1000", "4000", ".srt"),
         ("bool", True, True, ".srt"),
+        ("bool-false-true", False, True, ".srt"),
+        ("mixed", "1000", 4000, ".srt"),
     ],
-    ids=["float", "str", "bool", "float(.srt)", "str(.srt)", "bool(.srt)"],
+    ids=[
+        "float",
+        "str",
+        "bool",
+        "bool-false-true",
+        "mixed",
+        "float(.srt)",
+        "str(.srt)",
+        "bool(.srt)",
+        "bool-false-true(.srt)",
+        "mixed(.srt)",
+    ],
 )
 def test_non_integer_timecodes_exit_66_not_1(
     tmp_path, label: str, start: object, end: object, suffix: str
 ):
     """**깨진 JSON(C2)과 다른 결함이다** — 스키마가 정상이라 인제스트가 성공한다.
 
-    실측된 수정 전 동작:
+    실측된 수정 전 동작. **조용한 쪽이 하나가 아니라 셋이다:**
 
-    - float: `_format_report`에서 `ValueError: Unknown format code 'd'` -> exit 1
-    - str: `segment/models.py`의 뺄셈에서 `TypeError` -> exit 1
-    - bool: **크래시조차 안 난다.** `True`가 1로 계산돼 길이 0짜리 큐가 되고
-      위반이 있는 것처럼 250바이트짜리 리포트를 낸 뒤 exit 1 — 조용히 틀린 답이다.
+    | 값 | 수정 전 |
+    | --- | --- |
+    | float · **위반 있는 본문**(이 픽스처) | `ValueError: Unknown format code 'd'` -> exit 1 |
+    | float · 위반 없는 본문 | **exit 0 · "위반 없음"** — 조용히 통과 |
+    | str | `segment/models.py` 뺄셈에서 `TypeError` -> exit 1 (본문 무관) |
+    | `true`/`true` | 크래시 없음. 길이 0짜리 큐로 `duration_short` |
+    | `false`/`true` | 크래시 없음. **`cps 6500.0 > 12.0`** 날조 |
 
-    셋 다 로더 예외 정규화(C2)로는 닫히지 않는다. 경계에서 타입을 보증해야 닫힌다.
+    이 픽스처의 본문이 **규격을 위반하도록** 돼 있는 것은 그래야 float이 리포트 경로까지
+    실제로 지나가기 때문이다. 위반 0건 문서로 짜면 위 표의 두 번째 줄(조용한 통과)을
+    재는 것이 되어 "리포트에서 죽는다"는 서술이 자기 픽스처에 대해 거짓이 된다.
+
+    전부 로더 예외 정규화(C2)로는 닫히지 않는다. 경계에서 타입을 보증해야 닫힌다.
     """
     target = tmp_path / f"times{suffix}"
     target.write_text(_json_track(start, end), encoding="utf-8")

@@ -155,8 +155,15 @@ def test_json_shaped_files_raise_ingest_error_not_a_bare_keyerror(tmp_path, labe
         load_subtitle(target)
 
 
-def _json_track(start: object, end: object, text: object = "정상 큐입니다") -> str:
-    """스키마가 **정상인** pysubs2 JSON 한 큐. 타임코드 타입만 갈아 끼운다.
+# 기본 본문이 **규격을 위반하는** 긴 줄인 것은 의도적이다(ko는 16자/줄).
+# 위반이 0건이면 `_format_report`가 `#{cue:<d}`·`_format_timecode`에 **닿지 않아**
+# float 타임코드가 수정 전에도 `exit 0 · "위반 없음"`으로 조용히 통과한다(실측).
+# 그 문서로 테스트를 짜면 "리포트에서 죽는다"는 근거 서술이 자기 픽스처에 대해 거짓이 된다.
+_VIOLATING_LINE = "열여섯 자를 확실히 넘기는 아주 긴 줄입니다 정말로"
+
+
+def _json_track(start: object, end: object, text: object = _VIOLATING_LINE) -> str:
+    """스키마가 **정상인** pysubs2 JSON 한 큐. 타입만 갈아 끼운다.
 
     C2(깨진 JSON)와 갈라놓는 것이 요점이다 — 스키마를 깨면 `parse`로 잡혀
     타입 검사가 없어도 66이 나오고, 그러면 이 테스트가 **아무것도 검증하지 않는다.**
@@ -200,11 +207,13 @@ def test_the_json_fixture_helper_is_valid_with_int_times(tmp_path):
 @pytest.mark.parametrize(
     ("label", "start", "end"),
     [
+        # 위반이 있는 본문이므로 이 문서는 수정 전 `#{cue:<d}`에서 ValueError를 냈다.
         ("float", 1000.0, 4000.0),
         ("str", "1000", "4000"),
         # bool은 int의 하위형이라 산술이 **통과한다.** 크래시가 아니라 조용히 틀린
-        # 리포트(start=1·end=1·길이 0)가 나왔다 — 이 저장소에서 더 나쁜 쪽이다.
+        # 리포트가 나왔다 — `false`/`true`는 `cps 6500.0`까지 날조했다(실측).
         ("bool", True, True),
+        ("bool-false-true", False, True),
     ],
 )
 def test_non_integer_timecodes_are_rejected_at_the_ingest_boundary(
@@ -255,6 +264,38 @@ def test_non_string_text_is_rejected_at_the_ingest_boundary(
         load_subtitle(target)
 
     assert exc.value.reason == "text_type"
+
+
+@pytest.mark.parametrize(
+    ("label", "start", "end"),
+    [
+        ("str/int", "1000", 4000),
+        ("int/str", 1000, "4000"),
+        ("float/str", 1000.0, "4000"),
+        ("null/int", None, 4000),
+        ("int/null", 1000, None),
+    ],
+)
+def test_mixed_type_timecodes_prove_the_check_runs_before_the_reversal_test(
+    tmp_path, label: str, start: object, end: object
+):
+    """**타입 검사가 역전 검사보다 먼저라는 순서를 고정한다.**
+
+    `_to_segments`는 `_require_int_timecodes` 다음에 `event.end < event.start`를 본다.
+    순서를 뒤집으면 그 비교가 `TypeError`를 내고 `IngestError`를 우회해 **exit 1**이 된다.
+
+    **혼합 타입이어야만 이 게이트가 작동한다**(실측). 두 필드가 **같은** 잘못된 타입이면
+    비교가 조용히 성공한다 — `"4000" < "1000"`은 사전순으로 `False`다. 그래서
+    `("1000", "4000")` 같은 str/str 케이스로는 순서를 뒤집어도 **아무것도 드러나지 않는다.**
+    실제로 순서만 뒤집은 변이에서 리포 전체 테스트가 통과한 적이 있다.
+    """
+    target = tmp_path / f"{label.replace('/', '_')}.json"
+    target.write_text(_json_track(start, end), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "timecode_type"
 
 
 def test_non_integer_timecodes_are_rejected_regardless_of_extension(tmp_path):
