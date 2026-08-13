@@ -11,9 +11,9 @@
 > [!WARNING]
 > **개발 이전 단계(pre-alpha)입니다.** Tier 0 신호 엔진(무료 결정론적 신호 9종 ·
 > 위험도 융합 · 트리아지 선별)은 구현·**실측까지 끝났고**(아래 참고) 자막 파일
-> 파싱(`ingest`, SRT·WebVTT·ASS/SSA)도 들어왔지만 **CLI에 배선되지 않았습니다** —
-> 모든 서브커맨드는 여전히 종료 코드 `70`(미구현)을 반환합니다. 번역(`translate`)
-> 계층도 아직 없어 사용할 수 없습니다.
+> 파싱(`ingest`)도 들어왔습니다. **`check`(규격 검사)는 CLI에 배선되어 실제로
+> 동작합니다** — 아래 "CLI" 절 참고. 번역(`translate`)과 STT(`transcribe`)는 아직
+> 종료 코드 `70`(미구현)을 반환합니다. 번역 계층 자체가 아직 없습니다.
 
 ---
 
@@ -141,7 +141,98 @@ python -m scripts.glossary_verify --pair ja-ko
 위험 신호는 단일 지표가 아니라 규격 위반·자가일관성·품질추정 등을 결합해 산출합니다.
 자세한 설계는 [요구사항정의서](docs/요구사항정의서.md)를 참고하세요.
 
-## CLI (설계 확정, 구현 예정)
+## CLI (`check` 구현 완료 · 나머지 설계 확정)
+
+### `cuesift check` — 규격 검사 (동작합니다)
+
+```bash
+# 규격 검사만 (CI 게이트) — 위반이 있으면 종료 코드 1
+cuesift check dist/episode01.ja.srt --spec ja --fail-on hard
+
+# 내장 프로파일 대신 우리 규격으로 (FR-5.3)
+cuesift check dist/episode01.ja.srt --spec ./our-spec.yaml
+```
+
+내장 프로파일은 `en` · `ja` · `ko`와 벤치마크용 `ted-en` · `ted-ja` · `ted-ko` 여섯입니다.
+`--spec` 값이 `.yaml`/`.yml`로 끝나면 파일 경로로, 그 외에는 내장 이름으로 해석합니다 —
+존재 여부가 아니라 **확장자**로 가르므로 오타 난 경로가 "내장 이름이 없다"는 틀린 진단을
+받지 않습니다.
+
+판정하는 위반은 7종입니다 — `line_length` · `line_count` · `cps` · `duration_short` ·
+`duration_long` · `overlap` · `empty_cue`. 위반 목록은 이 명령의 정상 산출물이므로
+**stdout**으로 나가고(`cuesift check ... > violations.txt`로 갈무리됩니다),
+진단 실패 메시지만 stderr로 갑니다.
+
+```text
+$ cuesift check check_violations.ass --spec ko
+check_violations.ass (ass · 검사 큐 4개 · 프로파일 ko)
+
+  #3  00:00:05.000  line_length    22.0 > 16.0  (2번째 줄)
+  #3  00:00:05.000  cps            25.5 > 12.0
+  #4  00:00:05.500  overlap        500ms
+  #5  00:00:09.000  empty_cue      텍스트 없음
+
+위반 4건 · 위반 큐 3/4개 (75.0%)
+```
+
+`#N`은 **원본 파일의 이벤트 순번**입니다 — 주석·드로잉을 걸러 낸 뒤의 순번이 아니므로
+`검사 큐 N개`보다 클 수 있습니다. 다만 **SRT에 인쇄된 번호는 아닙니다**: pysubs2가 그
+번호를 버리므로, 큐가 `1,2,4,5`로 매겨진 파일(3번이 지워진 파일)에서는 파일의 `4`를
+`#3`으로 부릅니다. 인쇄 번호 보존은 v0.1 범위 밖입니다.
+
+위반이 없을 때도 **무엇을 대상으로 통과했는지**를 냅니다 — 큐 개수와 프로파일 이름이
+없으면 엉뚱한 파일이나 엉뚱한 프로파일로 통과한 것을 알 수 없기 때문입니다.
+
+```text
+$ cuesift check minimal.srt --spec ko
+minimal.srt (srt · 검사 큐 2개 · 프로파일 ko) - 위반 없음
+```
+
+#### `--fail-on`
+
+| 값 | 동작 |
+| --- | --- |
+| `hard` (기본) | 위반이 1건이라도 있으면 종료 코드 1 |
+| `any` | **v0.1에서는 `hard`와 같습니다** — 규격 위반 7종이 전부 같은 등급입니다 |
+| `none` | 위반을 stdout에 출력하되 **항상 종료 코드 0** |
+
+세 값 중 둘이 같은 것은 v0.1에 심각도 등급이 하나뿐이기 때문입니다. 등급 배정의 출처가
+없어서 만들지 않았습니다 — 1차 출처인 Netflix TTSG에 위반 등급 구분이 없습니다.
+등급이 생기면 `hard`와 `any`가 갈라집니다.
+
+#### 종료 코드
+
+**CI 게이트에서 가장 중요한 계약입니다.** `!= 0`으로 뭉뚱그리면 `66`(파일이 깨졌다)이
+"규격 위반"으로 오보되고, 사용자는 멀쩡한 자막을 고치려 듭니다.
+
+| 코드 | 뜻 |
+| --- | --- |
+| `0` | 위반 없음 (또는 `--fail-on none`) |
+| `1` | **규격 위반 발견** |
+| `2` | **명령줄이 틀림** — 파일 없음 · 디렉터리 · 알 수 없는 프로파일 · 프로파일 파일 해석 실패 |
+| `66` | **파일 내용이 틀림** — 자막 아님 · utf-8 아님 · 읽기 불가 · 파싱 실패 · 큐 0개 · 타임코드 역전 |
+| `70` | 미구현 (`translate` · `transcribe`) |
+
+`2`와 `66`을 가르는 축은 **"호출이 틀렸나, 파일이 틀렸나"** 입니다. 둘을 구분하지 못하면
+CI가 "경로 오타"와 "자막이 깨졌다"에 같은 대응을 하게 됩니다.
+`66`은 `sysexits.h`의 `EX_NOINPUT`, `70`은 `EX_SOFTWARE`입니다.
+
+#### 입력 포맷
+
+| 포맷 | 확장자 | 근거 |
+| --- | --- | --- |
+| SubRip | `.srt` | FR-1.1 |
+| WebVTT | `.vtt` | FR-1.1 |
+| ASS / SSA | `.ass` · `.ssa` | FR-1.1 |
+| SAMI | `.smi` · `.sami` | 한국 레거시 자막의 주력 포맷. pysubs2가 처리하며 **실측으로 확인**했습니다 |
+
+포맷별 분기 코드가 0개인 것은 pysubs2가 포맷 판별과 태그 정규화를 전부 하기 때문입니다.
+TTML은 FR-1.6으로 v0.3에 있습니다. 인코딩은 **utf-8만** 받습니다 — cp949 자막은
+종료 코드 `66`과 함께 변환 안내를 냅니다.
+
+### `cuesift translate` · `transcribe` (설계 확정, 구현 예정)
+
+아래 명령은 아직 종료 코드 `70`(미구현)을 반환합니다.
 
 ```bash
 # 전 파이프라인 — 상위 10%만 검수 대상으로 선별
@@ -150,14 +241,13 @@ cuesift translate episode01.ko.srt --to en,ja,th,vi --review-budget 10%
 # 영상 입력 (자막 없음) — STT로 원문 생성 후 번역
 cuesift translate episode02.mp4 --source-lang ko --to en,ja
 
-# 규격 검사만 (CI 게이트) — 치명 오류 시 exit code ≠ 0
-cuesift check dist/episode01.th.srt --spec th --fail-on hard
-
 # 비용 추정
 cuesift translate episode01.ko.srt --to en,ja --dry-run
 ```
 
-모든 옵션은 `cuesift.yaml`로도 지정할 수 있으며, **CLI 인자가 설정 파일보다 우선**합니다.
+설정 파일 `cuesift.yaml`(FR-8.4)도 아직 구현되지 않았습니다. **`--config`는 현재
+받기만 하고 아무 일도 하지 않습니다** — 경고도 내지 않으므로 지정해도 조용히 무시됩니다.
+구현되면 모든 옵션을 파일로 지정할 수 있으며, **CLI 인자가 설정 파일보다 우선**합니다.
 
 ## 개발 환경
 
@@ -189,6 +279,8 @@ ruff check .
 | [벤치마크 하네스 구현 계획](docs/superpowers/plans/2026-07-29-ted2020-benchmark-harness.md) | 구현 계획과 실행 중 바뀐 결정 (계획 결함 12건·프로세스 기록) |
 | [인제스트 설계](docs/superpowers/specs/2026-07-31-ingest-design.md) | 자막 파일 → `Segment` · pysubs2 실측 근거 · 오류 계약 |
 | [인제스트 구현 계획](docs/superpowers/plans/2026-07-31-ingest.md) | 태스크 8개 · 계획 결함 4건과 정정 기록 |
+| [`check` 배선 설계](docs/superpowers/specs/2026-08-03-check-cli-design.md) | 신호 엔진을 우회하는 근거 · 종료 코드 5종 · 심각도 단일 등급 |
+| [`check` 배선 구현 계획](docs/superpowers/plans/2026-08-13-check-cli.md) | 태스크 7개 · 실측으로 정정한 설계 5건 |
 
 ## 라이선스
 

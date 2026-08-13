@@ -314,10 +314,10 @@ FR-1.5의 문구는 *"자동 감지**하거나** 명시적으로 지정받는다
 | cp949 자막 사용 불가 | 의도된 제약 | 진단 메시지가 변환을 안내. `--encoding`은 WP6에서 필요해지면 플래그와 함께 |
 | VTT 화자 태그 소실 | 정보 손실 | v0.2. `subs`에도 없으므로 **원본 재파싱으로만 복구 가능** |
 | `id`가 인덱스 기반 | 파일 편집 시 흔들린다 | 대안(내용 해시)은 v0.1 범위 밖. 한계를 주석에 적는다 |
-| FR-7.5 문서·코드 불일치 | **기존 결함** | `hard\|any\|none`(요구사항정의서) vs `hard\|soft\|never`(`cli.py:31`). WP4에서 고치지 않고 기록만 |
+| ~~FR-7.5 문서·코드 불일치~~ | ~~기존 결함~~ | **✅ 해소** (`90c6a7d`). `cli.py`의 `FailOn`을 요구사항정의서 FR-7.5의 `hard\|any\|none`으로 고쳤다. 단일 진실 원천이 요구사항정의서이므로 코드를 고쳤고, 마침 v0.1이 단일 등급이라 `soft`는 존재하지 않는 등급을 가리키는 이름이었다 |
 | VTT cue settings 소실 | 정보 손실 | `SSAEvent`에 필드가 없다. 원본 재파싱으로만 복구 가능 |
 | `plaintext` setter가 오버라이드 태그를 대체 | WP5 제약 | 번역을 되쓰면 `{\an8}` 등이 사라진다. WP5는 태그를 보존하는 되쓰기 경로를 직접 만들어야 한다 |
-| **인제스트 결과를 신호 엔진에 바로 넣으면 `struct.empty`가 전량 발화** | **WP6 함정** | `target_text=None`이므로 모든 세그먼트가 hard fail이 되고, hard fail은 FR-6.2에 따라 검수 예산을 **우회**하므로 검수 비율이 100%가 되어 Recall@Budget이 무의미해진다. `check` 배선(WP6)은 파싱한 파일을 `target_text`로도 채우거나 `SignalContext`에 원문-전용 모드를 둬야 한다 |
+| ~~인제스트 결과를 신호 엔진에 바로 넣으면 `struct.empty`가 전량 발화~~ | ~~WP6 함정~~ | **✅ 소멸** (설계 `9ef4869` · 구현 `4899fec`). `check`가 **신호 엔진을 아예 통과하지 않는 것**으로 닫혔다 — `spec/check.py`를 직접 부르므로 `struct.*` 수집기가 실행되지 않고 `target_text`는 전 구간 `None`으로 남는다. **여기 적힌 두 대응은 실측으로 폐기됐다**: 함정의 범위가 `struct.empty` 하나가 아니라 `struct.number_missing`·`struct.tag_lost`까지였고, 미러링(`target_text=source_text`)은 정상 한국어 반복에서 `struct.degeneration`이 hard fail을 내 새 오탐을 만든다([`check` 배선 설계](2026-08-03-check-cli-design.md) §2.3·§12.1~12.2) |
 
 ## 11. 실행 방식
 

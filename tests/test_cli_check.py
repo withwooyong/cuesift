@@ -357,8 +357,8 @@ def test_check_reports_all_violation_kinds_with_original_cue_numbers():
 
     assert result.exit_code == 1
     out = result.stdout
-    # 낱말은 `검사 큐`다. 계획서의 `큐 4개`는 Task 5 리뷰가 낱말을 좁히기 전의 표기라
-    # 그대로 두면 이 단언이 헤더 전체를 못 보고 통과한다(실측으로 정정).
+    # 낱말은 `검사 큐`다. `큐 4개`로 두면 이 단언이 헤더 전체를 못 보고 통과한다 —
+    # 부분 문자열 단언이라 `검사 큐 4개`에도 `큐 4개`가 들어 있기 때문이다(실측으로 정정).
     assert "check_violations.ass (ass · 검사 큐 4개 · 프로파일 ko)" in out
     assert "#3" in out and "line_length" in out and "22.0 > 16.0" in out
     assert "(2번째 줄)" in out

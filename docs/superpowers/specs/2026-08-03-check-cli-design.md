@@ -1,7 +1,7 @@
 # 설계 — `cuesift check` 배선 (규격 검사 CI 게이트)
 
 > 작성일: 2026-08-03 (KST)
-> 상태: 설계 확정 (구현 계획 대기)
+> 상태: **구현 완료** (2026-08-13) — [구현 계획](../plans/2026-08-13-check-cli.md) 태스크 7개
 > 대상: [요구사항정의서](../../요구사항정의서.md) FR-8.2 · FR-7.5 — [WBS](../../WBS.md) WP6 부분
 > 여는 항목: [HANDOFF](../../../HANDOFF.md) "🔴 WP6이 밟을 함정 — 인제스트 결과를 신호 엔진에 그대로 넣으면 전량 hard fail"
 > 선행: [인제스트 설계](2026-07-31-ingest-design.md)
@@ -140,7 +140,7 @@ flowchart TD
 | 위치 | 추가되는 것 | 왜 여기인가 |
 | --- | --- | --- |
 | `spec/check.py` | `TrackViolation` · `check_empty_cues()` · `check_track()` | 규격 판정이므로 자리가 맞다. **순수성을 유지한다** — `ingest`·`typer`를 임포트하지 않는다 |
-| `cli.py` | `check()` 본문 · `_resolve_profile()` · `_format_violations()` | 큐 번호 부여·포매팅·종료 코드. `event_index`를 아는 유일한 곳 |
+| `cli.py` | `check()` 본문 · `_resolve_profile()` · `_format_report()` | 큐 번호 부여·포매팅·종료 코드. `event_index`를 아는 유일한 곳 |
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -253,24 +253,43 @@ CLI가 아직 배선 전이라 호환 부담이 없다.
 
 ### 7.2 형태
 
+**아래는 손으로 쓴 예시가 아니라 실제 렌더 결과다** — 구현 완료 후
+`.venv/Scripts/cuesift.exe`로 직접 실행해 붙였다(2026-08-13, 리포 루트에서 실행).
+손으로 쓰면 문서와 구현이 갈라지고, 이 문서가 단일 진실 원천이므로
+다음 사람이 문서에 맞춰 코드를 "고치는" 사고가 난다.
+
 ```text
-$ cuesift check episode01.ko.srt --spec ko
-episode01.ko.srt (srt · 큐 120개 · 프로파일 ko)
+$ cuesift check tests/fixtures/ingest/check_violations.ass --spec ko
+tests\fixtures\ingest\check_violations.ass (ass · 검사 큐 4개 · 프로파일 ko)
 
-  #17  00:01:23.400  line_length   21.0 > 16.0  (2번째 줄)
-  #17  00:01:23.400  cps           18.2 > 12.0
-  #64  00:04:02.100  overlap       1200ms
-  #98  00:06:11.000  empty_cue     텍스트 없음
+  #3  00:00:05.000  line_length    22.0 > 16.0  (2번째 줄)
+  #3  00:00:05.000  cps            25.5 > 12.0
+  #4  00:00:05.500  overlap        500ms
+  #5  00:00:09.000  empty_cue      텍스트 없음
 
-위반 4건 · 위반 큐 3/120개 (2.5%)
+위반 4건 · 위반 큐 3/4개 (75.0%)
 ```
+
+세 가지가 이 예시의 계약이다.
+
+| 요소 | 값 | 이 값이 아니면 |
+| --- | --- | --- |
+| 헤더의 파일 이름 | **경로 전체**(`str(input)`) | `input.name`만 내면 디렉터리를 순회하는 스크립트에서 `ko/ep01.srt`와 `ja/ep01.srt`가 같은 줄로 보여 헤더의 목적이 무너진다. 경로 구분자는 플랫폼을 따른다(위는 Windows 렌더) |
+| 큐 개수 라벨 | **`검사 큐 N개`** | `cue_total`은 필터 **후** 개수라 `#N`이 이 수보다 클 수 있다. 그냥 `큐 2개`라고 쓰면 그 아래 `#4`가 찍혀 자기모순으로 읽힌다 |
+| `kind` 열 폭 | 15칸(`_KIND_WIDTH`) | 가장 긴 `duration_short`가 14자다. 좁히면 수치와 붙고, 한글 kind를 넣으면 표시 폭이 글자 수와 달라 그 줄만 밀린다 |
 
 위반이 없을 때도 **검사 대상 개수를 출력한다.**
 
 ```text
-$ cuesift check clean.ko.srt --spec ko
-clean.ko.srt (srt · 큐 120개 · 프로파일 ko) — 위반 없음
+$ cuesift check tests/fixtures/ingest/minimal.srt --spec ko
+tests\fixtures\ingest\minimal.srt (srt · 검사 큐 2개 · 프로파일 ko) - 위반 없음
 ```
+
+**여기의 `-`는 ASCII 하이픈(U+002D)이고 em dash(U+2014)가 아니다.** 출력 문자열은
+**cp949에서 인코딩 가능해야 한다** — Windows 기본 로케일에서 stdout을 리다이렉트하면
+em dash가 `UnicodeEncodeError`를 내고 프로세스가 **종료 코드 1**로 죽는다. 이 저장소에서
+1은 "규격 위반 발견"이므로 **위반 0건인 깨끗한 자막이 CI에서 실패로 읽힌다.**
+이 문서의 산문에는 em dash를 써도 되지만 **출력 리터럴에는 쓰지 않는다.**
 
 [CLAUDE.md](../../../CLAUDE.md)의 규율 그대로다 — **"통과했나"가 아니라 "무엇을 대상으로
 통과했나"를 본다.** 큐 개수와 프로파일 이름이 출력에 없으면 사용자는 엉뚱한 파일이나
@@ -284,7 +303,9 @@ clean.ko.srt (srt · 큐 120개 · 프로파일 ko) — 위반 없음
 
 ### 7.4 포매팅은 순수 함수로 분리한다
 
-`_format_violations(...) -> list[str]`을 `cli.py`의 모듈 수준 순수 함수로 둔다.
+`_format_report(...) -> list[str]`을 `cli.py`의 모듈 수준 순수 함수로 둔다.
+**이름이 `_format_violations`가 아닌 것은** 위반이 0건일 때의 헤더 한 줄도 이 함수가
+내기 때문이다 — 위반만 포매팅하는 함수라면 "무엇을 대상으로 통과했나"가 밖으로 샌다.
 `CliRunner` 없이 문자열 입출력으로 직접 테스트할 수 있어야, 정렬·자릿수·큐 번호 부여 같은
 포맷 결함이 CLI 통합 테스트에 묻히지 않는다.
 
@@ -314,6 +335,13 @@ Q2 확정 이전의 잔재다. 설계대로면 이 명령은 exit `2`와 함께
 **요구사항정의서의 예시를 `--spec ja`로 정정하는 것을 함께 제안한다.**
 문서에 적힌 명령이 실행되지 않는 것은 문서가 검증되지 않았다는 신호이고,
 이 저장소에서 그것은 "검사하지 않고 통과하는 게이트"와 같은 부류다.
+
+> **✅ 반영됨** (2026-08-13, 사용자 승인). 요구사항정의서 §3.2 S3와 §8.1을
+> `cuesift check episode01.ja.srt --spec ja --fail-on hard`로 고쳤다.
+> **`--spec`만 바꾸지 않고 파일명도 함께 바꿨다** — `episode01.th.srt --spec ja`는
+> "태국어 파일을 일본어 규격으로 검사"하는 더 이상한 명령이 된다.
+> §3.2 S1의 `--to en,ja,th,vi`는 그대로 두었다: 그것은 **번역 대상 언어**이지
+> 규격 프로파일이 아니고, 목록에 `ja`가 있어 S1→S3 시나리오 연결이 유지된다.
 
 ## 10. 테스트 전략
 
