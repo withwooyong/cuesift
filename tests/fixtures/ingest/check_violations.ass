@@ -1,0 +1,14 @@
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize
+Style: Default,Arial,20
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Comment: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,머리말 주석 — 화면에 나오지 않는다
+Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,정상 큐입니다
+Dialogue: 0,0:00:05.00,0:00:06.00,Default,,0,0,0,,짧은 줄\N열여섯 자를 확실히 넘기는 아주 긴 두 번째 줄
+Dialogue: 0,0:00:05.50,0:00:08.00,Default,,0,0,0,,겹치는 큐
+Dialogue: 0,0:00:09.00,0:00:10.00,Default,,0,0,0,,

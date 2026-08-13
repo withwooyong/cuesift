@@ -6,12 +6,21 @@
 
 from __future__ import annotations
 
+import io
+import sys
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from cuesift.cli import _format_detail, _format_report, _format_timecode, _resolve_profile
+from cuesift.cli import (
+    _format_detail,
+    _format_report,
+    _format_timecode,
+    _harden_output_streams,
+    _resolve_profile,
+    app,
+)
 from cuesift.spec import SpecViolation, TrackViolation
 
 runner = CliRunner()
@@ -296,3 +305,210 @@ def test_format_report_denominator_stays_the_filtered_cue_count():
     assert "#4" in body, "원본 큐 번호는 검사 큐 수보다 클 수 있다"
     # 분모는 검사한 큐 수(2)다. 원본 이벤트 수(4)로 되돌리면 50.0%가 된다.
     assert "위반 큐 2/2개 (100.0%)" in body
+
+
+def test_check_reports_all_violation_kinds_with_original_cue_numbers():
+    """설계 §10.3의 세 항목 중 둘을 한 번에 닫는다 — 큐 번호와 출력 형식.
+
+    이 픽스처는 머리말 Comment 때문에 네 큐 전부 event_index != index다.
+    큐 번호를 segment.index + 1로 계산하면 네 줄이 전부 1씩 작게 나온다.
+    """
+    result = runner.invoke(app, ["check", str(FIXTURES / "check_violations.ass"), "--spec", "ko"])
+
+    assert result.exit_code == 1
+    out = result.stdout
+    # 낱말은 `검사 큐`다. 계획서의 `큐 4개`는 Task 5 리뷰가 낱말을 좁히기 전의 표기라
+    # 그대로 두면 이 단언이 헤더 전체를 못 보고 통과한다(실측으로 정정).
+    assert "check_violations.ass (ass · 검사 큐 4개 · 프로파일 ko)" in out
+    assert "#3" in out and "line_length" in out and "22.0 > 16.0" in out
+    assert "(2번째 줄)" in out
+    assert "#3" in out and "cps" in out and "25.5 > 12.0" in out
+    assert "#4" in out and "overlap" in out and "500ms" in out
+    assert "#5" in out and "empty_cue" in out and "텍스트 없음" in out
+    assert "위반 4건 · 위반 큐 3/4개 (75.0%)" in out
+    # 필터 후 인덱스로 셌다면 #1·#2·#3·#4가 나온다. #1은 정상 큐라 나오면 안 된다.
+    assert "#1 " not in out
+
+
+def test_check_passes_a_clean_track():
+    result = runner.invoke(app, ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko"])
+    assert result.exit_code == 0
+    assert "minimal.srt (srt · 검사 큐 2개 · 프로파일 ko) - 위반 없음" in result.stdout
+
+
+def test_check_flags_line_count_not_line_length_on_multiline():
+    """실측: multiline.vtt는 세 줄이지만 각 줄은 16자를 넘지 않는다."""
+    result = runner.invoke(app, ["check", str(FIXTURES / "multiline.vtt"), "--spec", "ko"])
+    assert result.exit_code == 1
+    assert "line_count" in result.stdout
+    assert "line_length" not in result.stdout
+
+
+def test_check_flags_overlap_with_the_measured_gap():
+    """실측: overlap.vtt의 겹침은 1000ms다."""
+    result = runner.invoke(app, ["check", str(FIXTURES / "overlap.vtt"), "--spec", "ko"])
+    assert result.exit_code == 1
+    assert "overlap" in result.stdout
+    assert "1000ms" in result.stdout
+
+
+def test_check_now_catches_the_empty_cue_that_nothing_caught_before():
+    """설계 §12.3 — 세 경로 전부 놓치던 사각지대를 check_empty_cues가 닫는다."""
+    result = runner.invoke(app, ["check", str(FIXTURES / "empty_cue.srt"), "--spec", "ko"])
+    assert result.exit_code == 1
+    assert "empty_cue" in result.stdout
+    assert "#2" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    ["not_subtitle.txt", "cp949.srt", "reversed.srt", "all_comments.ass"],
+)
+def test_bad_file_content_exits_66_not_2(fixture: str):
+    """설계 §10.3 — 둘 다 '0이 아님'이라 != 0으로 단언하면 뒤바뀌어도 통과한다.
+
+    66은 파일 내용이 틀렸다는 뜻이고 2는 호출이 틀렸다는 뜻이다.
+    CI가 둘을 구분하지 못하면 '경로 오타'와 '자막이 깨졌다'에 같은 대응을 한다.
+    """
+    result = runner.invoke(app, ["check", str(FIXTURES / fixture), "--spec", "ko"])
+    assert result.exit_code == 66
+
+
+def test_missing_file_exits_2_not_66():
+    result = runner.invoke(app, ["check", str(FIXTURES / "없는파일.srt"), "--spec", "ko"])
+    assert result.exit_code == 2
+
+
+def test_directory_input_exits_2():
+    """HANDOFF가 WP6으로 미뤄 둔 항목 — typer가 거른다 (설계 D11).
+
+    인제스트에서 처리하면 디렉터리가 not_found로 보고되어
+    '존재하는데 없다'는 틀린 진단이 남는다.
+    """
+    result = runner.invoke(app, ["check", str(FIXTURES), "--spec", "ko"])
+    assert result.exit_code == 2
+
+
+def test_unknown_profile_exits_2():
+    result = runner.invoke(app, ["check", str(FIXTURES / "minimal.srt"), "--spec", "th"])
+    assert result.exit_code == 2
+
+
+def test_fail_on_none_prints_violations_but_exits_0():
+    """게이트를 끄고 보고만 받는 경로다 (설계 §11 R2)."""
+    result = runner.invoke(
+        app,
+        ["check", str(FIXTURES / "overlap.vtt"), "--spec", "ko", "--fail-on", "none"],
+    )
+    assert result.exit_code == 0
+    assert "overlap" in result.stdout
+
+
+def test_fail_on_hard_and_any_agree_in_v01():
+    """설계 §5.1 — v0.1에는 등급이 하나다. 둘이 갈라지면 등급이 생긴 것이다."""
+    codes = []
+    for value in ("hard", "any"):
+        result = runner.invoke(
+            app,
+            ["check", str(FIXTURES / "overlap.vtt"), "--spec", "ko", "--fail-on", value],
+        )
+        codes.append(result.exit_code)
+    assert codes == [1, 1]
+
+
+def test_a_clean_file_with_a_non_cp949_name_still_exits_zero(tmp_path):
+    """출력에 실리는 것은 우리 리터럴만이 아니다 — 사용자 파일 경로가 그대로 들어간다.
+
+    Windows 기본 로케일(cp949)에서 인코딩할 수 없는 문자가 파일명에 있으면
+    리다이렉트 시 `UnicodeEncodeError`로 프로세스가 죽고 종료 코드 1이 나간다.
+    이 저장소에서 1은 "규격 위반 발견"이므로 **위반 0건인 파일이 CI에서 실패로 읽힌다.**
+
+    실측된 사례: `Amélie.srt`(U+00E9) · `S01E01 – ko.srt`(U+2013).
+    이모지·간체 한자·NBSP도 같다. 자막 파일명에 흔한 문자들이다.
+    """
+    target = tmp_path / "Amélie – ko.srt"
+    target.write_bytes((FIXTURES / "minimal.srt").read_bytes())
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    assert result.exit_code == 0, result.stderr
+
+
+def test_an_unreadable_file_exits_66_not_1(monkeypatch):
+    """읽을 수 없는 파일은 "파일이 틀림"(66)이지 "규격 위반"(1)이 아니다.
+
+    `loader.py`가 `OSError`를 `IngestError`로 정규화하지 않으면 `PermissionError`가
+    `except IngestError`를 통과해 미처리 traceback이 되고 exit 1이 된다.
+    Windows에서는 편집기·트랜스코더·OneDrive가 자막을 잡고 있는 것이 흔하다.
+
+    **권한을 실제로 조작하지 않는 이유:** 그쪽은 `test_ingest.py`가 플랫폼별 수단으로
+    맡는다. 여기서 같은 설정을 반복하면 잠금 수단이 안 먹는 환경에서 이 테스트도 함께
+    조용히 건너뛰어져, **CLI 계약(66)이 검증되지 않은 채로 통과**한다.
+    읽기 지점에서 `PermissionError`를 던지게 하는 것이 플랫폼과 무관하게 같은 계약을
+    검증한다.
+    """
+    import pysubs2
+
+    def raise_permission_error(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(pysubs2, "load", raise_permission_error)
+
+    result = runner.invoke(app, ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko"])
+
+    assert result.exit_code == 66, f"exit {result.exit_code} — 1이면 규격 위반으로 오보된다"
+
+
+def test_violations_go_to_stdout_and_diagnostics_go_to_stderr():
+    """설계 §10.3 — mix_stderr면 섞여서 구분되지 않는다.
+
+    위반 목록은 이 명령의 정상 산출물이지 오류 메시지가 아니다.
+    `cuesift check ... > violations.txt`로 갈무리할 수 있어야 한다.
+    """
+    ok = runner.invoke(app, ["check", str(FIXTURES / "overlap.vtt"), "--spec", "ko"])
+    assert "overlap" in ok.stdout
+    assert "overlap" not in ok.stderr
+
+    bad = runner.invoke(app, ["check", str(FIXTURES / "cp949.srt"), "--spec", "ko"])
+    assert bad.exit_code == 66
+    assert "utf-8" in bad.stderr
+    assert bad.stdout.strip() == ""
+
+
+def test_harden_output_streams_covers_stderr_too():
+    """stdout만 걸면 66이 1로 바뀐다 — `IngestError` 메시지는 stderr로 나간다.
+
+    `CliRunner`의 스트림은 utf-8이라 CLI 테스트로는 이 결함이 드러나지 않는다.
+    cp949 스트림을 직접 만들어 확인한다.
+
+    **설정값만 보지 않고 실제로 써 본다.** `errors` 속성만 단언하면 핸들러가
+    쓰기 경로에 안 걸려도 통과한다.
+    """
+    streams = {name: io.TextIOWrapper(io.BytesIO(), encoding="cp949") for name in ("out", "err")}
+    original = (sys.stdout, sys.stderr)
+    sys.stdout, sys.stderr = streams["out"], streams["err"]
+    try:
+        _harden_output_streams()
+        for stream in streams.values():
+            # cp949가 인코딩하지 못하는 문자들이다(실측): U+00E9 · U+2013 · U+2014.
+            stream.write("Amélie – ko.srt 위반 없다 — 끝")
+            stream.flush()
+    finally:
+        sys.stdout, sys.stderr = original
+
+    assert [stream.errors for stream in streams.values()] == ["backslashreplace"] * 2
+
+
+def test_harden_output_streams_survives_a_stream_without_reconfigure():
+    """`io.StringIO`로 stdout을 갈아 끼운 호출자가 있어도 죽지 않아야 한다.
+
+    `AttributeError`로 죽으면 그것이야말로 이 함수가 막으려던 종류의 사고다 —
+    미처리 traceback은 종료 코드 1이고, 1은 이 저장소에서 "규격 위반 발견"이다.
+    `io.StringIO`에는 `reconfigure`가 없다(실측).
+    """
+    original = (sys.stdout, sys.stderr)
+    sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+    try:
+        _harden_output_streams()
+    finally:
+        sys.stdout, sys.stderr = original

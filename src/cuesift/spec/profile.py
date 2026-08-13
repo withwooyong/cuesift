@@ -112,7 +112,10 @@ def load_profile(path: Path) -> SpecProfile:
     # 기본값을 넣으면 사용자가 의도한 것과 다른 규격으로 검사하게 된다.
     missing = [k for k in _REQUIRED if k not in raw]
     if missing:
-        raise ValueError(f"{path}: 필수 필드가 없다 — {', '.join(missing)}")
+        # 이 메시지는 `--spec`을 통해 stderr로 나간다. em dash(U+2014)를 쓰지 않는 것은
+        # cp949가 그것을 인코딩하지 못해(실측) 리다이렉트 시 종료 코드가 2에서 1로
+        # 바뀌기 때문이다 — 1은 이 저장소에서 "규격 위반 발견"이다.
+        raise ValueError(f"{path}: 필수 필드가 없다 - {', '.join(missing)}")
 
     try:
         counting = CharCounting(raw["char_counting"])

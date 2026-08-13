@@ -87,6 +87,11 @@ def _load(path: Path) -> pysubs2.SSAFile:
 
     번역하지 않으면 호출자가 pysubs2 예외 계층을 알아야 하고,
     그 순간 §7.2의 "외부 의존을 인터페이스 뒤로 격리"가 무너진다.
+
+    **호출자가 예외를 열거하지 않아도 되게 하는 것이 계약이다** (`spec/profile.py`가
+    내용 오류를 `ValueError`로 모은 것과 같은 판단). 열거는 계약이 아니라 관찰이라
+    피호출자가 새 예외를 낼 때마다 뒤처지고, 뒤처진 쪽으로 샌 예외는 미처리
+    traceback이 되어 종료 코드 1로 나간다 — 이 저장소에서 1은 "규격 위반 발견"이다.
     """
     try:
         return pysubs2.load(path, encoding="utf-8")
@@ -99,8 +104,27 @@ def _load(path: Path) -> pysubs2.SSAFile:
             f"{path}: utf-8로 읽을 수 없다 (바이트 {exc.start}). "
             "파일을 utf-8로 변환한 뒤 다시 시도한다.",
         ) from exc
+    except OSError as exc:
+        # `_reject_non_subtitle`의 `is_file()`은 **존재만 보고 읽기 권한은 보지 않는다.**
+        # 여기서 잡지 않으면 `PermissionError`가 호출자의 `except IngestError`를 그대로
+        # 통과해 미처리 traceback이 되고 종료 코드 1이 된다 — 1은 "규격 위반 발견"이라
+        # **잠긴 파일이 자막 결함으로 오보된다.** Windows에서는 편집기·트랜스코더·
+        # OneDrive가 자막을 잡고 있는 것이 흔하고, Linux에서는 mode 000이 같은 결과다.
+        #
+        # 검사와 열기 사이에 파일이 사라지면 `FileNotFoundError`도 여기로 온다.
+        # `not_found`로 되돌리지 않는 것은 그 경합에서 참인 진술이 "없다"가 아니라
+        # "읽을 수 없다"이기 때문이다 — 진단이 원인을 좁히지 못하는 편이 틀리는 것보다 낫다.
+        #
+        # OSError는 `Pysubs2Error`·`ValueError`와 서로 겹치지 않으므로(실측)
+        # 아래 절과 순서를 바꿔도 결과가 같다. 읽기 실패를 먼저 두는 것은 읽기가
+        # 파싱보다 먼저 일어나기 때문이다.
+        raise IngestError(
+            "unreadable",
+            f"{path}: 파일을 읽을 수 없다 ({exc.strerror or exc}). "
+            "다른 프로그램이 파일을 잡고 있는지, 읽기 권한이 있는지 확인한다.",
+        ) from exc
     except (Pysubs2Error, ValueError) as exc:
-        raise IngestError("parse", f"{path}: 자막으로 해석할 수 없다 — {exc}") from exc
+        raise IngestError("parse", f"{path}: 자막으로 해석할 수 없다 - {exc}") from exc
 
 
 def _reject_non_subtitle(path: Path) -> None:

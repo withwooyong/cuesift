@@ -1,8 +1,22 @@
 """cuesift CLI 진입점.
 
 요구사항정의서 §8.1(FR-8.1~8.5)의 커맨드 표면을 정의한다.
-현재 각 서브커맨드는 **동작하지 않는 골격**이며, 인자 스키마만 확정한 상태다.
-구현이 붙기 전까지 EXIT_NOT_IMPLEMENTED로 종료한다.
+`check`는 배선이 끝나 실제로 동작한다. `translate`·`transcribe`는 아직
+인자 스키마만 확정한 골격이라 EXIT_NOT_IMPLEMENTED로 종료한다.
+
+**종료 코드 다섯이 서로 겹치지 않는 것이 이 파일의 계약이다.**
+
+| 코드 | 언제 | 근거 |
+| --- | --- | --- |
+| 0 | 위반 없음, 또는 `--fail-on none` | |
+| 1 | 규격 위반 발견 | FR-7.5 |
+| 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패) | typer 관행 |
+| 66 | 파일 내용이 틀림 (자막 아님·utf-8 아님·읽을 수 없음) | `sysexits.h` EX_NOINPUT |
+| 70 | 미구현 | |
+
+**1을 진단 실패에 쓰지 않는 것이 핵심이다.** 1은 "규격 위반 발견"이므로
+파일을 못 읽은 것을 1로 내면 CI가 "자막이 깨졌다"와 "경로가 틀렸다"에
+같은 대응을 하게 되고, 사용자는 멀쩡한 자막을 고치려 든다.
 """
 
 from __future__ import annotations
@@ -16,15 +30,29 @@ from typing import Annotated
 import typer
 
 from cuesift import __version__
-from cuesift.spec import SpecProfile, SpecViolation, TrackViolation, load_builtin, load_profile
+from cuesift.ingest import IngestError, load_subtitle
+from cuesift.spec import (
+    SpecProfile,
+    SpecViolation,
+    TrackViolation,
+    check_track,
+    load_builtin,
+    load_profile,
+)
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
-# FR-8.2의 --fail-on은 향후 1을 쓰고, 70은 미구현 표식으로 남긴다.
+# `check`는 이제 1을 쓰므로(FR-7.5) 70은 남은 두 골격 커맨드의 표식이다.
 EXIT_NOT_IMPLEMENTED = 70
+
+# sysexits.h EX_NOINPUT — 파일 내용이 틀렸다는 뜻이다. 명령줄이 틀린 2와 구분한다.
+# CI가 둘을 구분하지 못하면 "경로 오타"와 "자막이 깨졌다"에 같은 대응을 하게 된다.
+EXIT_BAD_INPUT = 66
 
 app = typer.Typer(
     name="cuesift",
-    help="AI 자막 번역·검수 트리아지 엔진 — 사람이 정말 봐야 할 자막만 걸러냅니다.",
+    # em dash(U+2014)를 쓰지 않는다. 이 문자열은 `--help`로 출력되는데
+    # cp949는 U+2014를 인코딩하지 못한다(실측). `·`(U+00B7)는 인코딩되므로 남긴다.
+    help="AI 자막 번역·검수 트리아지 엔진. 사람이 정말 봐야 할 자막만 걸러냅니다.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -63,6 +91,36 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit(0)
 
 
+def _harden_output_streams() -> None:
+    """인코딩할 수 없는 문자가 프로세스를 죽이지 못하게 한다.
+
+    **출력에 실리는 것은 우리 리터럴만이 아니다** — 사용자가 준 파일 경로와 `--spec`
+    경로가 그대로 들어간다. Windows 기본 로케일(cp949)에서 인코딩할 수 없는 문자가
+    그 안에 있으면 리다이렉트 시 `UnicodeEncodeError`로 프로세스가 죽고 **종료 코드 1**이
+    나간다. 이 저장소에서 1은 "규격 위반 발견"이므로 **위반 0건인 깨끗한 파일이 CI에서
+    실패로 읽힌다.** 실측된 사례: `Amélie.srt`(U+00E9) · `S01E01 – ko.srt`(U+2013).
+    이모지·간체 한자·NBSP도 같다. 자막 파일명에 흔한 문자들이다.
+
+    **em dash 금지는 우리가 쓰는 리터럴만 통제하고 사용자 입력이 흐르는 이 경로는
+    못 막는다.** 그래서 규칙이 아니라 스트림 설정으로 닫는다.
+
+    **`check()`가 아니라 그룹 콜백에서 부르는 이유**는 종료 코드 2가 여기 걸려 있기
+    때문이다. `exists=True` 위반 메시지는 click이 렌더하는데, 그 렌더는 서브커맨드
+    본문보다 **먼저** 일어난다(실측: 그룹 콜백 → 인자 검증 → 본문). `check()` 안에서
+    부르면 exit 2 경로는 이미 지나간 뒤라 손대지 못하고, 없는 파일 이름에 é가 있으면
+    2가 아니라 1이 나간다. stderr까지 함께 거는 것은 `IngestError` 메시지가 경로를
+    담아 stderr로 나가기 때문이다 — 그쪽이 죽으면 66이 1로 바뀐다.
+
+    `reconfigure`가 없는 스트림은 건너뛴다. `io.StringIO`로 stdout을 갈아 끼우고
+    `app()`을 부르는 호출자가 있으면 `AttributeError`로 죽는데, 그것이야말로 이
+    함수가 막으려던 종류의 사고다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
+
+
 @app.callback()
 def main(
     version: Annotated[
@@ -80,12 +138,14 @@ def main(
         typer.Option(
             "--config",
             "-c",
+            # `--help`로 출력되는 문자열이므로 em dash를 쓰지 않는다(전역 제약).
             help="설정 파일 경로 (기본: ./cuesift.yaml). "
-            "FR-8.4 — CLI 인자가 설정 파일보다 우선합니다.",
+            "FR-8.4: CLI 인자가 설정 파일보다 우선합니다.",
         ),
     ] = None,
 ) -> None:
     """공통 옵션."""
+    _harden_output_streams()
 
 
 @app.command()
@@ -101,7 +161,7 @@ def translate(
         bool, typer.Option("--dry-run", help="실행하지 않고 비용만 추정합니다.")
     ] = False,
 ) -> None:
-    """FR-8.1 — 번역·검수 전 파이프라인을 실행합니다."""
+    """FR-8.1: 번역·검수 전 파이프라인을 실행합니다."""
     _not_implemented("translate")
 
 
@@ -234,14 +294,65 @@ def _format_report(
 
 @app.command()
 def check(
-    input: Annotated[Path, typer.Argument(help="검사할 자막 파일")],
-    spec: Annotated[str, typer.Option("--spec", help="규격 프로파일 이름 (예: th)")],
+    input: Annotated[
+        Path,
+        typer.Argument(exists=True, dir_okay=False, help="검사할 자막 파일"),
+    ],
+    spec: Annotated[
+        str,
+        typer.Option("--spec", help="규격 프로파일 이름(예: ko) 또는 .yaml 파일 경로"),
+    ],
     fail_on: Annotated[
-        FailOn, typer.Option("--fail-on", help="이 심각도 이상이면 종료 코드 ≠ 0")
+        FailOn,
+        # help 문자열은 `--help`로 출력되므로 em dash를 쓰지 않는다(전역 제약).
+        typer.Option("--fail-on", help="hard와 any는 v0.1에서 같다. 위반 1건이면 종료 코드 1"),
     ] = FailOn.hard,
 ) -> None:
-    """FR-8.2 — 자막 규격 검사만 수행합니다 (CI 게이트)."""
-    _not_implemented("check")
+    """FR-8.2: 자막 규격 검사만 수행합니다 (CI 게이트).
+
+    **신호 엔진을 통과하지 않는다**(설계 D3). `collect_all`→`fuse`→`triage`가
+    얹는 넷(점수화·hard_fail·융합·트리아지)을 이 명령이 하나도 쓰지 않기
+    때문이다. 심각도가 단일 등급이고 예산도 순위도 없다. 규격 판정의 원천은
+    `spec/check.py` 하나이고 translate 경로와 여기가 양쪽 다 그것을 쓴다.
+    """
+    # `_resolve_profile`은 프로파일과 **표시용 라벨**을 함께 낸다. 라벨이 따로 필요한 것은
+    # `profile.name`이 YAML의 `name` 필드라서, `--spec ./our-spec.yaml`인데 그 파일이
+    # `name: ko`면 헤더가 내장 `ko`로 검사한 것과 **바이트 단위로 같아지기** 때문이다.
+    # 설계 §7.2가 헤더를 둔 이유("엉뚱한 프로파일로 통과한 것을 알 수 없다")가 FR-5.3
+    # 경로에서 정확히 무효화된다.
+    profile, profile_label = _resolve_profile(spec)
+
+    try:
+        result = load_subtitle(input)
+    except IngestError as exc:
+        # 진단 실패는 산출물이 아니라 실행 실패 보고다. stderr로 낸다(설계 §7.1).
+        # `IngestError` 하나만 잡으면 되는 것은 `loader.py`가 자기 실패를 전부 이
+        # 타입으로 모으기 때문이다 — `OSError`까지 포함한다. 여기서 예외를 열거하기
+        # 시작하면 로더가 새 실패를 낼 때마다 뒤처지고, 샌 예외는 미처리 traceback으로
+        # 종료 코드 1이 되어 "규격 위반 발견"으로 오보된다.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(EXIT_BAD_INPUT) from exc
+
+    violations = check_track(result.segments, profile)
+
+    # 위반 목록은 이 명령의 정상 산출물이므로 stdout이다(설계 D9).
+    # 사용자 경로가 이 줄에 실리지만 인코딩 사고는 `_harden_output_streams`가 막는다.
+    for line in _format_report(
+        # 이름이 아니라 **경로 전체**를 넘긴다. `input.name`만 넘기면 디렉터리를 순회하며
+        # 로그를 합치는 스크립트에서 `ko/ep01.srt`와 `ja/ep01.srt`가 같은 줄로 보이고,
+        # 헤더의 목적("엉뚱한 파일로 통과한 것을 알 수 있게")이 정확히 무너진다.
+        # `IngestError` 메시지도 전체 경로를 쓰므로 표기가 일관된다.
+        source_name=str(input),
+        fmt=result.format,
+        profile_label=profile_label,
+        cue_total=len(result.segments),
+        violations=violations,
+        event_index=result.event_index,
+    ):
+        typer.echo(line)
+
+    if violations and fail_on is not FailOn.none:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -249,7 +360,7 @@ def transcribe(
     input: Annotated[Path, typer.Argument(help="영상 또는 오디오 파일")],
     source_lang: Annotated[str | None, typer.Option("--source-lang", help="원문 언어")] = None,
 ) -> None:
-    """FR-8.3 — STT로 원문 자막만 생성합니다."""
+    """FR-8.3: STT로 원문 자막만 생성합니다."""
     _not_implemented("transcribe")
 
 

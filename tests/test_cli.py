@@ -7,6 +7,7 @@
 import inspect
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from cuesift import __version__
@@ -43,9 +44,17 @@ def test_translate_accepts_documented_flags():
 
 
 def test_check_accepts_documented_flags():
-    """요구사항정의서 §8.1 S3의 CI 게이트 호출 형태."""
-    result = runner.invoke(app, ["check", "episode01.th.srt", "--spec", "th", "--fail-on", "hard"])
-    assert result.exit_code == EXIT_NOT_IMPLEMENTED
+    """요구사항정의서 §8.1 S3의 CI 게이트 호출 형태.
+
+    문서의 예시는 --spec th였으나 내장 프로파일에 th가 없다. Q2가 초기 언어쌍을
+    ko→en/ja로 확정했으므로 태국어는 v0.1 범위 밖이고, 문서를 --spec ja로
+    정정했다(Task 7·설계 §9).
+    """
+    result = runner.invoke(
+        app,
+        ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko", "--fail-on", "hard"],
+    )
+    assert result.exit_code == 0
 
 
 def test_transcribe_accepts_documented_flags():
@@ -91,6 +100,34 @@ def test_fail_on_members_match_the_requirements_doc():
     FR-7.5는 목록을 확정한 것이므로 집합 동등성이 맞는 단언이다.
     """
     assert [member.value for member in FailOn] == ["hard", "any", "none"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--help"], ["check", "--help"], ["translate", "--help"], ["transcribe", "--help"]],
+)
+def test_help_output_is_encodable_in_the_cp949_locale(args: list[str]):
+    """전역 제약 "출력 문자열에 em dash 금지"를 규율이 아니라 게이트로 닫는다.
+
+    `--help`는 **그룹 콜백보다 먼저** 렌더되므로(실측: eager 옵션은 make_context에서
+    처리된다) `_harden_output_streams`가 닿지 않는다. 리터럴을 고치는 것 말고는
+    막을 방법이 없고, 리터럴은 규율로만 지켜지므로 반드시 새어 나간다 —
+    실제로 `translate`·`transcribe` 독스트링의 U+2014가 남아 있어
+    `cuesift --help > help.txt`가 cp949 로케일에서 **종료 코드 1**로 죽었다.
+    이 저장소에서 1은 "규격 위반 발견"이다.
+
+    커맨드 독스트링이 그대로 help가 되므로 **독스트링도 출력 문자열이다.**
+    `·`(U+00B7)·`§`(U+00A7)·`→`(U+2192)는 cp949가 인코딩하므로 계속 써도 된다.
+
+    렌더된 출력 전체를 보는 것은 rich의 테두리 문자까지 포함해야 진짜 계약이기
+    때문이다. rich가 둥근 모서리(U+256D)로 바꾸면 이 테스트가 빨개지는데,
+    그것은 오탐이 아니라 Windows 사용자에게 실제로 깨지는 회귀다.
+    """
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0
+    # 인코딩 불가 문자가 있으면 UnicodeEncodeError로 여기서 터진다.
+    result.stdout.encode("cp949")
 
 
 def test_fail_on_defaults_to_hard():

@@ -26,6 +26,7 @@ EXPECTED = (
     "multiline.vtt",
     "basic.ssa",
     "comment_then_reversed.ass",
+    "check_violations.ass",
 )
 
 
@@ -53,6 +54,21 @@ def test_cp949_fixture_is_not_utf8():
     with pytest.raises(UnicodeDecodeError):
         raw.decode("utf-8")
     raw.decode("cp949")  # 예외가 나지 않아야 한다
+
+
+def test_check_violations_fixture_keeps_the_leading_comment():
+    """머리말 `Comment:`가 사라지면 event_index와 segment.index가 **같아진다.**
+
+    그러면 큐 번호를 `segment.index + 1`로 계산해도
+    `test_check_reports_all_violation_kinds_with_original_cue_numbers`가 통과한다 —
+    검사하지 않고 통과하는 게이트가 된다. 기존 12개 픽스처 중 둘이 갈라지는 것은
+    `tags.ass` 하나뿐이었고 위반이 0건이라 큐 번호를 검증할 수 없었다.
+    """
+    text = (FIXTURES / "check_violations.ass").read_text(encoding="utf-8")
+    events = [ln for ln in text.splitlines() if ln.startswith(("Comment:", "Dialogue:"))]
+
+    assert events[0].startswith("Comment:"), "머리말 주석이 첫 이벤트가 아니다"
+    assert sum(1 for ln in events if ln.startswith("Dialogue:")) == 4
 
 
 def test_tags_ass_has_styles_section():

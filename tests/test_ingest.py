@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -118,6 +121,66 @@ def test_non_subtitle_text_raises_parse():
         load_subtitle(FIXTURES / "not_subtitle.txt")
 
     assert exc.value.reason == "parse"
+
+
+def test_unreadable_file_raises_unreadable_not_a_bare_oserror(tmp_path):
+    """읽을 수 없는 파일도 `IngestError`로 모은다 (설계 §5).
+
+    **정규화하지 않으면 `PermissionError`가 호출자의 `except IngestError`를 통과해**
+    미처리 traceback이 되고 종료 코드 1이 된다 — 이 저장소에서 1은 "규격 위반 발견"이라
+    **잠긴 파일이 자막 결함으로 오보된다.** Windows에서는 편집기·트랜스코더·OneDrive가
+    자막을 잡고 있는 것이 흔하다.
+
+    `path.is_file()`은 존재만 보고 읽기 권한은 보지 않으므로 이 경로를 못 막는다.
+    실제로 읽을 수 없게 만들어 확인한다 — mock으로 확인하면 `pysubs2.load`가 정말
+    `OSError`를 내는지를 우리가 가정하게 되고, 그 가정이 이 테스트의 검증 대상이다.
+    """
+    target = tmp_path / "locked.srt"
+    target.write_bytes((FIXTURES / "minimal.srt").read_bytes())
+
+    with _unreadable(target):
+        # 잠금·권한이 실제로 읽기를 막았는지 먼저 본다. 막지 못했다면 아래 단언은
+        # 통과해도 아무것도 검증하지 않은 것이다 — 검사하지 않고 통과하는 게이트다.
+        try:
+            target.read_bytes()
+        except OSError:
+            pass
+        else:
+            pytest.skip("이 환경에서는 파일을 읽을 수 없게 만들지 못했다 (root 등)")
+
+        with pytest.raises(IngestError) as exc:
+            load_subtitle(target)
+
+    # 기존 6종(empty·decode·parse·not_found·video_input·bad_timecode)과 겹치지 않는다.
+    assert exc.value.reason == "unreadable"
+
+
+@contextmanager
+def _unreadable(path: Path) -> Iterator[None]:
+    """파일을 실제로 읽을 수 없게 만든다 — 플랫폼마다 수단이 다르다.
+
+    Windows에서 `chmod 000`은 읽기를 막지 못하고(읽기 전용 플래그만 선다)
+    POSIX에는 `msvcrt`가 없다. 한쪽 수단만 쓰면 다른 플랫폼에서 조용히 통과한다.
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        size = path.stat().st_size
+        with path.open("r+b") as handle:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, size)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, size)
+    else:
+        original = path.stat().st_mode
+        path.chmod(0o000)
+        try:
+            yield
+        finally:
+            # 되돌리지 않으면 pytest의 tmp_path 정리가 실패한다.
+            path.chmod(original)
 
 
 def test_comments_and_drawings_are_excluded_from_segments():
