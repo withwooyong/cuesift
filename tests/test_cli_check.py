@@ -21,13 +21,50 @@ SPECS = Path(__file__).parents[1] / "specs"
 
 
 def test_resolve_profile_reads_a_builtin_name():
-    assert _resolve_profile("ko").name == "ko"
+    profile, label = _resolve_profile("ko")
+    assert profile.name == "ko"
+    assert label == "ko"
 
 
 def test_resolve_profile_reads_a_yaml_path():
     """FR-5.3 — 사용자 프로파일이 CLI에서 도달 가능해야 한다."""
-    profile = _resolve_profile(str(SPECS / "ted-ko.yaml"))
+    profile, _ = _resolve_profile(str(SPECS / "ted-ko.yaml"))
     assert profile.name == "ted-ko"
+
+
+def test_resolve_profile_labels_a_user_file_with_its_source():
+    """사용자 프로파일은 규격 이름만으로 내장과 구별되지 않는다 (설계 §7.2).
+
+    `name: ko`인 사용자 파일과 내장 `ko`는 헤더가 **바이트 단위로 같아진다.**
+    그러면 "엉뚱한 프로파일로 통과한 것을 알 수 없다"를 막으려고 헤더를 둔
+    의미가 사라진다 — 하필 FR-5.3 경로에서만 죽는다.
+
+    출처를 label에 함께 실어 구별한다. 확장자 판정(D10)이 여기 한 곳에만
+    남도록 label을 `_resolve_profile`이 만든다 — Task 6이 확장자를 다시 보면
+    D10 로직이 두 곳으로 복제된다.
+    """
+    profile, label = _resolve_profile(str(SPECS / "ted-ko.yaml"))
+    assert profile.name == "ted-ko"
+    assert label.startswith("ted-ko (")
+    assert "ted-ko.yaml" in label
+    assert label != _resolve_profile("ted-ko")[1], "내장과 구별되지 않는다"
+
+
+def test_resolve_profile_routes_an_uppercase_extension_as_a_path(tmp_path):
+    """`.YAML`도 경로로 라우팅한다.
+
+    **Windows는 파일명 대소문자를 구분하지 않으므로 `my-spec.YAML`은 완전히
+    정상인 파일명**이고, 이 프로젝트의 개발 플랫폼이 Windows다. 소문자만 보면
+    실존하는 파일이 "내장 이름이 없다"는 D10이 막으려던 틀린 진단을 받는다.
+
+    라우팅만 소문자화하고 `load_profile`에는 **원본 문자열**을 넘긴다 —
+    CI의 Linux는 대소문자를 구분하므로 경로를 소문자화하면 파일을 못 찾는다.
+    """
+    target = tmp_path / "USER.YAML"
+    target.write_text((SPECS / "ted-ko.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    profile, label = _resolve_profile(str(target))
+    assert profile.name == "ted-ko"
+    assert "USER.YAML" in label, "원본 대소문자가 보존되지 않았다"
 
 
 def test_resolve_profile_rejects_an_unknown_builtin_name():
@@ -66,7 +103,7 @@ def test_resolve_profile_reads_a_yml_extension(tmp_path):
     """
     target = tmp_path / "custom.yml"
     target.write_text((SPECS / "ted-ko.yaml").read_text(encoding="utf-8"), encoding="utf-8")
-    assert _resolve_profile(str(target)).name == "ted-ko"
+    assert _resolve_profile(str(target))[0].name == "ted-ko"
 
 
 def test_resolve_profile_wraps_a_broken_builtin_profile(monkeypatch):

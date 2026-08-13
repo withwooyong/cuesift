@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-import yaml
 
 from cuesift import __version__
 from cuesift.spec import SpecProfile, load_builtin, load_profile
@@ -105,31 +104,34 @@ def translate(
     _not_implemented("translate")
 
 
-def _resolve_profile(spec: str) -> SpecProfile:
-    """`--spec` 값을 프로파일로 바꾼다 (FR-5.3·설계 §8).
+def _resolve_profile(spec: str) -> tuple[SpecProfile, str]:
+    """`--spec` 값을 프로파일과 표시용 label로 바꾼다 (FR-5.3·설계 §8·§7.2).
 
     **존재 여부가 아니라 확장자로 가른다.** 존재 여부로 가르면 오타 난 파일
     경로가 "내장 이름이 없다"는 틀린 진단을 받는다 — 인제스트가 mp4를
     `decode` 오류로 보고하지 않으려고 확장자를 먼저 본 것과 같은 판단이다.
+    **라우팅만 소문자로 본다.** Windows는 파일명 대소문자를 구분하지 않아
+    `my-spec.YAML`이 정상인 파일명이고 이 프로젝트의 개발 플랫폼이 Windows인데,
+    `load_profile`에는 원본을 넘겨야 한다 — CI의 Linux는 구분한다.
 
-    **두 분기가 같은 예외 집합을 잡아야 해서 try를 하나로 묶었다.** 분기마다
-    except를 따로 두면 한쪽만 넓히다 어긋나고, 어긋난 쪽으로 샌 예외는 미처리
-    traceback이 되어 **종료 코드 1**로 나간다. 이 저장소에서 1은 "규격 위반
-    발견"이라 프로파일 사고가 자막 결함으로 오보되고, 사용자는 멀쩡한 자막을
-    고치려 든다. `load_builtin`이 내부에서 `load_profile`을 부르므로 두 분기가
-    같은 실패를 공유한다는 점도 이유다.
+    **label을 여기서 만드는 이유**는 설계 §7.2의 헤더가 "엉뚱한 프로파일로
+    통과한 것을 알 수 없다"를 막기 때문이다. `name: ko`인 사용자 파일은 규격
+    이름만으로는 내장 `ko`와 구별되지 않아 하필 FR-5.3 경로에서 헤더가 죽는다.
+    출처를 label에 실어 구별하되, **확장자 판정을 이 함수 밖으로 복제하지
+    않으려고** 호출자가 아니라 여기서 만든다.
 
-    잡는 셋은 전부 실측한 것이다. `OSError`는 파일이 없거나 못 읽을 때(`load_builtin`의
-    `FileNotFoundError`가 하위), `ValueError`는 필드 누락·값 오류·UTF-8 아님
-    (`UnicodeDecodeError`가 하위), `yaml.YAMLError`는 YAML 문법 오류다.
-    **셋째를 빼면 안 된다** — 문법 오류는 `OSError`도 `ValueError`도 아니라서
-    앞의 둘로는 못 잡는다.
+    예외는 열거하지 않는다. `load_profile`이 내용 오류를 전부 `ValueError`로
+    정규화하므로 여기서는 `OSError`(못 읽음)와 `ValueError`(내용이 틀림)면
+    충분하다. 열거는 계약이 아니라 관찰이라 로더가 새 예외를 낼 때마다
+    뒤처지고, 뒤처진 쪽으로 샌 예외는 종료 코드 1("규격 위반 발견")이 된다.
     """
     try:
-        if spec.endswith((".yaml", ".yml")):
-            return load_profile(Path(spec))
-        return load_builtin(spec)
-    except (OSError, ValueError, yaml.YAMLError) as exc:
+        if spec.lower().endswith((".yaml", ".yml")):
+            profile = load_profile(Path(spec))
+            return profile, f"{profile.name} ({spec})"
+        profile = load_builtin(spec)
+        return profile, profile.name
+    except (OSError, ValueError) as exc:
         raise typer.BadParameter(str(exc), param_hint="--spec") from exc
 
 
