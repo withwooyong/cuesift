@@ -15,6 +15,7 @@ from typing import Annotated
 import typer
 
 from cuesift import __version__
+from cuesift.spec import SpecProfile, load_builtin, load_profile
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
 # FR-8.2의 --fail-on은 향후 1을 쓰고, 70은 미구현 표식으로 남긴다.
@@ -101,6 +102,29 @@ def translate(
 ) -> None:
     """FR-8.1 — 번역·검수 전 파이프라인을 실행합니다."""
     _not_implemented("translate")
+
+
+def _resolve_profile(spec: str) -> SpecProfile:
+    """`--spec` 값을 프로파일로 바꾼다 (FR-5.3·설계 §8).
+
+    **존재 여부가 아니라 확장자로 가른다.** 존재 여부로 가르면 오타 난 파일
+    경로가 "내장 이름이 없다"는 틀린 진단을 받는다 — 인제스트가 mp4를
+    `decode` 오류로 보고하지 않으려고 확장자를 먼저 본 것과 같은 판단이다.
+
+    **두 로더가 서로 다른 예외를 던진다** — `load_builtin`은 `FileNotFoundError`,
+    `load_profile`은 `ValueError`(파일이 없으면 `OSError`)다. 한쪽만 잡으면
+    처리되지 않은 traceback이 사용자에게 그대로 나간다. 전부 `BadParameter`로
+    모아 종료 코드 2(명령줄이 틀림)로 낸다.
+    """
+    if spec.endswith((".yaml", ".yml")):
+        try:
+            return load_profile(Path(spec))
+        except (OSError, ValueError) as exc:
+            raise typer.BadParameter(str(exc), param_hint="--spec") from exc
+    try:
+        return load_builtin(spec)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--spec") from exc
 
 
 @app.command()
