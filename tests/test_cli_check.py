@@ -167,7 +167,7 @@ def test_format_report_uses_the_original_cue_number_not_the_filtered_index():
     lines = _format_report(
         source_name="check_violations.ass",
         fmt="ass",
-        profile_name="ko",
+        profile_label="ko",
         cue_total=4,
         violations=violations,
         event_index=event_index,
@@ -191,14 +191,14 @@ def test_format_report_renders_each_violation_kind():
         _format_report(
             source_name="x.srt",
             fmt="srt",
-            profile_name="ko",
+            profile_label="ko",
             cue_total=120,
             violations=violations,
             event_index=event_index,
         )
     )
 
-    assert "x.srt (srt · 큐 120개 · 프로파일 ko)" in body
+    assert "x.srt (srt · 검사 큐 120개 · 프로파일 ko)" in body
     assert "line_length" in body and "21.0 > 16.0" in body
     # line_index는 0-based다 — 사람이 읽는 좌표는 +1.
     assert "(2번째 줄)" in body
@@ -214,13 +214,13 @@ def test_format_report_states_what_it_checked_when_clean():
     lines = _format_report(
         source_name="clean.ko.srt",
         fmt="srt",
-        profile_name="ko",
+        profile_label="ko",
         cue_total=120,
         violations=[],
         event_index={},
     )
     # em dash가 아니라 ASCII 하이픈이다. 전역 제약 "출력 문자열에 em dash 금지" 참조.
-    assert lines == ["clean.ko.srt (srt · 큐 120개 · 프로파일 ko) - 위반 없음"]
+    assert lines == ["clean.ko.srt (srt · 검사 큐 120개 · 프로파일 ko) - 위반 없음"]
 
 
 def test_format_report_keeps_columns_aligned_across_cue_number_widths():
@@ -241,7 +241,7 @@ def test_format_report_keeps_columns_aligned_across_cue_number_widths():
     lines = _format_report(
         source_name="x.srt",
         fmt="srt",
-        profile_name="ko",
+        profile_label="ko",
         cue_total=120,
         violations=violations,
         event_index=event_index,
@@ -265,3 +265,34 @@ def test_format_detail_renders_duration_long_with_the_opposite_sign():
     """
     assert _format_detail(SpecViolation("duration_long", 9000.0, 7000.0)) == "9000ms > 7000ms"
     assert _format_detail(SpecViolation("duration_short", 500.0, 833.0)) == "500ms < 833ms"
+
+
+def test_format_report_denominator_stays_the_filtered_cue_count():
+    """`검사 큐 N개`가 아래의 `#N`보다 작은 것은 정상이다 — 분모를 바꾸면 안 된다.
+
+    주석·드로잉이 섞인 파일에서는 검사 대상(2개)보다 원본 큐 번호(#4)가 크다.
+    이것이 자기모순처럼 보여 분모를 **원본 이벤트 수로 되돌리는** 수정이 들어오면
+    검사 대상이 아닌 이벤트까지 세어 위반 비율이 과소평가되고, 그것은
+    Recall@Budget 지표를 직접 건드린다. 낱말을 `검사 큐`로 좁혀 모호함만 없앴다.
+    """
+    event_index = {"a": 0, "b": 3}
+    violations = [
+        TrackViolation("a", 1000, SpecViolation("line_length", 5.5, 3.0, line_index=0)),
+        TrackViolation("b", 7000, SpecViolation("line_length", 6.0, 3.0, line_index=0)),
+    ]
+
+    body = "\n".join(
+        _format_report(
+            source_name="tags.ass",
+            fmt="ass",
+            profile_label="ko",
+            cue_total=2,
+            violations=violations,
+            event_index=event_index,
+        )
+    )
+
+    assert "tags.ass (ass · 검사 큐 2개 · 프로파일 ko)" in body
+    assert "#4" in body, "원본 큐 번호는 검사 큐 수보다 클 수 있다"
+    # 분모는 검사한 큐 수(2)다. 원본 이벤트 수(4)로 되돌리면 50.0%가 된다.
+    assert "위반 큐 2/2개 (100.0%)" in body

@@ -181,7 +181,7 @@ def _format_report(
     *,
     source_name: str,
     fmt: str,
-    profile_name: str,
+    profile_label: str,
     cue_total: int,
     violations: Sequence[TrackViolation],
     event_index: Mapping[str, int],
@@ -192,14 +192,18 @@ def _format_report(
     시험할 수 있어야 정렬·자릿수·큐 번호 부여 같은 포맷 결함이 CLI 통합
     테스트에 묻히지 않는다(설계 §7.4).
 
-    `profile_name`은 규격 이름이 아니라 **표시용 label**이다. `_resolve_profile`이
+    `profile_label`은 규격 이름이 아니라 **표시용 label**이다. `_resolve_profile`이
     내장은 `ko`, 사용자 파일은 `ko (./our-spec.yaml)`로 만든다 — 이름만 실으면
     `name: ko`인 사용자 파일이 내장 `ko`와 헤더까지 같아져 구별되지 않는다.
 
     위반이 없을 때도 검사 대상 개수와 프로파일 이름을 낸다 — 그것이 없으면
     사용자는 엉뚱한 파일이나 엉뚱한 프로파일로 통과한 것을 알 수 없다.
     """
-    head = f"{source_name} ({fmt} · 큐 {cue_total}개 · 프로파일 {profile_name})"
+    # `검사 큐`인 이유: `cue_total`은 필터 **후** 개수라 아래의 `#N`(원본 큐 번호)이
+    # 이 수보다 클 수 있다 — `큐 2개` 아래 `#4`가 찍히면 자기모순처럼 읽힌다.
+    # 분모를 원본 이벤트 수로 되돌리면 안 된다: 검사 대상이 아닌 주석·드로잉까지 세어
+    # 위반 비율이 과소평가되고, 그것은 Recall@Budget 지표를 건드린다.
+    head = f"{source_name} ({fmt} · 검사 큐 {cue_total}개 · 프로파일 {profile_label})"
     if not violations:
         # em dash(U+2014)를 쓰지 않는다. cp949 로케일에서 stdout을 리다이렉트하면
         # UnicodeEncodeError로 exit 1이 나고, 이 저장소에서 exit 1은 "규격 위반 발견"이다.
