@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import normalize_rich_message
 from cuesift.cli import (
     _format_detail,
     _format_ratio,
@@ -792,11 +793,18 @@ def test_a_non_utf8_profile_gets_the_same_diagnostic_as_a_non_utf8_subtitle(tmp_
     result = runner.invoke(app, ["check", str(FIXTURES / "minimal.srt"), "--spec", str(spec)])
 
     assert result.exit_code == 2
-    message = result.stderr
+    # **rich의 강제 개행을 정규화한 뒤 검사한다.** 원문을 그대로 단언하면 내용이 맞아도
+    # 실패한다 — 개행 위치가 임시 디렉터리 경로 길이에 좌우돼 플랫폼마다 다르다.
+    # 실측: 로컬은 `utf-8로 읽을 수 없다`가 끊겼고 CI는 `cp949-spec.yaml`이 끊겼다.
+    # 공백을 지워도 단언이 약해지지 않는다 — 확인하려는 것은 "이 정보가 들어 있는가"다.
+    message = normalize_rich_message(result.stderr)
     # 자막 경로(`loader.py`의 decode 오류)와 같은 세 요소: 파일 · 위치 · 해법.
-    assert "cp949-spec.yaml" in message, "어느 파일인지 없으면 사용자가 찾을 수 없다"
-    assert "utf-8로 읽을 수 없다" in message
-    assert "변환한 뒤 다시 시도한다" in message, "해법이 없는 진단은 절반이다"
+    for needle, why in (
+        ("cp949-spec.yaml", "어느 파일인지 없으면 사용자가 찾을 수 없다"),
+        ("utf-8로 읽을 수 없다", "무엇이 잘못됐는지가 없다"),
+        ("변환한 뒤 다시 시도한다", "해법이 없는 진단은 절반이다"),
+    ):
+        assert normalize_rich_message(needle) in message, f"{why}: {result.stderr}"
 
 
 def test_harden_output_streams_covers_stderr_too():

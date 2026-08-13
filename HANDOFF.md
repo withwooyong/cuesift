@@ -16,9 +16,9 @@
 | | 이전 세션 | 이번 세션 |
 | --- | --- | --- |
 | v0.1 FR 완료 | 19/42 (45%) | **21/42 (50%)** — FR-8.2 · FR-7.5 |
-| 테스트 | 316 | **485** |
+| 테스트 | 316 | **486** |
 | 제품 상태 | 모든 서브커맨드가 `70` | **`check`는 동작 · `translate`·`transcribe`만 `70`** |
-| 산출물 | 설계 스펙 1건 | 구현 계획 1건 + 코드 + 테스트 169건 + 문서 정정 |
+| 산출물 | 설계 스펙 1건 | 구현 계획 1건 + 코드 + 테스트 170건 + 문서 정정 |
 
 ```bash
 cuesift check dist/episode01.ja.srt --spec ja --fail-on hard
@@ -121,6 +121,32 @@ Critical 5건 중 2건(C1 파이프·C3 타임코드)이 같은 형태였다 —
 냈는데, `--config`는 **그룹 옵션이라 서브커맨드 앞**에 와야 하고 거기서는 조용히 exit 0이었다.
 **관찰은 맞았고 추론이 틀렸다 — 옵션이 없는 위치에서만 시험했다.**
 
+### 🔴 `rich`는 호스트 플랫폼에 따라 다른 문자를 그린다 — 테스트가 그것에 의존하면 안 된다
+
+**로컬 485 passed인데 CI가 실패했다.** 이 브랜치의 35커밋이 그때까지 **CI를 한 번도 거치지
+않았기** 때문에 마지막에 한꺼번에 드러났다.
+
+| 환경 | `rich`의 모서리 | cp949 |
+| --- | --- | --- |
+| Windows (`legacy_windows=True`) | `┌┐└┘` U+250C·2510·2514·2518 | **인코딩 된다** |
+| Linux CI (`legacy_windows=False`) | `╭╮╰╯` U+256D~2570 | **인코딩 안 된다** |
+| **실제 실행 + 리다이렉트** | **박스를 아예 안 그린다** | 무관 |
+
+**세 번째 줄이 핵심이다** — 박스 문자는 `CliRunner`가 만들어 낸 산물이지 사용자가 만나는
+것이 아니다. 그것을 검사하면 Windows에서 통과하고 Linux에서만 실패한다.
+
+**로컬에서 CI 렌더링을 재현하는 방법**(다음 세션이 다시 필요할 것이다):
+
+```python
+import rich.console as rc
+rc.detect_legacy_windows = lambda: False   # pytest 플러그인으로 -p 로 주입
+```
+
+같은 이유로 **`rich`가 렌더한 stderr에 긴 문자열·경로를 통째로 단언하지 않는다.** 강제 개행
+위치가 임시 디렉터리 경로 길이에 좌우돼 **로컬과 CI에서 다른 곳에서 끊긴다**(실측: 로컬은
+`utf-8로 읽을 수 없다`가, CI는 `cp949-spec.yaml`이 끊겼다). 정규화 헬퍼가
+**`tests/conftest.py`**(이번에 신설)에 있다 — `strip_rich_decoration`·`normalize_rich_message`.
+
 ### 문서 게이트 — 두 게이트의 파일 개수 대조가 유일한 탐지 수단
 
 **링크 체커는 `git ls-files` 기준이라 미추적 파일을 건너뛴다.** 새 문서를 만들면
@@ -187,7 +213,7 @@ Critical 5건 중 2건(C1 파이프·C3 타임코드)이 같은 형태였다 —
 | --- | --- |
 | `ruff check .` | `All checks passed!` |
 | `ruff format --check .` | `57 files already formatted` |
-| `pytest --cov=cuesift` | **485 passed** · TOTAL 99% (`cli.py`·`spec/check.py`·`loader.py` 100%) |
+| `pytest --cov=cuesift` | **486 passed** · TOTAL 99% (`cli.py`·`spec/check.py`·`loader.py` 100%) |
 | `scripts/check_links.py` | 마크다운 **19개** · 상대 링크 **69개** · 깨진 링크 **0** |
 | `markdownlint-cli2` | **`Linting: 19 files`** · 0 issues |
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import strip_rich_decoration
 from cuesift import __version__
 from cuesift.cli import EXIT_NOT_IMPLEMENTED, FailOn, app, check
 
@@ -104,10 +105,17 @@ def test_fail_on_members_match_the_requirements_doc():
     assert [member.value for member in FailOn] == ["hard", "any", "none"]
 
 
-@pytest.mark.parametrize(
-    "args",
-    [["--help"], ["check", "--help"], ["translate", "--help"], ["transcribe", "--help"]],
-)
+# help이 렌더되는 네 경로. **두 테스트가 같은 목록을 봐야** 한쪽만 갱신되는 드리프트가
+# 생기지 않는다 — 새 서브커맨드를 추가하면 여기 한 줄만 늘린다.
+_HELP_INVOCATIONS = [
+    ["--help"],
+    ["check", "--help"],
+    ["translate", "--help"],
+    ["transcribe", "--help"],
+]
+
+
+@pytest.mark.parametrize("args", _HELP_INVOCATIONS)
 def test_help_output_is_encodable_in_the_cp949_locale(args: list[str]):
     """전역 제약 "출력 문자열에 em dash 금지"를 규율이 아니라 게이트로 닫는다.
 
@@ -121,15 +129,40 @@ def test_help_output_is_encodable_in_the_cp949_locale(args: list[str]):
     커맨드 독스트링이 그대로 help가 되므로 **독스트링도 출력 문자열이다.**
     `·`(U+00B7)·`§`(U+00A7)·`→`(U+2192)는 cp949가 인코딩하므로 계속 써도 된다.
 
-    렌더된 출력 전체를 보는 것은 rich의 테두리 문자까지 포함해야 진짜 계약이기
-    때문이다. rich가 둥근 모서리(U+256D)로 바꾸면 이 테스트가 빨개지는데,
-    그것은 오탐이 아니라 Windows 사용자에게 실제로 깨지는 회귀다.
+    **rich의 테두리는 검사하지 않는다.** 이전 판은 렌더된 출력 전체를 검사하며
+    "rich가 둥근 모서리로 바꾸면 Windows 사용자에게 깨지는 회귀"라고 적었는데,
+    **실측으로 셋 다 틀린 것으로 드러났다**(근거는 `conftest.py`의 표).
+
+    1. Windows의 rich는 애초에 둥근 모서리를 안 쓴다 — `legacy_windows=True`라
+       `┌┐└┘`(cp949에 있다)를 그린다. 둥근 `╭`는 **Linux에서만** 나온다
+    2. 사용자가 `cuesift --help > help.txt`를 하면 rich는 **박스를 아예 안 그린다**
+       (터미널이 아니라서). 실측: 출력 1381바이트에 박스 문자 0개, exit 0
+    3. 따라서 이 단언은 Windows에서 통과하고 **Linux CI에서만 실패했다** —
+       보호하려던 사용자에게는 일어날 수 없는 조건을 검사한 것이다
+
+    지키는 계약은 **"우리가 쓴 문자열이 cp949에서 인코딩된다"** 하나다.
     """
     result = runner.invoke(app, args)
 
     assert result.exit_code == 0
+    # rich가 그린 테두리를 걷어내고 **우리 문자열만** 검사한다.
     # 인코딩 불가 문자가 있으면 UnicodeEncodeError로 여기서 터진다.
-    result.stdout.encode("cp949")
+    strip_rich_decoration(result.stdout).encode("cp949")
+
+
+def test_help_output_has_no_em_dash():
+    """위 테스트가 지키는 계약을 **이름으로** 못 박는다.
+
+    `encode("cp949")`는 "무언가 인코딩되지 않는다"까지만 말한다. 이 저장소가 실제로
+    한 번 데인 것은 **em dash(U+2014)** 이고(`translate`·`transcribe` 독스트링에 남아
+    `cuesift --help > help.txt`가 종료 코드 1로 죽었다), 1은 "규격 위반 발견"이다.
+
+    두 테스트를 함께 두는 이유: 위쪽은 **범위**가 넓고(cp949 전체) 이쪽은 **원인**을
+    지목한다. 위쪽만 있으면 실패했을 때 무엇을 고쳐야 하는지가 메시지에 없다.
+    """
+    for args in _HELP_INVOCATIONS:
+        out = runner.invoke(app, args).stdout
+        assert "—" not in out, f"{args}: em dash가 help에 있다. ASCII 하이픈을 쓴다"
 
 
 def test_fail_on_defaults_to_hard():
