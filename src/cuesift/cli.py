@@ -29,11 +29,20 @@ app = typer.Typer(
 
 
 class FailOn(StrEnum):
-    """FR-8.2 — 어느 심각도부터 CI를 실패시킬지."""
+    """FR-7.5 — 어느 심각도부터 CI를 실패시킬지.
+
+    **v0.1에서 `hard`와 `any`는 같은 결과를 낸다.** 규격 위반 7종이 전부 같은
+    등급이기 때문이다(설계 §5.1). 등급을 나누려면 배정의 출처가 필요한데
+    1차 출처인 Netflix TTSG에 위반 등급 구분이 없고, 요구사항정의서 §11 R8이
+    "출처 없는 수치를 기본값으로 넣지 않음"을 명시한다.
+
+    이름을 `soft`·`never`에서 바꾼 것은 요구사항정의서가 단일 진실 원천이기
+    때문이다. `soft`는 v0.1에 존재하지 않는 등급을 가리킨다.
+    """
 
     hard = "hard"
-    soft = "soft"
-    never = "never"
+    any = "any"
+    none = "none"
 
 
 def _not_implemented(command: str) -> None:
