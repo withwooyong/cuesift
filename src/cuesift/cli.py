@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -15,7 +16,7 @@ from typing import Annotated
 import typer
 
 from cuesift import __version__
-from cuesift.spec import SpecProfile, load_builtin, load_profile
+from cuesift.spec import SpecProfile, SpecViolation, TrackViolation, load_builtin, load_profile
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
 # FR-8.2의 --fail-on은 향후 1을 쓰고, 70은 미구현 표식으로 남긴다.
@@ -136,6 +137,89 @@ def _resolve_profile(spec: str) -> tuple[SpecProfile, str]:
         return profile, profile.name
     except (OSError, ValueError) as exc:
         raise typer.BadParameter(str(exc), param_hint="--spec") from exc
+
+
+# duration_short가 14자로 가장 길다. 한 칸을 더 둬야 수치와 붙지 않는다.
+_KIND_WIDTH = 15
+
+
+def _format_timecode(ms: int) -> str:
+    """`00:01:23.400`으로 고정한다 (설계 §7.3).
+
+    SRT는 쉼표(`,400`), VTT는 마침표(`.400`)를 쓰므로 입력 포맷을 따라가면
+    같은 도구의 출력이 파일마다 달라진다. 1차 좌표는 큐 번호이고 타임코드는
+    보조이므로 표기를 하나로 고정하는 편이 낫다.
+    """
+    seconds, milliseconds = divmod(max(ms, 0), 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _format_detail(violation: SpecViolation) -> str:
+    """위반 한 건의 수치 부분을 만든다.
+
+    `line_index`는 **0-based**다. 사람이 읽는 좌표는 1부터 세므로 `+1`한다 —
+    빼먹어도 테스트 없이는 드러나지 않는 종류의 오차다.
+    """
+    kind = violation.kind
+    if kind == "empty_cue":
+        return "텍스트 없음"
+    if kind == "overlap":
+        return f"{violation.measured:.0f}ms"
+    if kind in ("duration_short", "duration_long"):
+        sign = "<" if kind == "duration_short" else ">"
+        return f"{violation.measured:.0f}ms {sign} {violation.limit:.0f}ms"
+
+    detail = f"{violation.measured} > {violation.limit}"
+    if violation.line_index is not None:
+        detail = f"{detail}  ({violation.line_index + 1}번째 줄)"
+    return detail
+
+
+def _format_report(
+    *,
+    source_name: str,
+    fmt: str,
+    profile_name: str,
+    cue_total: int,
+    violations: Sequence[TrackViolation],
+    event_index: Mapping[str, int],
+) -> list[str]:
+    """콘솔 산출물 전체를 만든다 (설계 §7).
+
+    **순수 함수인 것이 요점이다.** `CliRunner` 없이 문자열 입출력으로 직접
+    시험할 수 있어야 정렬·자릿수·큐 번호 부여 같은 포맷 결함이 CLI 통합
+    테스트에 묻히지 않는다(설계 §7.4).
+
+    `profile_name`은 규격 이름이 아니라 **표시용 label**이다. `_resolve_profile`이
+    내장은 `ko`, 사용자 파일은 `ko (./our-spec.yaml)`로 만든다 — 이름만 실으면
+    `name: ko`인 사용자 파일이 내장 `ko`와 헤더까지 같아져 구별되지 않는다.
+
+    위반이 없을 때도 검사 대상 개수와 프로파일 이름을 낸다 — 그것이 없으면
+    사용자는 엉뚱한 파일이나 엉뚱한 프로파일로 통과한 것을 알 수 없다.
+    """
+    head = f"{source_name} ({fmt} · 큐 {cue_total}개 · 프로파일 {profile_name})"
+    if not violations:
+        # em dash(U+2014)를 쓰지 않는다. cp949 로케일에서 stdout을 리다이렉트하면
+        # UnicodeEncodeError로 exit 1이 나고, 이 저장소에서 exit 1은 "규격 위반 발견"이다.
+        # 깨끗한 파일이 CI에서 위반으로 읽힌다.
+        return [f"{head} - 위반 없음"]
+
+    lines = [head, ""]
+    for track_violation in violations:
+        # 원본 파일의 큐 번호다. `segment.index + 1`이 아니다 — 필터가 인덱스를
+        # 재부여하므로 주석이 있는 파일에서 둘이 갈라진다(설계 §4.1).
+        cue = event_index[track_violation.segment_id] + 1
+        stamp = _format_timecode(track_violation.start_ms)
+        kind = f"{track_violation.violation.kind:<{_KIND_WIDTH}}"
+        lines.append(f"  #{cue}  {stamp}  {kind}{_format_detail(track_violation.violation)}")
+
+    flagged = len({tv.segment_id for tv in violations})
+    ratio = flagged / cue_total * 100 if cue_total else 0.0
+    lines.append("")
+    lines.append(f"위반 {len(violations)}건 · 위반 큐 {flagged}/{cue_total}개 ({ratio:.1f}%)")
+    return lines
 
 
 @app.command()

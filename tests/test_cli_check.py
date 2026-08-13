@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from cuesift.cli import _resolve_profile
+from cuesift.cli import _format_report, _format_timecode, _resolve_profile
+from cuesift.spec import SpecViolation, TrackViolation
 
 runner = CliRunner()
 FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
@@ -142,3 +143,81 @@ def test_resolve_profile_wraps_a_yaml_syntax_error(tmp_path):
     broken.write_text("name: [unclosed\n  bad: : :\n", encoding="utf-8")
     with pytest.raises(typer.BadParameter):
         _resolve_profile(str(broken))
+
+
+def test_format_timecode_is_fixed_regardless_of_input_format():
+    """SRT는 쉼표, VTT는 마침표를 쓰지만 출력 표기는 하나로 고정한다 (설계 §7.3)."""
+    assert _format_timecode(83400) == "00:01:23.400"
+    assert _format_timecode(0) == "00:00:00.000"
+    assert _format_timecode(3_661_007) == "01:01:01.007"
+
+
+def test_format_report_uses_the_original_cue_number_not_the_filtered_index():
+    """설계 §10.3 — diff로는 판정할 수 없는 항목이다.
+
+    주석이 없는 파일에서는 event_index와 segment.index가 같아 틀려도 통과한다.
+    여기서는 일부러 갈라진 event_index를 넣어 원본 큐 번호를 쓰는지 본다.
+    """
+    violations = [
+        TrackViolation("00001", 5000, SpecViolation("line_length", 22.0, 16.0, line_index=1)),
+    ]
+    # 원본 이벤트 2번(0-based) → 큐 번호 3. 필터 후 인덱스로 세면 2가 된다.
+    event_index = {"00000": 1, "00001": 2}
+
+    lines = _format_report(
+        source_name="check_violations.ass",
+        fmt="ass",
+        profile_name="ko",
+        cue_total=4,
+        violations=violations,
+        event_index=event_index,
+    )
+
+    assert any("#3" in line for line in lines), lines
+    assert not any("#2 " in line for line in lines), lines
+
+
+def test_format_report_renders_each_violation_kind():
+    violations = [
+        TrackViolation("00000", 83400, SpecViolation("line_length", 21.0, 16.0, line_index=1)),
+        TrackViolation("00000", 83400, SpecViolation("cps", 18.2, 12.0)),
+        TrackViolation("00001", 242100, SpecViolation("overlap", 1200.0, 0.0)),
+        TrackViolation("00002", 371000, SpecViolation("empty_cue", 0.0, 0.0)),
+        TrackViolation("00003", 400000, SpecViolation("duration_short", 500.0, 833.0)),
+    ]
+    event_index = {"00000": 0, "00001": 1, "00002": 2, "00003": 3}
+
+    body = "\n".join(
+        _format_report(
+            source_name="x.srt",
+            fmt="srt",
+            profile_name="ko",
+            cue_total=120,
+            violations=violations,
+            event_index=event_index,
+        )
+    )
+
+    assert "x.srt (srt · 큐 120개 · 프로파일 ko)" in body
+    assert "line_length" in body and "21.0 > 16.0" in body
+    # line_index는 0-based다 — 사람이 읽는 좌표는 +1.
+    assert "(2번째 줄)" in body
+    assert "overlap" in body and "1200ms" in body
+    assert "empty_cue" in body and "텍스트 없음" in body
+    assert "duration_short" in body and "500ms < 833ms" in body
+    # 위반 5건이지만 위반 큐는 4개다 — 한 큐에 두 건이 있다.
+    assert "위반 5건 · 위반 큐 4/120개 (3.3%)" in body
+
+
+def test_format_report_states_what_it_checked_when_clean():
+    """'통과했나'가 아니라 '무엇을 대상으로 통과했나'를 본다."""
+    lines = _format_report(
+        source_name="clean.ko.srt",
+        fmt="srt",
+        profile_name="ko",
+        cue_total=120,
+        violations=[],
+        event_index={},
+    )
+    # em dash가 아니라 ASCII 하이픈이다. 전역 제약 "출력 문자열에 em dash 금지" 참조.
+    assert lines == ["clean.ko.srt (srt · 큐 120개 · 프로파일 ko) - 위반 없음"]
