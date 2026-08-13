@@ -441,6 +441,7 @@ def _format_report(
     cue_total: int,
     violations: Sequence[TrackViolation],
     event_index: Mapping[str, int],
+    limit: int = 0,
 ) -> list[str]:
     """콘솔 산출물 전체를 만든다 (설계 §7).
 
@@ -454,6 +455,16 @@ def _format_report(
 
     위반이 없을 때도 검사 대상 개수와 프로파일 이름을 낸다 — 그것이 없으면
     사용자는 엉뚱한 파일이나 엉뚱한 프로파일로 통과한 것을 알 수 없다.
+
+    **요약을 머리와 끝 양쪽에 낸다.** 이전 판은 맨 아래 한 줄이었는데, 위반 682건이면
+    686줄이 나가고 26화 × 3언어 매트릭스에서 프로파일을 잘못 물리면 약 5만 줄이 쌓인다.
+    로그를 앞에서 남기고 뒤를 자르는 CI에서는 **가장 중요한 한 줄이 가장 먼저** 사라진다.
+    양쪽에 두면 절단 방향과 무관하게 살아남고, 중복 2줄은 1204줄의 0.17%다.
+
+    **`limit`은 여기서 적용해야 한다.** 호출부에서 `lines[:N]`으로 자르면 요약 줄까지
+    함께 잘려 위 목적이 정확히 무너진다 — 무엇을 자르고 무엇을 남길지는 산출물의
+    구조를 아는 이 함수만 판단할 수 있다. `0`은 무제한이고 그것이 기본값인 이유는
+    상한을 기본으로 켜면 전체 목록을 파이프로 받던 쓰임이 조용히 잘리기 때문이다.
     """
     # `검사 큐`인 이유: `cue_total`은 필터 **후** 개수라 아래의 `#N`(원본 큐 번호)이
     # 이 수보다 클 수 있다 — `큐 2개` 아래 `#4`가 찍히면 자기모순처럼 읽힌다.
@@ -466,12 +477,23 @@ def _format_report(
         # 깨끗한 파일이 CI에서 위반으로 읽힌다.
         return [f"{head} - 위반 없음"]
 
-    lines = [head, ""]
+    # **요약을 목록보다 먼저 계산한다.** 절단은 목록만 자르고 요약은 언제나 전체
+    # 기준이어야 한다 — 자른 뒤에 세면 `--limit 3`이 "위반 3건"이라는 거짓말을 내고,
+    # 그것은 CI 로그를 읽는 사람에게 종료 코드와 모순되는 수치를 준다.
+    flagged = len({tv.segment_id for tv in violations})
+    ratio = flagged / cue_total * 100 if cue_total else 0.0
+    summary = f"위반 {len(violations)}건 · 위반 큐 {flagged}/{cue_total}개 ({_format_ratio(ratio)})"
+
+    lines = [head, summary, ""]
     # 큐 번호 폭을 `cue_total`이 아니라 `event_index`에서 구한다. `cue_total`은
     # 필터 **후** 개수라 주석이 있는 파일에서는 원본 큐 번호의 최대값보다 작고,
     # 폭이 모자라면 자릿수가 큰 줄부터 뒤 열이 통째로 오른쪽으로 밀린다.
     cue_width = len(str(max(event_index.values(), default=0) + 1))
-    for track_violation in violations:
+    # **`limit <= 0`이지 `limit == 0`이 아니다.** 음수를 그대로 흘리면 `violations[:-1]`이
+    # 되어 **마지막 위반이 조용히 사라진다.** CLI는 typer의 `min=0`이 막지만 이 함수는
+    # 라이브러리로도 불리므로 여기서도 닫는다.
+    shown = violations if limit <= 0 else violations[:limit]
+    for track_violation in shown:
         # **원본 파일의 "이벤트 순번"이지 SRT에 인쇄된 번호가 아니다.**
         # `segment.index + 1`이 아닌 것은 맞다 — 필터가 인덱스를 재부여하므로 주석이 있는
         # 파일에서 둘이 갈라진다(설계 §4.1). 다만 거기까지다: pysubs2가 SRT의 인쇄 번호를
@@ -484,11 +506,15 @@ def _format_report(
             f"  #{cue:<{cue_width}}  {stamp}  {kind}{_format_detail(track_violation.violation)}"
         )
 
-    flagged = len({tv.segment_id for tv in violations})
-    ratio = flagged / cue_total * 100 if cue_total else 0.0
+    # 잘렸다는 사실을 숨기지 않는다. 고지가 없으면 사용자는 목록이 전부라고 읽고,
+    # 그것은 이 저장소가 1급 결함으로 취급하는 "조용한 손실"이다. 상한이 위반 수보다
+    # 클 때 고지를 내지 않는 것도 같은 이유다 — `0건 생략`은 그 자체로 거짓말이다.
+    omitted = len(violations) - len(shown)
+    if omitted:
+        lines.append(f"  ... {omitted}건 생략 (전체는 --limit 0)")
+
     lines.append("")
-    share = _format_ratio(ratio)
-    lines.append(f"위반 {len(violations)}건 · 위반 큐 {flagged}/{cue_total}개 ({share})")
+    lines.append(summary)
     return lines
 
 
@@ -524,6 +550,14 @@ def check(
             help="hard와 any는 v0.1에서 같다. 위반 1건이면 종료 코드 1. none은 보고만 하고 항상 0",
         ),
     ] = FailOn.hard,
+    limit: Annotated[
+        int,
+        # `min=0`은 typer가 **본문에 닿기 전에** 종료 코드 2로 거른다. 음수를 본문까지
+        # 흘리면 `violations[:-1]`로 마지막 위반이 조용히 사라진다(설계상 `_format_report`도
+        # 따로 막지만, 잘못된 명령줄은 명령줄 오류로 보고되는 편이 진단이 정확하다).
+        # help 문자열은 `--help`로 나가므로 em dash를 쓰지 않는다(전역 제약).
+        typer.Option("--limit", min=0, help="위반 목록을 N건까지만 출력한다. 0은 무제한(기본)"),
+    ] = 0,
 ) -> None:
     """FR-8.2: 자막 규격 검사만 수행합니다 (CI 게이트)."""
     # `_resolve_profile`은 프로파일과 **표시용 라벨**을 함께 낸다. 라벨이 따로 필요한 것은
@@ -559,9 +593,13 @@ def check(
         cue_total=len(result.segments),
         violations=violations,
         event_index=result.event_index,
+        limit=limit,
     ):
         _echo(line)
 
+    # **종료 코드는 `limit`을 보지 않는다.** 판정의 결과이지 출력의 결과가 아니다 —
+    # 3건만 보여준다고 위반이 3건인 것이 아니고, 여기가 흔들리면 CI 게이트가
+    # 출력 옵션에 좌우된다(`test_limit_does_not_change_the_exit_code`가 고정한다).
     if violations and fail_on is not FailOn.none:
         raise typer.Exit(1)
 

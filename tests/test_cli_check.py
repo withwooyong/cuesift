@@ -258,7 +258,109 @@ def test_format_report_states_what_it_checked_when_clean():
         event_index={},
     )
     # em dash가 아니라 ASCII 하이픈이다. 전역 제약 "출력 문자열에 em dash 금지" 참조.
+    # **위반 0건은 한 줄이므로 요약이 중복되지 않는다** — 이 `==` 단언이 그것도 함께 고정한다.
     assert lines == ["clean.ko.srt (srt · 검사 큐 120개 · 프로파일 ko) - 위반 없음"]
+
+
+def _ten_violations() -> tuple[list[TrackViolation], dict[str, int]]:
+    """위반 10건 · 10큐. 절단과 요약 배치를 재는 공용 입력이다."""
+    violations = [
+        TrackViolation(f"{i:05d}", i * 1000, SpecViolation("cps", 18.2, 12.0)) for i in range(10)
+    ]
+    return violations, {f"{i:05d}": i for i in range(10)}
+
+
+def test_format_report_repeats_the_summary_under_the_header():
+    """**요약을 머리와 끝 양쪽에 낸다** — 절단 방향과 무관하게 살아남아야 한다.
+
+    이전 판은 요약이 **맨 아래 한 줄**이었다. 위반 682건이면 686줄이 나가고,
+    26화 × 3언어 매트릭스에서 프로파일을 잘못 물리면 약 5만 줄이 쌓인다. 로그를
+    앞에서 남기고 뒤를 자르는 CI에서는 **가장 중요한 한 줄이 가장 먼저** 사라진다.
+
+    중복 2줄은 1204줄 출력의 0.17%다. 이 저장소가 반복해서 지불한 교훈에 비하면 싸다.
+    """
+    violations, event_index = _ten_violations()
+
+    lines = _format_report(
+        source_name="x.srt",
+        fmt="srt",
+        profile_label="ko",
+        cue_total=10,
+        violations=violations,
+        event_index=event_index,
+    )
+
+    summary = "위반 10건 · 위반 큐 10/10개 (100.0%)"
+    assert lines[1] == summary, f"헤더 바로 아래에 요약이 없다: {lines[:3]}"
+    assert lines[-1] == summary, f"맨 끝에 요약이 없다: {lines[-3:]}"
+
+
+def test_format_report_truncates_the_list_but_keeps_the_summary():
+    """`--limit N`은 **목록만** 자른다.
+
+    절단을 이 함수 **밖에서** `lines[:N]`으로 하면 요약 줄까지 함께 잘려
+    목적이 정확히 무너진다. 그래서 "무엇을 자르고 무엇을 남길지"를 함수가 안다.
+    """
+    violations, event_index = _ten_violations()
+
+    lines = _format_report(
+        source_name="x.srt",
+        fmt="srt",
+        profile_label="ko",
+        cue_total=10,
+        violations=violations,
+        event_index=event_index,
+        limit=3,
+    )
+    body = "\n".join(lines)
+
+    assert body.count("cps") == 3, f"3건만 남아야 한다: {body}"
+    # 잘렸다는 사실을 숨기지 않는다. 조용한 절단은 이 저장소가 1급 결함으로 취급한다.
+    assert "7건 생략" in body, body
+    assert lines[-1] == "위반 10건 · 위반 큐 10/10개 (100.0%)", "요약이 절단에 휩쓸렸다"
+
+
+def test_format_report_limit_zero_means_unlimited():
+    """기본값 `0`은 무제한이다 — **기존 동작을 보존한다.**
+
+    상한을 기본으로 켜면 전체 목록을 파이프로 받아 grep하던 쓰임이 조용히 잘린다.
+    """
+    violations, event_index = _ten_violations()
+
+    body = "\n".join(
+        _format_report(
+            source_name="x.srt",
+            fmt="srt",
+            profile_label="ko",
+            cue_total=10,
+            violations=violations,
+            event_index=event_index,
+            limit=0,
+        )
+    )
+
+    assert body.count("cps") == 10
+    assert "생략" not in body
+
+
+def test_format_report_omits_the_notice_when_the_limit_exceeds_the_count():
+    """상한이 위반 수보다 크면 생략 줄이 없다 — 있으면 `0건 생략`이라는 거짓말이 된다."""
+    violations, event_index = _ten_violations()
+
+    body = "\n".join(
+        _format_report(
+            source_name="x.srt",
+            fmt="srt",
+            profile_label="ko",
+            cue_total=10,
+            violations=violations,
+            event_index=event_index,
+            limit=100,
+        )
+    )
+
+    assert body.count("cps") == 10
+    assert "생략" not in body
 
 
 def test_format_report_keeps_columns_aligned_across_cue_number_widths():
@@ -424,6 +526,39 @@ def test_check_now_catches_the_empty_cue_that_nothing_caught_before():
     assert result.exit_code == 1
     assert "empty_cue" in result.stdout
     assert "#2" in result.stdout
+
+
+def test_limit_does_not_change_the_exit_code():
+    """**종료 코드는 출력 옵션에 좌우되지 않는다.**
+
+    여기가 흔들리면 CI 게이트가 `--limit`에 좌우된다 — 3건만 보여준다고 위반이
+    3건인 것은 아니다. FR-7.5의 종료 코드는 **판정의 결과이지 출력의 결과가 아니다.**
+
+    `check_violations.ass`는 위반 4건이다(실측). `--limit 1`이 실제로 자르는 것을
+    "생략"으로 확인하는 이유는, 픽스처가 1건짜리로 바뀌면 이 테스트가 **아무것도
+    재지 않으면서 통과**하기 때문이다.
+    """
+    args = ["check", str(FIXTURES / "check_violations.ass"), "--spec", "ko"]
+    full = runner.invoke(app, args)
+    limited = runner.invoke(app, [*args, "--limit", "1"])
+
+    assert full.exit_code == 1, f"픽스처가 위반을 내지 않는다: exit {full.exit_code}"
+    assert limited.exit_code == 1, "출력을 자르니 종료 코드가 바뀌었다"
+    assert "생략" in limited.stdout, (
+        f"절단이 일어나지 않아 이 테스트가 무의미하다: {limited.stdout}"
+    )
+
+
+def test_negative_limit_is_a_usage_error():
+    """음수 상한은 **명령줄이 틀린 것**이라 2다.
+
+    66(파일이 틀림)이나 1(규격 위반)로 새면 CI가 자기 설정 오류를 자막 결함으로 읽는다.
+    """
+    result = runner.invoke(
+        app, ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko", "--limit", "-1"]
+    )
+
+    assert result.exit_code == 2, f"exit {result.exit_code}"
 
 
 @pytest.mark.parametrize(
