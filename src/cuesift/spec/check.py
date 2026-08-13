@@ -32,6 +32,21 @@ class SpecViolation:
     line_index: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TrackViolation:
+    """트랙 안에서 위치가 확정된 규격 위반 (설계 §4).
+
+    **큐 번호를 담지 않는 것이 계약이다.** 큐 번호는 `IngestResult.event_index`가
+    있어야 계산되는데(필터가 세그먼트 인덱스를 재부여하므로 `segment.index + 1`은
+    원본 파일의 큐 번호가 아니다), 그것을 받으면 이 모듈이 인제스트 결과 구조에
+    묶여 첫 줄의 "이 모듈은 순수하다"가 깨진다. 큐 번호는 `cli.py`가 붙인다.
+    """
+
+    segment_id: str
+    start_ms: int
+    violation: SpecViolation
+
+
 def check_text(text: str, duration_ms: int, profile: SpecProfile) -> list[SpecViolation]:
     """텍스트 하나가 프로파일을 만족하는지 판정한다."""
     violations: list[SpecViolation] = []
@@ -113,9 +128,43 @@ def check_empty_cues(segments: Sequence[Segment]) -> dict[str, SpecViolation]:
 
     `measured`·`limit`이 둘 다 `0.0`인 것은 이 판정에 잴 수치가 없기 때문이다 —
     빈 큐는 임계값을 넘은 것이 아니라 있으면 안 되는 것이다.
+
+    `str.strip()`이 경계다. `str.isspace()` 기준이라 `U+3000`(전각 공백)·`U+00A0`(NBSP)·
+    `U+2028`은 이미 잡히고, 놓치는 것은 `Cf`(format) 계열뿐이다.
+
+    **`Cf`를 포함하도록 넓히지 않는다.** TED2020 151만 줄에서 `Cf`만으로 이뤄진 줄은
+    0건이라 실측 이득이 없는 반면, 넓히면 `U+2800`(점자 공백)과 `U+115F`(한글 필러)가
+    오탐이 된다. 이 프로젝트에서 오탐은 검수 비율을 부풀려 Recall@Budget 지표 자체를
+    파괴하므로 미탐보다 비싸다.
     """
     return {
         seg.id: SpecViolation("empty_cue", 0.0, 0.0)
         for seg in segments
         if not seg.source_text.strip()
     }
+
+
+def check_track(segments: Sequence[Segment], profile: SpecProfile) -> list[TrackViolation]:
+    """트랙 전체를 검사해 위반을 세그먼트 순서로 반환한다 (FR-5.1·설계 §4).
+
+    **정렬 기준이 세그먼트 순서인 것은 사람이 파일을 위에서 아래로 읽기 때문이다.**
+    심각도 순으로 정렬하면 같은 큐의 위반들이 흩어져 파일에서 찾기 어려워진다.
+    v0.1에는 심각도 등급 자체가 없기도 하다(설계 §5.1).
+
+    새 규격 판정이 생기면 여기에 함께 넣는 것이 규약이다 — `check` 경로가
+    신호 엔진을 통과하지 않으므로(설계 D3) 이 함수가 규격 판정의 집결지다.
+    """
+    overlaps = check_overlaps(segments)
+    empties = check_empty_cues(segments)
+
+    found: list[TrackViolation] = []
+    for seg in segments:
+        for violation in check_text(seg.source_text, seg.end_ms - seg.start_ms, profile):
+            found.append(TrackViolation(seg.id, seg.start_ms, violation))
+        # 두 dict를 `{**overlaps, **empties}`로 합치면 안 된다 — 둘 다 `seg.id`로
+        # 키잉하므로 빈 큐이면서 겹치는 큐에서 overlap이 조용히 소실된다.
+        if seg.id in overlaps:
+            found.append(TrackViolation(seg.id, seg.start_ms, overlaps[seg.id]))
+        if seg.id in empties:
+            found.append(TrackViolation(seg.id, seg.start_ms, empties[seg.id]))
+    return found

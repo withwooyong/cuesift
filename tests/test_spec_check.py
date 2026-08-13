@@ -1,7 +1,7 @@
 """규격 검사 테스트 (요구사항정의서 FR-5.1, FR-3.8)."""
 
 from cuesift.segment import Segment
-from cuesift.spec import check_empty_cues, check_overlaps, check_text, load_builtin
+from cuesift.spec import check_empty_cues, check_overlaps, check_text, check_track, load_builtin
 
 KO = load_builtin("ko")  # 16자/줄, latin_half, 12 CPS, 2줄, 833~7000ms
 
@@ -182,3 +182,111 @@ def test_check_empty_cues_is_silent_on_a_clean_track():
         Segment(id="00001", index=1, start_ms=2500, end_ms=4000, source_text="둘째 줄"),
     ]
     assert check_empty_cues(segments) == {}
+
+
+def test_check_track_orders_violations_by_segment_then_by_kind():
+    """사람이 파일을 위에서 아래로 읽으므로 세그먼트 순서가 1차 정렬이다 (설계 §4).
+
+    심각도 순으로 정렬하면 같은 큐의 위반들이 흩어져 파일에서 찾기 어려워진다.
+    """
+    segments = [
+        # 3줄 → line_count. 폭은 전부 16 미만이라 line_length는 나오지 않는다.
+        Segment(
+            id="00000", index=0, start_ms=0, end_ms=3000, source_text="첫 줄\n둘째 줄\n셋째 줄"
+        ),
+        # 앞 큐(0~3000)와 1000ms 겹친다.
+        Segment(id="00001", index=1, start_ms=2000, end_ms=4000, source_text="겹치는 큐"),
+        # 빈 큐.
+        Segment(id="00002", index=2, start_ms=4500, end_ms=6000, source_text=""),
+    ]
+
+    found = check_track(segments, KO)
+
+    assert [(tv.segment_id, tv.violation.kind) for tv in found] == [
+        ("00000", "line_count"),
+        ("00001", "overlap"),
+        ("00002", "empty_cue"),
+    ]
+
+
+def test_check_track_keeps_multiple_violations_of_one_segment_together():
+    """한 세그먼트가 여러 위반을 내면 이어 붙는다."""
+    segments = [
+        Segment(
+            id="00000",
+            index=0,
+            start_ms=0,
+            end_ms=1000,
+            source_text="짧은 줄\n열여섯 자를 확실히 넘기는 아주 긴 두 번째 줄",
+        ),
+    ]
+
+    found = check_track(segments, KO)
+
+    assert [tv.violation.kind for tv in found] == ["line_length", "cps"]
+    assert all(tv.segment_id == "00000" for tv in found)
+    # line_index는 0-based다. 두 번째 줄이 길다.
+    assert found[0].violation.line_index == 1
+    assert found[0].violation.measured == 22.0
+    # CPS는 글자 수가 아니라 표시 폭으로 잰다 — 3.5 + 22.0 = 25.5.
+    assert found[1].violation.measured == 25.5
+
+
+def test_track_violation_carries_start_ms_for_output():
+    """cli가 타임코드를 찍으려면 위반에 시각이 붙어 있어야 한다."""
+    segments = [Segment(id="00000", index=0, start_ms=83400, end_ms=84400, source_text="")]
+
+    found = check_track(segments, KO)
+
+    assert found[0].start_ms == 83400
+
+
+def test_check_track_is_silent_on_a_clean_track():
+    """오탐 회귀 그물을 겸한다.
+
+    기호만 있는 큐(`♪`·`…`·`.`)는 자막에서 정상이고 실제 코퍼스에 존재한다
+    (TED2020 151만 줄 실측: 5건). 이 프로젝트에서 **오탐은 검수 비율을 부풀려
+    Recall@Budget 지표 자체를 파괴하므로** 미탐보다 비싸다. 누군가 빈 큐 판정을
+    "개선"이라며 넓히면 여기가 먼저 깨져야 한다.
+    """
+    segments = [
+        Segment(id="00000", index=0, start_ms=0, end_ms=3000, source_text="안녕하세요\n두 번째 줄"),
+        Segment(id="00001", index=1, start_ms=3500, end_ms=6000, source_text="세 번째 큐"),
+        Segment(id="00002", index=2, start_ms=6500, end_ms=8000, source_text="♪"),
+        Segment(id="00003", index=3, start_ms=8500, end_ms=10000, source_text="…"),
+        Segment(id="00004", index=4, start_ms=10500, end_ms=12000, source_text="."),
+    ]
+    assert check_track(segments, KO) == []
+
+
+def test_check_track_keeps_both_when_a_cue_is_empty_and_overlapping():
+    """`check_overlaps`와 `check_empty_cues`가 **같은 키 공간**을 쓴다.
+
+    둘 다 `dict[str, SpecViolation]`을 `seg.id`로 키잉하므로 `{**overlaps, **empties}`로
+    합치면 한쪽이 **조용히 소실된다.** 그것이 이 함수를 쓰는 가장 자연스러운 오답이다.
+
+    빈 큐가 앞 큐의 타임코드를 복제한 채 남는 것은 흔한 저작 아티팩트라
+    "빈 큐이면서 겹침"은 인위적 조합이 아니다.
+    """
+    segments = [
+        Segment(id="00000", index=0, start_ms=0, end_ms=5000, source_text="본문"),
+        # 앞 큐(0~5000) 안에 들어가면서 텍스트가 없다.
+        Segment(id="00001", index=1, start_ms=1000, end_ms=3000, source_text=""),
+    ]
+
+    kinds = [tv.violation.kind for tv in check_track(segments, KO) if tv.segment_id == "00001"]
+
+    assert "overlap" in kinds, f"dict 병합으로 overlap이 소실됐다: {kinds}"
+    assert "empty_cue" in kinds, f"dict 병합으로 empty_cue가 소실됐다: {kinds}"
+
+
+def test_translate_path_does_not_import_the_empty_cue_check():
+    """`check_empty_cues`는 `check` 경로 전용이라는 계약을 고정한다.
+
+    `spec/check.py`의 독스트링이 "`translate` 경로는 이 함수를 부르지 않는다"를
+    계약으로 선언하지만, **독스트링만 있는 불변식은 게이트가 아니다.**
+    누군가 `signals/derived.py`에 배선해도 지금은 전체 스위트가 통과한다.
+    """
+    import cuesift.signals.derived as derived
+
+    assert not hasattr(derived, "check_empty_cues")
