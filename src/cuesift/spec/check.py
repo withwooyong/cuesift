@@ -23,7 +23,7 @@ class SpecViolation:
     """규격 위반 한 건.
 
     `kind`는 `line_length`·`line_count`·`cps`·`duration_short`·
-    `duration_long`·`overlap` 중 하나다.
+    `duration_long`·`overlap`·`empty_cue` 중 하나다.
     """
 
     kind: str
@@ -102,3 +102,20 @@ def check_overlaps(segments: Sequence[Segment]) -> dict[str, SpecViolation]:
             run_end = seg.end_ms
 
     return result
+
+
+def check_empty_cues(segments: Sequence[Segment]) -> dict[str, SpecViolation]:
+    """텍스트가 없거나 공백뿐인 세그먼트를 찾는다 (FR-5.1·설계 §2.1).
+
+    **`check_text`가 아니라 별도 함수인 것이 계약이다.** `check_text` 안에 넣으면
+    `translate` 경로에서 `struct.empty`와 이중 계산되고, 그 부풀림이 검수 비율을
+    밀어 올린다(설계 §4.2). `translate` 경로는 이 함수를 부르지 않는다.
+
+    `measured`·`limit`이 둘 다 `0.0`인 것은 이 판정에 잴 수치가 없기 때문이다 —
+    빈 큐는 임계값을 넘은 것이 아니라 있으면 안 되는 것이다.
+    """
+    return {
+        seg.id: SpecViolation("empty_cue", 0.0, 0.0)
+        for seg in segments
+        if not seg.source_text.strip()
+    }

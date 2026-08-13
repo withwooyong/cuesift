@@ -1,7 +1,7 @@
 """규격 검사 테스트 (요구사항정의서 FR-5.1, FR-3.8)."""
 
 from cuesift.segment import Segment
-from cuesift.spec import check_overlaps, check_text, load_builtin
+from cuesift.spec import check_empty_cues, check_overlaps, check_text, load_builtin
 
 KO = load_builtin("ko")  # 16자/줄, latin_half, 12 CPS, 2줄, 833~7000ms
 
@@ -147,3 +147,38 @@ def test_overlap_amount_is_the_actual_intersection():
     result = check_overlaps(segs)
     assert result["B"].measured == 100
     assert result["C"].measured == 1000
+
+
+def test_check_text_does_not_flag_empty_text():
+    """빈 텍스트는 check_text의 대상이 아니다 (설계 §4.2).
+
+    여기에 빈 큐 판정을 넣으면 translate 경로에서 struct.empty와 이중 계산되고,
+    그 부풀림이 spec.violation 점수를 통해 위험도로 흘러 검수 비율을 밀어 올린다.
+    검수 비율은 Recall@Budget 배수의 분모다 — 여기서 새면 프로젝트의 핵심 주장이 무너진다.
+    """
+    profile = load_builtin("ko")
+    assert check_text("", 2000, profile) == []
+    assert check_text("   \n  ", 2000, profile) == []
+
+
+def test_check_empty_cues_flags_blank_and_whitespace_only():
+    """FR-5.1 — 텍스트 없는 큐는 배포 자막의 결함이다."""
+    segments = [
+        Segment(id="00000", index=0, start_ms=0, end_ms=2000, source_text="있는 텍스트"),
+        Segment(id="00001", index=1, start_ms=2500, end_ms=4000, source_text=""),
+        Segment(id="00002", index=2, start_ms=4500, end_ms=6000, source_text="   \n  "),
+    ]
+
+    found = check_empty_cues(segments)
+
+    assert set(found) == {"00001", "00002"}
+    assert found["00001"].kind == "empty_cue"
+    assert found["00002"].kind == "empty_cue"
+
+
+def test_check_empty_cues_is_silent_on_a_clean_track():
+    segments = [
+        Segment(id="00000", index=0, start_ms=0, end_ms=2000, source_text="첫 줄"),
+        Segment(id="00001", index=1, start_ms=2500, end_ms=4000, source_text="둘째 줄"),
+    ]
+    assert check_empty_cues(segments) == {}
