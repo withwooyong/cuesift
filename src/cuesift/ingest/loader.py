@@ -225,12 +225,16 @@ def _require_int_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) 
     | `1000.0` (위반 있는 파일) | `_format_timecode`의 `{hours:02d}`에서 `ValueError` -> exit 1 |
     | `1000.0` (**위반 0건 파일**) | **크래시 없음. exit 0 · "위반 없음"으로 조용히 통과** |
     | `"1000"` | `duration_ms` 뺄셈에서 `TypeError` -> exit 1 (위반 유무와 무관) |
-    | `true`/`true` | 크래시 없음. 길이 0짜리 큐로 `duration_short` 1건 |
-    | `false`/`true` | 크래시 없음. **`cps 6500.0 > 12.0`** 이라는 날조된 수치까지 |
+    | `true`/`true` | 크래시 없음. 길이 **0ms**짜리 큐가 되어 `duration_short`가 붙는다 |
+    | `false`/`true` | 크래시 없음. 길이 1ms라 **`cps 24500.0 > 12.0`** 이라는 수치를 날조한다 |
+
+    (bool 두 행의 수치는 테스트의 `_VIOLATING_LINE` 본문 기준이다. 본문을 바꾸면 값이
+    달라지므로 **수치를 인용할 때 어느 본문인지 함께 봐야 한다** — 실제로 이 표가 한 번
+    삭제된 옛 본문의 값을 실측으로 인용한 적이 있다.)
 
     **`type(v) is not int`인 것은 `bool`을 막기 위해서다.** `isinstance(True, int)`가
     참이라 `isinstance`로 "완화"하면 위 두 bool 케이스가 그대로 통과한다.
-    `false`/`true`가 특히 나쁘다 — `cps 6500`은 `duration_short` 하나보다 훨씬 그럴듯해
+    `false`/`true`가 특히 나쁘다 — 날조된 CPS는 자릿수만 클 뿐 형식이 정상 위반과 같아
     검수자가 의심하지 않는다. `profile.py`의 `_require_positive`가 bool을 먼저 막는 것과
     같은 판단이다: **이 저장소에서 조용히 틀린 답은 크래시보다 나쁘다.**
 

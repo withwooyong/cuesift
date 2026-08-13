@@ -177,7 +177,7 @@ def check_track(segments: Sequence[Segment], profile: SpecProfile) -> list[Track
     | `float` · 위반이 있는 트랙 | `cli.py` `_format_timecode`의 `{hours:02d}`에서 `ValueError` |
     | `float` · **위반 0건 트랙** | 크래시 없음. `exit 0 · "위반 없음"`으로 **조용히 통과** |
     | `str` | `duration_ms` 뺄셈에서 `TypeError` |
-    | `bool` | 크래시 없음. `false`/`true`는 **`cps 6500`** 같은 수치를 날조한다 |
+    | `bool` | 크래시 없음. `false`/`true`는 길이 1ms짜리 큐로 **CPS를 날조한다** |
     보증은 `ingest/loader.py`의 `_require_int_timecodes`가 경계에서 한다.
     `bench/`처럼 `Segment`를 직접 만드는 쪽은 그 보증을 받지 못하므로 스스로 지켜야 한다.
     """

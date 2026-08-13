@@ -211,7 +211,8 @@ def test_the_json_fixture_helper_is_valid_with_int_times(tmp_path):
         ("float", 1000.0, 4000.0),
         ("str", "1000", "4000"),
         # bool은 int의 하위형이라 산술이 **통과한다.** 크래시가 아니라 조용히 틀린
-        # 리포트가 나왔다 — `false`/`true`는 `cps 6500.0`까지 날조했다(실측).
+        # 리포트가 나왔다 — `_VIOLATING_LINE` 기준으로 `false`/`true`는 길이 1ms짜리
+        # 큐가 되어 `cps 24500.0 > 12.0`까지 날조했다(실측).
         ("bool", True, True),
         ("bool-false-true", False, True),
     ],
