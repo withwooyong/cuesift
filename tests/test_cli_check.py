@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from cuesift.cli import _format_report, _format_timecode, _resolve_profile
+from cuesift.cli import _format_detail, _format_report, _format_timecode, _resolve_profile
 from cuesift.spec import SpecViolation, TrackViolation
 
 runner = CliRunner()
@@ -221,3 +221,47 @@ def test_format_report_states_what_it_checked_when_clean():
     )
     # em dash가 아니라 ASCII 하이픈이다. 전역 제약 "출력 문자열에 em dash 금지" 참조.
     assert lines == ["clean.ko.srt (srt · 큐 120개 · 프로파일 ko) - 위반 없음"]
+
+
+def test_format_report_keeps_columns_aligned_across_cue_number_widths():
+    """큐 번호 자릿수가 섞여도 뒤따르는 열이 밀리지 않아야 한다.
+
+    설계 §7.2의 예시가 `#17`·`#64`·`#98`로 **전부 2자리**라 이 결함이 보이지
+    않았다. 실제 자막은 수백~수천 큐이므로 1자리와 3자리가 한 리포트에 섞인다.
+    폭을 주지 않으면 타임코드·kind·수치 열이 전부 오른쪽으로 밀린다.
+
+    **부분 문자열이 아니라 열 위치를 본다.** `in body` 단언은 밀린 줄도 그대로
+    통과시키므로 정렬 결함을 영원히 못 잡는다.
+    """
+    event_index = {"a": 0, "b": 41, "c": 118}
+    violations = [
+        TrackViolation(seg_id, 83400, SpecViolation("cps", 18.2, 12.0)) for seg_id in event_index
+    ]
+
+    lines = _format_report(
+        source_name="x.srt",
+        fmt="srt",
+        profile_name="ko",
+        cue_total=120,
+        violations=violations,
+        event_index=event_index,
+    )
+
+    rows = [line for line in lines if line.lstrip().startswith("#")]
+    assert len(rows) == 3, lines
+    # 타임코드는 폭이 고정(`HH:MM:SS.mmm`)이라 시작 위치가 같으면 뒤도 전부 같다.
+    assert len({row.index("00:01:23.400") for row in rows}) == 1, rows
+
+
+def test_format_detail_renders_duration_long_with_the_opposite_sign():
+    """`duration_long`을 값으로 지나가는 테스트 — 커버리지가 가리는 분기다.
+
+    `sign = "<" if kind == "duration_short" else ">"`는 **조건식 한 줄**이라
+    `duration_short`만 지나가도 statement 커버리지가 100%로 찬다. 부호가
+    뒤집혀도 어느 게이트도 울리지 않으므로 값으로 지나가는 테스트가 필요하다.
+
+    두 부호를 한 테스트에서 대조하는 것이 요점이다 — 한쪽만 보면 둘이
+    같은 부호를 내도 통과한다.
+    """
+    assert _format_detail(SpecViolation("duration_long", 9000.0, 7000.0)) == "9000ms > 7000ms"
+    assert _format_detail(SpecViolation("duration_short", 500.0, 833.0)) == "500ms < 833ms"

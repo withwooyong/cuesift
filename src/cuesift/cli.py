@@ -207,13 +207,19 @@ def _format_report(
         return [f"{head} - 위반 없음"]
 
     lines = [head, ""]
+    # 큐 번호 폭을 `cue_total`이 아니라 `event_index`에서 구한다. `cue_total`은
+    # 필터 **후** 개수라 주석이 있는 파일에서는 원본 큐 번호의 최대값보다 작고,
+    # 폭이 모자라면 자릿수가 큰 줄부터 뒤 열이 통째로 오른쪽으로 밀린다.
+    cue_width = len(str(max(event_index.values(), default=0) + 1))
     for track_violation in violations:
         # 원본 파일의 큐 번호다. `segment.index + 1`이 아니다 — 필터가 인덱스를
         # 재부여하므로 주석이 있는 파일에서 둘이 갈라진다(설계 §4.1).
         cue = event_index[track_violation.segment_id] + 1
         stamp = _format_timecode(track_violation.start_ms)
         kind = f"{track_violation.violation.kind:<{_KIND_WIDTH}}"
-        lines.append(f"  #{cue}  {stamp}  {kind}{_format_detail(track_violation.violation)}")
+        lines.append(
+            f"  #{cue:<{cue_width}}  {stamp}  {kind}{_format_detail(track_violation.violation)}"
+        )
 
     flagged = len({tv.segment_id for tv in violations})
     ratio = flagged / cue_total * 100 if cue_total else 0.0
