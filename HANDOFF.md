@@ -1,11 +1,10 @@
 # Session Handoff
 
 > Last updated: 2026-08-13 (KST)
-> Branch: **`feat/check-cli`** (작업 트리 깨끗, stash 없음)
-> Latest commit: `8199887` 최종 리뷰 fix (D12 구현 · 진단 정규화)
-> **원격은 `092a399`에 멈춰 있다 — 로컬이 35커밋 앞선다.** [PR #2](https://github.com/withwooyong/cuesift/pull/2)가
-> **DRAFT로 열려 있고 커밋 2개만 담고 있다**(제목도 "설계 확정" 시점 그대로다).
-> **다음 세션은 푸시 승인을 받는 것부터 시작한다** — 코드는 끝났다
+> Branch: **`main`** — [PR #2](https://github.com/withwooyong/cuesift/pull/2)를
+> **squash 머지**했다(사용자 승인). `feat/check-cli`는 삭제됐다.
+> **CI 3잡 전부 통과**(`test 3.11` · `test 3.12` · `docs`) 후 머지.
+> **다음 세션은 WP5 또는 WP7부터 시작한다** — `check` 배선은 끝났다
 
 ## Current Status
 
@@ -59,11 +58,16 @@ cuesift check dist/episode01.ja.srt --spec ja --fail-on hard
 
 | # | 작업 | 상태 | 비고 |
 | --- | --- | --- | --- |
-| 1 | **푸시 → PR #2 갱신 → CI 통과 대기** | ⬜ **다음** | **푸시는 사용자 승인 후.** PR은 **새로 만들지 말 것** — [#2](https://github.com/withwooyong/cuesift/pull/2)가 이미 열려 있고 푸시하면 35커밋이 거기 들어간다. 제목·본문을 "설계 확정"에서 **구현 완료**로 고치고 DRAFT를 해제한다. `main` 직접 푸시 금지 — CI가 게이트가 아니라 사후 통보가 된다 |
-| 2 | WP5 나머지 (FR-7.1~7.4) | ⬜ | `review.json`·`report.html`·요약 통계. **WP7 뒤가 낫다** — 리포트에 실을 신호가 번역 계층에서 나온다 |
-| 3 | WP7 번역 → WP8 Tier 1 | ⬜ | **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나 |
-| 4 | WP6 나머지 (FR-8.1·8.3~8.5) | ⬜ | `translate`·`transcribe` 배선 · `cuesift.yaml` 로더 |
-| 5 | WP9 STT | ⬜ | 런타임 의존성 4개 고정과 충돌 — 호출 방식 미결 |
+| 1 | WP5 나머지 (FR-7.1~7.4) | ⬜ | `review.json`·`report.html`·요약 통계. **WP7 뒤가 낫다** — 리포트에 실을 신호가 번역 계층에서 나온다 |
+| 2 | WP7 번역 → WP8 Tier 1 | ⬜ **다음 후보** | **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나 |
+| 3 | WP6 나머지 (FR-8.1·8.3~8.5) | ⬜ | `translate`·`transcribe` 배선 · `cuesift.yaml` 로더. **`--config`는 지금 경고만 낸다**(D12 구현) — 로더를 만들 때 그 경고를 지운다 |
+| 4 | WP9 STT | ⬜ | 런타임 의존성 4개 고정과 충돌 — 호출 방식 미결 |
+| 5 | **출력 억제 수단** (`--limit`·`--summary`) | ⬜ **파킹 1순위** | 위반 682건이면 686줄이 나가고 **요약 줄이 맨 아래**라, 로그를 절단하는 CI에서 가장 중요한 한 줄이 먼저 사라진다. 26화 × 3언어 매트릭스에서 프로파일을 잘못 물리면 약 5만 줄 |
+
+**WP7을 먼저 하면 `cli.py`의 스트림 배관 ~140줄**(`_TolerantOutput`·`_echo`·
+`_harden_output_streams`)**을 `cuesift/console.py`로 뽑을 때다.** 그 블록은 `check`와
+결합돼 있지 않고, `_harden_output_streams` 독스트링이 스스로 "`translate`·`transcribe`가
+구현되면 같은 문제를 각자 다시 풀어야 한다"를 근거로 든다 — 그 근거가 곧 분리 근거다.
 
 **CI는 로컬과 다른 것을 검증한다** — 로컬 venv는 Python 3.14인데 CI는 3.11/3.12다.
 `docs` 잡(markdownlint + 링크 검사)도 함께 돈다.
