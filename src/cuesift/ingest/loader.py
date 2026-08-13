@@ -175,6 +175,38 @@ def _keep_displayed(subs: pysubs2.SSAFile) -> list[tuple[int, pysubs2.SSAEvent]]
     return [(i, e) for i, e in enumerate(subs) if not e.is_comment and not e.is_drawing]
 
 
+def _require_int_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) -> None:
+    """타임코드가 **정수임을 런타임에 보증한다** (설계 §6).
+
+    `Segment.start_ms: int`는 `@dataclass`의 타입 힌트라 런타임에 아무것도 막지 않는다.
+    `Span.__post_init__`이 `side`를 검사하며 적어 둔 이유와 같은데 타임코드에는 없었다.
+
+    **진입로는 json 포맷 하나다.** srt·vtt·ass·ssa·microdvd·tmp·mpl2는
+    `times_to_ms`·`make_time`·`frames_to_ms`가 전부 int를 반환하지만, json만
+    `SSAEvent(**fields)`로 파일의 값을 그대로 넣는다. 그래서 스키마가 **정상인** 파일이
+    `1000.0`을 담을 수 있고, 그때 인제스트와 규격 판정은 통과한 뒤 리포트에서 죽었다.
+
+    **`Segment.__post_init__`이 아니라 여기서 막는 것이 핵심이다.** `load_subtitle`은
+    `_to_segments`를 `try` **밖에서** 부르므로 `Segment`가 던지는 `ValueError`는
+    `IngestError`를 우회해 미처리 traceback이 되고 **종료 코드 1**이 된다 —
+    1은 "규격 위반 발견"이다. 같은 검사라도 위치가 틀리면 아무것도 고쳐지지 않는다.
+
+    **`type(v) is not int`인 것은 `bool`을 막기 위해서다.** `isinstance(True, int)`가
+    참이라 `start: true`가 통과하는데, 그때는 크래시조차 나지 않고 **길이 0짜리 큐로
+    조용히 틀린 리포트**가 나온다(실측). `profile.py`의 `_require_positive`가 bool을
+    먼저 막는 것과 같은 판단이다 — 이 저장소에서 조용히 틀린 답은 크래시보다 나쁘다.
+    """
+    for field in ("start", "end"):
+        value = getattr(event, field)
+        if type(value) is not int:
+            raise IngestError(
+                "timecode_type",
+                f"{path}: {raw_index + 1}번째 큐의 {field} 타임코드가 정수가 아니다 "
+                f"(받은 값: {value!r}, 형 {type(value).__name__}). "
+                "타임코드는 밀리초 정수여야 한다.",
+            )
+
+
 def _to_segments(
     events: list[tuple[int, pysubs2.SSAEvent]], path: Path
 ) -> tuple[list[Segment], dict[str, int]]:
@@ -184,12 +216,16 @@ def _to_segments(
     정렬이 혼란스러워진다. 원본 위치는 `event_index`가 보존하므로
     라운드트립에 필요한 정보는 잃지 않는다.
 
-    역전 타임코드는 여기서 잡는다. `Segment`에 맡기면 `ValueError`가 나지만
-    **몇 번째 큐인지가 메시지에 없어** 사람이 파일에서 찾을 수 없다.
+    타임코드의 **타입과 역전**을 둘 다 여기서 잡는다. `Segment`에 맡기면 `ValueError`가
+    나는데 몇 번째 큐인지가 메시지에 없고, 무엇보다 이 함수가 `try` 밖에서 불리므로
+    그 예외는 `IngestError`를 우회한다(위 `_require_int_timecodes` 참조).
     """
     segments: list[Segment] = []
     event_index: dict[str, int] = {}
     for index, (raw_index, event) in enumerate(events):
+        # 타입 검사가 **먼저다.** 아래 `event.end < event.start`는 str끼리면 TypeError를
+        # 내고 그것이 `IngestError`를 우회한다 — 순서를 바꾸면 str 경로가 그대로 뚫린다.
+        _require_int_timecodes(event, raw_index, path)
         if event.end < event.start:
             raise IngestError(
                 "bad_timecode",

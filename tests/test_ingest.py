@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -152,6 +153,92 @@ def test_json_shaped_files_raise_ingest_error_not_a_bare_keyerror(tmp_path, labe
 
     with pytest.raises(IngestError):
         load_subtitle(target)
+
+
+def _json_track(start: object, end: object) -> str:
+    """스키마가 **정상인** pysubs2 JSON 한 큐. 타임코드 타입만 갈아 끼운다.
+
+    C2(깨진 JSON)와 갈라놓는 것이 요점이다 — 스키마를 깨면 `parse`로 잡혀
+    타입 검사가 없어도 66이 나오고, 그러면 이 테스트가 **아무것도 검증하지 않는다.**
+    아래 `reason`을 `timecode_type`으로 못 박는 이유가 그것이다.
+    """
+    return json.dumps(
+        {
+            "info": {},
+            "styles": {"Default": {}},
+            "events": [
+                {
+                    "start": start,
+                    "end": end,
+                    "text": "정상 큐입니다",
+                    "marked": False,
+                    "layer": 0,
+                    "style": "Default",
+                    "name": "",
+                    "marginl": 0,
+                    "marginr": 0,
+                    "marginv": 0,
+                    "effect": "",
+                    "type": "Dialogue",
+                }
+            ],
+        }
+    )
+
+
+def test_the_json_fixture_helper_is_valid_with_int_times(tmp_path):
+    """대조군 — 이 문서가 int일 때 로드되지 않으면 아래 테스트들이 스키마 오류를 재는 것이다."""
+    target = tmp_path / "ok.json"
+    target.write_text(_json_track(1000, 4000), encoding="utf-8")
+
+    result = load_subtitle(target)
+
+    assert result.format == "json"
+    assert result.segments[0].start_ms == 1000
+
+
+@pytest.mark.parametrize(
+    ("label", "start", "end"),
+    [
+        ("float", 1000.0, 4000.0),
+        ("str", "1000", "4000"),
+        # bool은 int의 하위형이라 산술이 **통과한다.** 크래시가 아니라 조용히 틀린
+        # 리포트(start=1·end=1·길이 0)가 나왔다 — 이 저장소에서 더 나쁜 쪽이다.
+        ("bool", True, True),
+    ],
+)
+def test_non_integer_timecodes_are_rejected_at_the_ingest_boundary(
+    tmp_path, label: str, start: object, end: object
+):
+    """`Segment`의 `start_ms: int`는 **런타임에 아무것도 막지 않는다** (`@dataclass`다).
+
+    pysubs2의 json 포맷만 `SSAEvent(**fields)`로 원본 값을 그대로 넣는다 —
+    srt·vtt·ass·ssa는 `times_to_ms`·`make_time`이 int를 반환하므로 이 경로가 없다.
+
+    **검증을 `Segment.__post_init__`에 두면 exit이 여전히 1이다.** `load_subtitle`이
+    `_to_segments`를 `try` **밖에서** 부르므로 `ValueError`가 `IngestError`를 우회한다.
+    지적이 옳아도 위치가 틀리면 아무것도 안 고쳐진다 — 그래서 경계인 `_to_segments`가 막는다.
+    """
+    target = tmp_path / f"{label}.json"
+    target.write_text(_json_track(start, end), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    # `parse`가 나오면 스키마가 깨져 C2 경로로 잡힌 것이라 타입 검사를 검증하지 못한 것이다.
+    # `bad_timecode`를 재사용하지 않는 것은 "역전"과 "타입 틀림"이 섞이면 진단이 무뎌지기 때문이다.
+    assert exc.value.reason == "timecode_type"
+
+
+def test_non_integer_timecodes_are_rejected_regardless_of_extension(tmp_path):
+    """포맷 판별이 내용 기준이므로 `.srt` 이름을 붙여도 json 파서로 간다."""
+    target = tmp_path / "looks_like_a_subtitle.srt"
+    target.write_text(_json_track(1000.0, 4000.0), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "timecode_type"
 
 
 def test_json_detection_ignores_the_extension(tmp_path):

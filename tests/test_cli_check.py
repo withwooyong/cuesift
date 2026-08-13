@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -531,6 +532,69 @@ def test_json_shaped_garbage_named_srt_also_exits_66(tmp_path):
     result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
 
     assert result.exit_code == 66
+
+
+def _json_track(start: object, end: object) -> str:
+    """스키마가 **정상인** JSON 한 큐. 타임코드 타입만 바꾼다 (근거는 `test_ingest.py`)."""
+    return json.dumps(
+        {
+            "info": {},
+            "styles": {"Default": {}},
+            "events": [
+                {
+                    "start": start,
+                    "end": end,
+                    "text": "정상 큐입니다",
+                    "marked": False,
+                    "layer": 0,
+                    "style": "Default",
+                    "name": "",
+                    "marginl": 0,
+                    "marginr": 0,
+                    "marginv": 0,
+                    "effect": "",
+                    "type": "Dialogue",
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "start", "end", "suffix"),
+    [
+        ("float", 1000.0, 4000.0, ".json"),
+        ("str", "1000", "4000", ".json"),
+        ("bool", True, True, ".json"),
+        ("float", 1000.0, 4000.0, ".srt"),
+        ("str", "1000", "4000", ".srt"),
+        ("bool", True, True, ".srt"),
+    ],
+    ids=["float", "str", "bool", "float(.srt)", "str(.srt)", "bool(.srt)"],
+)
+def test_non_integer_timecodes_exit_66_not_1(
+    tmp_path, label: str, start: object, end: object, suffix: str
+):
+    """**깨진 JSON(C2)과 다른 결함이다** — 스키마가 정상이라 인제스트가 성공한다.
+
+    실측된 수정 전 동작:
+
+    - float: `_format_report`에서 `ValueError: Unknown format code 'd'` -> exit 1
+    - str: `segment/models.py`의 뺄셈에서 `TypeError` -> exit 1
+    - bool: **크래시조차 안 난다.** `True`가 1로 계산돼 길이 0짜리 큐가 되고
+      위반이 있는 것처럼 250바이트짜리 리포트를 낸 뒤 exit 1 — 조용히 틀린 답이다.
+
+    셋 다 로더 예외 정규화(C2)로는 닫히지 않는다. 경계에서 타입을 보증해야 닫힌다.
+    """
+    target = tmp_path / f"times{suffix}"
+    target.write_text(_json_track(start, end), encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    assert result.exit_code == 66, (
+        f"{label}{suffix}: exit {result.exit_code} — 1이면 규격 위반으로 오보된다"
+    )
+    assert result.stdout.strip() == "", "진단 실패인데 산출물이 나왔다"
 
 
 def test_permission_denied_at_the_access_gate_exits_66_not_2(tmp_path, monkeypatch):
