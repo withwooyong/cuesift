@@ -535,7 +535,7 @@ def test_json_shaped_garbage_named_srt_also_exits_66(tmp_path):
 
 
 # 기본 본문이 규격을 위반하는 긴 줄인 것은 의도적이다 — 근거는 `test_ingest.py`의 같은 상수.
-# 위반이 0건이면 리포트가 `#{cue:<d}`에 닿지 않아 float 타임코드가 수정 전에도
+# 위반이 0건이면 리포트가 `_format_timecode`에 닿지 않아 float 타임코드가 수정 전에도
 # `exit 0 · "위반 없음"`으로 조용히 통과한다(실측).
 _VIOLATING_LINE = "열여섯 자를 확실히 넘기는 아주 긴 줄입니다 정말로"
 

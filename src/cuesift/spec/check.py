@@ -174,7 +174,7 @@ def check_track(segments: Sequence[Segment], profile: SpecProfile) -> list[Track
 
     | 값 | 결과 |
     | --- | --- |
-    | `float` · 위반이 있는 트랙 | `cli.py`의 `#{cue:<d}`에서 `ValueError` |
+    | `float` · 위반이 있는 트랙 | `cli.py` `_format_timecode`의 `{hours:02d}`에서 `ValueError` |
     | `float` · **위반 0건 트랙** | 크래시 없음. `exit 0 · "위반 없음"`으로 **조용히 통과** |
     | `str` | `duration_ms` 뺄셈에서 `TypeError` |
     | `bool` | 크래시 없음. `false`/`true`는 **`cps 6500`** 같은 수치를 날조한다 |

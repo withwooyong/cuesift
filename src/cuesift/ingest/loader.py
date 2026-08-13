@@ -222,7 +222,7 @@ def _require_int_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) 
 
     | 값 | 증상 |
     | --- | --- |
-    | `1000.0` (위반 있는 파일) | `#{cue:<d}` 포매팅에서 `ValueError` -> exit 1 |
+    | `1000.0` (위반 있는 파일) | `_format_timecode`의 `{hours:02d}`에서 `ValueError` -> exit 1 |
     | `1000.0` (**위반 0건 파일**) | **크래시 없음. exit 0 · "위반 없음"으로 조용히 통과** |
     | `"1000"` | `duration_ms` 뺄셈에서 `TypeError` -> exit 1 (위반 유무와 무관) |
     | `true`/`true` | 크래시 없음. 길이 0짜리 큐로 `duration_short` 1건 |

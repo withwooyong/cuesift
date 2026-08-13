@@ -156,7 +156,7 @@ def test_json_shaped_files_raise_ingest_error_not_a_bare_keyerror(tmp_path, labe
 
 
 # 기본 본문이 **규격을 위반하는** 긴 줄인 것은 의도적이다(ko는 16자/줄).
-# 위반이 0건이면 `_format_report`가 `#{cue:<d}`·`_format_timecode`에 **닿지 않아**
+# 위반이 0건이면 `_format_report`가 `_format_timecode`에 **닿지 않아**
 # float 타임코드가 수정 전에도 `exit 0 · "위반 없음"`으로 조용히 통과한다(실측).
 # 그 문서로 테스트를 짜면 "리포트에서 죽는다"는 근거 서술이 자기 픽스처에 대해 거짓이 된다.
 _VIOLATING_LINE = "열여섯 자를 확실히 넘기는 아주 긴 줄입니다 정말로"
@@ -207,7 +207,7 @@ def test_the_json_fixture_helper_is_valid_with_int_times(tmp_path):
 @pytest.mark.parametrize(
     ("label", "start", "end"),
     [
-        # 위반이 있는 본문이므로 이 문서는 수정 전 `#{cue:<d}`에서 ValueError를 냈다.
+        # 위반이 있는 본문이므로 이 문서는 수정 전 `_format_timecode`에서 ValueError를 냈다.
         ("float", 1000.0, 4000.0),
         ("str", "1000", "4000"),
         # bool은 int의 하위형이라 산술이 **통과한다.** 크래시가 아니라 조용히 틀린

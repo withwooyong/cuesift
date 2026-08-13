@@ -40,10 +40,12 @@ def _exit_code_with_a_closed_pipe(
 ) -> int:
     """하류가 **이미 죽은** 파이프에 물려 CLI를 돌리고 종료 코드를 돌려준다.
 
-    하류를 먼저 `wait()`로 거둔 뒤에 상류를 띄우는 것이 요점이다. 둘을 동시에 띄우면
+    **읽기 끝을 먼저 닫은 뒤에 상류를 띄우는 것이 요점이다.** 하류를 동시에 살려 두면
     상류가 파이프 버퍼(보통 64KB) 안에서 출력을 끝내고 정상 종료할 수 있어 **경합으로
-    테스트가 아무것도 검증하지 않는다.** 읽기 끝이 확실히 닫힌 뒤에 쓰면 크기와 무관하게
-    반드시 실패한다.
+    테스트가 아무것도 검증하지 않는다.** 읽기 끝이 닫힌 뒤에 쓰면 크기와 무관하게 실패한다.
+
+    하류를 별도 프로세스로 띄우지 않고 `os.pipe()`를 직접 쓴다 — 결과는 같고
+    프로세스 기동 한 번이 빠지므로 이 파일 전체가 눈에 띄게 짧아진다.
     """
     env = dict(os.environ)
     # 부모 로케일이 자식 결과를 바꾸지 않도록 고정한다(이 테스트의 주제는 인코딩이 아니다).
@@ -53,20 +55,18 @@ def _exit_code_with_a_closed_pipe(
     else:
         env.pop("PYTHONUNBUFFERED", None)
 
-    downstream = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.PIPE)
-    assert downstream.stdin is not None
-    downstream.wait()  # 읽기 끝이 닫힌다. 쓰기 끝은 아직 이 프로세스가 들고 있다.
-
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)  # 읽는 쪽이 사라졌다. 이제 write_fd에 쓰면 반드시 실패한다.
     try:
         proc = subprocess.Popen(
             [sys.executable, "-c", _BOOTSTRAP, *args],
             env=env,
-            stdout=downstream.stdin,
-            stderr=downstream.stdin if merge_stderr else subprocess.DEVNULL,
+            stdout=write_fd,
+            stderr=write_fd if merge_stderr else subprocess.DEVNULL,
         )
         return proc.wait(timeout=60)
     finally:
-        downstream.stdin.close()
+        os.close(write_fd)
 
 
 # (라벨, 인자, 기대 종료 코드)
@@ -93,12 +93,11 @@ _CONTRACT = [
 
 
 @pytest.mark.parametrize("merge_stderr", [False, True], ids=["stderr별도", "2>&1"])
-@pytest.mark.parametrize("unbuffered", [False, True], ids=["buffered", "unbuffered"])
 @pytest.mark.parametrize(
     ("label", "args", "expected"), _CONTRACT, ids=[case[0] for case in _CONTRACT]
 )
 def test_closed_pipe_preserves_the_exit_code(
-    label: str, args: list[str], expected: int, merge_stderr: bool, unbuffered: bool
+    label: str, args: list[str], expected: int, merge_stderr: bool
 ):
     """파이프가 닫힌 것은 오류가 아니라 `head`·`less`의 정상 동작이다.
 
@@ -111,10 +110,29 @@ def test_closed_pipe_preserves_the_exit_code(
 
     **`!= 120`이나 `!= 0`으로 단언하면 안 된다** — 두 세대의 증상이 각각
     정상 코드(1, 0)와 값이 겹쳐 뒤바뀌어도 통과한다.
+
+    **버퍼링 축은 여기서 돌리지 않는다.** 변이 4종으로 재 보니 buffered/unbuffered의
+    **탐지 집합이 동일했다** — 갈리는 것은 증상 값(120 ↔ 1)뿐이고 어느 쪽이든 기대값과
+    다르므로 같이 잡힌다. 축 하나를 없애 36 → 18건이 됐다. 역사적으로 버퍼링이 결과를
+    갈랐던 `--help`·`--version`만 아래에서 따로 양쪽을 돈다.
     """
-    code = _exit_code_with_a_closed_pipe(args, merge_stderr=merge_stderr, unbuffered=unbuffered)
+    code = _exit_code_with_a_closed_pipe(args, merge_stderr=merge_stderr)
 
     assert code == expected, f"{label}: exit {code} (기대 {expected})"
+
+
+@pytest.mark.parametrize("args", [["--help"], ["--version"]], ids=["--help", "--version"])
+def test_eager_options_survive_a_closed_pipe_under_both_buffering_modes(args: list[str]):
+    """`--help`·`--version`은 **그룹 콜백보다 먼저** click이 직접 쓴다.
+
+    이 둘만 버퍼링 양쪽을 도는 이유는 실측 이력 때문이다 — 배선 직후 판에서
+    buffered는 **120**, `PYTHONUNBUFFERED=1`은 **1**로 증상이 갈렸고, 후자는 click의
+    `errno == EPIPE` 분기(`typer/core.py`)가 `sys.exit(1)`을 하는 경로였다.
+    프록시가 그 분기에 도달하지 못하게 만드는 것을 여기서 고정한다.
+    """
+    for unbuffered in (False, True):
+        code = _exit_code_with_a_closed_pipe(args, merge_stderr=True, unbuffered=unbuffered)
+        assert code == 0, f"{args} unbuffered={unbuffered}: exit {code}"
 
 
 def test_the_console_script_is_wired_to_run_not_app():
