@@ -165,18 +165,29 @@ def test_format_timecode_is_fixed_regardless_of_input_format():
     assert _format_timecode(3_661_007) == "01:01:01.007"
 
 
-def test_format_timecode_clamps_a_negative_to_zero():
-    """`max(ms, 0)`을 값으로 고정한다 — **이 줄이 유일하게 살아남은 변이였다.**
+def test_format_timecode_preserves_the_sign_of_a_negative():
+    """음수의 **부호를 값으로 고정한다** — 이 줄이 유일하게 살아남은 변이였다.
 
     브랜치 최종 리뷰가 변이 13종을 심었는데 `max(ms, 0)` -> `ms` 하나만 아무 테스트도
-    울리지 않았다. 클램프는 절충이므로(독스트링 참조) **어느 쪽이든 값으로 못 박아야**
-    다음 사람이 무심코 바꿀 때 드러난다. 지금은 클램프가 계약이다.
+    울리지 않았다. **어느 쪽이든 값으로 못 박아야** 다음 사람이 무심코 바꿀 때 드러난다.
 
-    클램프를 빼면 `divmod(-3000, 1000)`이 파이썬의 바닥 나눗셈 때문에 `(-3, 0)`이 되어
-    `-1:59:57.000`이 나온다 — 이 단언이 그 변이에서 실제로 실패하는 것을 확인했다.
+    **클램프에서 부호 보존으로 뒤집혔다.** 이전 판의 `max(ms, 0)`은 `-3000`을
+    `00:00:00.000`으로 만들었는데 그것은 **그럴듯한 거짓**이라, 검수자가 그 자리를
+    믿고 찾아가면 아무것도 없다. `loader.py`가 못 박은 "조용히 틀린 답은 크래시보다
+    나쁘다"의 반대편이었다.
+
+    이전 독스트링이 클램프를 남긴 근거로 "음수는 상류가 이미 막는다"를 들었는데
+    **그 전제가 거짓이었다** — `Segment.__post_init__`도 인제스트 경계도 역전만 봤다.
+    지금은 `_require_non_negative_timecodes`가 실제로 막아 이 경로가 도달 불가지만,
+    거짓말하는 기본값을 남겨 둘 이유는 없다.
+
+    `divmod`에 음수를 그대로 흘리면 바닥 나눗셈 때문에 `-1:59:57.000`이 된다.
+    그래서 `abs`로 자릿수를 만들고 부호를 따로 붙인다.
     """
-    assert _format_timecode(-3000) == "00:00:00.000"
-    assert _format_timecode(-1) == "00:00:00.000"
+    assert _format_timecode(-3000) == "-00:00:03.000"
+    assert _format_timecode(-1) == "-00:00:00.001"
+    # 0은 음수가 아니다. `ms <= 0`으로 잘못 쓰면 정상 첫 프레임에 `-`가 붙는다.
+    assert _format_timecode(0) == "00:00:00.000"
 
 
 def test_format_report_uses_the_original_cue_number_not_the_filtered_index():
@@ -427,6 +438,58 @@ def test_bad_file_content_exits_66_not_2(fixture: str):
     """
     result = runner.invoke(app, ["check", str(FIXTURES / fixture), "--spec", "ko"])
     assert result.exit_code == 66
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("규격 위반 없음", "짧은 줄"),
+        ("규격 위반 있음", "열여섯 자를 확실히 넘기는 아주 긴 줄입니다 정말로"),
+    ],
+)
+def test_negative_timecodes_exit_66_regardless_of_spec_violations(tmp_path, label: str, text: str):
+    """**첫 행이 exit 0으로 샜다**(고치기 전 실측).
+
+    | 입력 | 고치기 전 | 지금 |
+    | --- | --- | --- |
+    | 음수 + 규격 위반 **없음** | **exit 0 · "위반 없음"** | 66 |
+    | 음수 + 규격 위반 있음 | exit 1 · 좌표가 `00:00:00.000` | 66 |
+
+    첫 행이 더 나쁘다 — 재생할 수 없는 파일이 **깨끗하다는 보고와 함께** CI를 통과한다.
+    두 행을 함께 두는 이유는 판정 결과와 무관하게 66이어야 하기 때문이다. 위반 있는
+    케이스만 두면 "1이 아니다"만 확인해 exit 0 누수를 못 잡는다.
+
+    **음수는 json으로만 표현할 수 있다** — SRT·VTT의 타임코드 문법에 부호 자리가 없다.
+    `loader.py`가 타입 오염을 두고 "진입로는 json 포맷 하나다"라고 적은 것과 같은 문이다.
+    """
+    payload = {
+        "info": {},
+        "styles": {"Default": {}},
+        "events": [
+            {
+                "type": "Dialogue",
+                "layer": 0,
+                "start": -5000,
+                "end": -1000,
+                "style": "Default",
+                "name": "",
+                "marginl": 0,
+                "marginr": 0,
+                "marginv": 0,
+                "effect": "",
+                "text": text,
+            }
+        ],
+    }
+    target = tmp_path / "negative.json"
+    target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    assert result.exit_code == 66, (
+        f"exit {result.exit_code} — 0이면 재생 불가능한 파일이 깨끗하다고 보고되고, "
+        "1이면 검수자가 고칠 수 없는 것을 규격 위반으로 읽는다"
+    )
 
 
 def test_missing_file_exits_2_not_66():

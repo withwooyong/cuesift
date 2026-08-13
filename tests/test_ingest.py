@@ -299,6 +299,51 @@ def test_mixed_type_timecodes_prove_the_check_runs_before_the_reversal_test(
     assert exc.value.reason == "timecode_type"
 
 
+@pytest.mark.parametrize(
+    ("label", "start", "end"),
+    [("둘 다 음수", -5000, -1000), ("start만 음수", -3000, 1000)],
+)
+def test_negative_timecodes_are_rejected_at_the_ingest_boundary(
+    tmp_path, label: str, start: int, end: int
+):
+    """음수 타임코드는 **재생할 수 없는 좌표**이므로 파일이 깨진 것이다 (exit 66).
+
+    **역전 검사도 타입 검사도 이것을 잡지 못했다**(실측). 둘 다 통과한 뒤
+    `_format_timecode`의 `max(ms, 0)`이 `00:00:00.000`을 찍어, `(-5000, -1000)`처럼
+    규격 위반이 없는 트랙은 **exit 0 · "위반 없음"으로 조용히 통과했다.**
+
+    규격 위반(exit 1)으로 내지 않는 이유는 고칠 대상이 다르기 때문이다 — CPS·줄길이는
+    검수자가 그 큐의 텍스트를 고치면 되지만, 음수 좌표는 싱크·변환 파이프라인의 사고다.
+    섞으면 CI가 두 사고에 같은 대응을 한다.
+    """
+    target = tmp_path / "negative.json"
+    target.write_text(_json_track(start, end), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "negative_timecode"
+
+
+def test_negative_check_runs_before_the_reversal_test(tmp_path):
+    """**음수 검사가 역전 검사보다 먼저라는 순서를 고정한다.**
+
+    `(1000, -3000)`은 음수이면서 역전이다. 순서가 뒤집히면 `bad_timecode`가 나오는데,
+    그 메시지는 `start=1000ms > end=-3000ms`만 말하고 **음수라는 더 근본적인 결함을
+    숨긴다.** 사용자는 역전만 고치고 여전히 재생 불가능한 파일을 얻는다.
+
+    두 검사가 겹치지 않는 입력(`(-5000, -1000)`)으로는 순서를 뒤집어도
+    아무것도 드러나지 않는다 — 위 `test_mixed_type_timecodes_...`와 같은 구조다.
+    """
+    target = tmp_path / "negative_and_reversed.json"
+    target.write_text(_json_track(1000, -3000), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "negative_timecode"
+
+
 def test_non_integer_timecodes_are_rejected_regardless_of_extension(tmp_path):
     """포맷 판별이 내용 기준이므로 `.srt` 이름을 붙여도 json 파서로 간다."""
     target = tmp_path / "looks_like_a_subtitle.srt"
