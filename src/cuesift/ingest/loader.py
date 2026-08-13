@@ -64,7 +64,7 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
     """
     _reject_non_subtitle(path)
     subs = _load(path)
-    events = _keep_displayed(subs)
+    events = _keep_displayed(subs, path)
     if not events:
         raise IngestError(
             "empty",
@@ -161,7 +161,7 @@ def _reject_non_subtitle(path: Path) -> None:
         )
 
 
-def _keep_displayed(subs: pysubs2.SSAFile) -> list[tuple[int, pysubs2.SSAEvent]]:
+def _keep_displayed(subs: pysubs2.SSAFile, path: Path) -> list[tuple[int, pysubs2.SSAEvent]]:
     """화면에 나오는 이벤트만 남기고 원본 위치를 함께 돌려준다 (설계 §4).
 
     `is_comment`는 ASS의 `Comment:` 줄, `is_drawing`은 벡터 드로잉이다.
@@ -171,8 +171,41 @@ def _keep_displayed(subs: pysubs2.SSAFile) -> list[tuple[int, pysubs2.SSAEvent]]
 
     둘 다 SRT·VTT에서는 항상 False이므로(실측 §12) 포맷 분기 없이 적용한다.
     **텍스트가 빈 큐는 남긴다** — FR-3.2가 hard fail로 잡을 대상이다.
+
+    **`text` 타입 검사가 여기 있는 이유**는 `is_drawing`이 `parse_tags(self.text)`를
+    부르기 때문이다. json 포맷은 `"text": null`을 그대로 통과시키고, 그때 `TypeError`가
+    나면서 `IngestError`를 우회해 **종료 코드 1**이 된다 — 1은 "규격 위반 발견"이다.
+    `_to_segments`의 타임코드 검사로는 못 막는다. **이 함수가 그보다 먼저 돌기 때문이다.**
+    검사는 우회되지 않는 위치에 둬야 한다는 규칙이 여기서 한 단계 더 앞으로 밀린다.
+
+    **필터 전에, 모든 이벤트를 검사한다.** `is_comment`·`is_drawing`을 부르려면 이미
+    타입이 성립해야 하므로 주석·드로잉이라고 건너뛸 수 없다.
+
+    `type`·`style`·`name`·`effect`는 검사하지 않는다 — 넷 다 문자열이 아니어도
+    예외를 내지 않는 것을 실측했다(우리 파이프라인은 넷을 읽지 않는다). 읽지도 않는
+    필드를 거절하면 실제로 동작하는 파일을 막게 된다.
     """
-    return [(i, e) for i, e in enumerate(subs) if not e.is_comment and not e.is_drawing]
+    kept: list[tuple[int, pysubs2.SSAEvent]] = []
+    for index, event in enumerate(subs):
+        _require_text(event, index, path)
+        if event.is_comment or event.is_drawing:
+            continue
+        kept.append((index, event))
+    return kept
+
+
+def _require_text(event: pysubs2.SSAEvent, raw_index: int, path: Path) -> None:
+    """`text`가 문자열임을 보증한다 (설계 §4·§6).
+
+    `_require_int_timecodes`와 같은 판단이다 — `@dataclass`의 타입 힌트는 런타임에
+    아무것도 막지 않고, json 포맷만 파일의 값을 그대로 넣는다.
+    """
+    if not isinstance(event.text, str):
+        raise IngestError(
+            "text_type",
+            f"{path}: {raw_index + 1}번째 큐의 text가 문자열이 아니다 "
+            f"(형 {type(event.text).__name__}). 자막 본문은 문자열이어야 한다.",
+        )
 
 
 def _require_int_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) -> None:

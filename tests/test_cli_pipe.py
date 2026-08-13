@@ -69,40 +69,48 @@ def _exit_code_with_a_closed_pipe(
         downstream.stdin.close()
 
 
-# (라벨, 인자, 기대 종료 코드, stderr를 파이프에 합칠지)
+# (라벨, 인자, 기대 종료 코드)
+#
+# **`merge_stderr`를 케이스마다 고정하지 않는다.** 이전 판은 없는 파일 케이스만
+# `merge_stderr=False`로 두고 `transcribe`(70)를 아예 빠뜨려, exit 2와 exit 70이
+# **조용한 0**이 되는 회귀를 스위트 전체가 초록인 채로 통과시켰다.
+# 그 플래그가 결함을 가리고 있었으므로 이제 모든 케이스에서 양쪽을 다 돈다.
 _CONTRACT = [
-    ("깨끗한 파일", ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko"], 0, False),
-    ("위반 있음", ["check", str(FIXTURES / "check_violations.ass"), "--spec", "ko"], 1, False),
-    ("자막 아님", ["check", str(FIXTURES / "cp949.srt"), "--spec", "ko"], 66, True),
-    ("없는 파일", ["check", str(FIXTURES / "없는파일.srt"), "--spec", "ko"], 2, False),
+    ("0 깨끗한 파일", ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko"], 0),
+    ("1 위반 있음", ["check", str(FIXTURES / "check_violations.ass"), "--spec", "ko"], 1),
+    ("2 없는 파일", ["check", str(FIXTURES / "없는파일.srt"), "--spec", "ko"], 2),
+    ("2 없는 프로파일", ["check", str(FIXTURES / "minimal.srt"), "--spec", "th"], 2),
+    ("66 자막 아님", ["check", str(FIXTURES / "cp949.srt"), "--spec", "ko"], 66),
+    ("70 미구현", ["transcribe", str(FIXTURES / "minimal.srt")], 70),
     (
-        "--fail-on none",
+        "0 --fail-on none",
         ["check", str(FIXTURES / "overlap.vtt"), "--spec", "ko", "--fail-on", "none"],
         0,
-        False,
     ),
-    ("--help", ["--help"], 0, False),
-    ("--version", ["--version"], 0, False),
+    ("0 --help", ["--help"], 0),
+    ("0 --version", ["--version"], 0),
 ]
 
 
+@pytest.mark.parametrize("merge_stderr", [False, True], ids=["stderr별도", "2>&1"])
 @pytest.mark.parametrize("unbuffered", [False, True], ids=["buffered", "unbuffered"])
 @pytest.mark.parametrize(
-    ("label", "args", "expected", "merge_stderr"),
-    _CONTRACT,
-    ids=[case[0] for case in _CONTRACT],
+    ("label", "args", "expected"), _CONTRACT, ids=[case[0] for case in _CONTRACT]
 )
 def test_closed_pipe_preserves_the_exit_code(
     label: str, args: list[str], expected: int, merge_stderr: bool, unbuffered: bool
 ):
     """파이프가 닫힌 것은 오류가 아니라 `head`·`less`의 정상 동작이다.
 
-    수정 전 실측: 버퍼링이면 **120**(종료 시 flush 실패), `PYTHONUNBUFFERED=1`이면
-    **1**(쓰기 지점에서 예외가 새어 나감)이었다. 특히 `--fail-on none`은 게이트를
-    껐는데도 1이 나왔다.
+    실측된 두 세대의 증상:
 
-    **`!= 120`으로 단언하면 안 된다** — 버퍼링 없는 경우의 증상이 1인데
-    `check`의 정상 위반 코드도 1이라 뒤바뀌어도 통과한다.
+    | 판 | 증상 |
+    | --- | --- |
+    | 배선 직후 | 버퍼링 **120** · `PYTHONUNBUFFERED=1` **1**. `--fail-on none`도 1 |
+    | fix round 1 | 0·1·66은 옳으나 `2>&1`에서 **2와 70이 0** (진입점이 코드를 덮어썼다) |
+
+    **`!= 120`이나 `!= 0`으로 단언하면 안 된다** — 두 세대의 증상이 각각
+    정상 코드(1, 0)와 값이 겹쳐 뒤바뀌어도 통과한다.
     """
     code = _exit_code_with_a_closed_pipe(args, merge_stderr=merge_stderr, unbuffered=unbuffered)
 
@@ -217,10 +225,16 @@ def test_run_preserves_the_exit_code_that_the_command_chose(monkeypatch):
     assert caught.value.code == 66
 
 
-def test_run_turns_a_closed_pipe_into_zero(monkeypatch):
-    """커맨드가 코드를 정하기 전에 출력이 끊긴 경우(`--help | head -1`)는 0이다.
+def test_run_never_rewrites_an_exit_code_on_a_closed_pipe(monkeypatch):
+    """**진입점이 종료 코드를 바꾸면 안 된다.**
 
-    `check`의 계약 코드는 `_echo`가 본문 안에서 지키므로 여기까지 오지 않는다.
+    이전 판은 닫힌 파이프를 잡아 `SystemExit(0)`으로 바꿨는데, 그것이 exit 2와 exit 70을
+    조용한 0으로 만들었다 — click의 `UsageError.show()`와 `typer.secho`가 커맨드 본문
+    **밖에서** 쓰기 때문에 예외가 진입점까지 올라왔기 때문이다.
+    120은 시끄럽지만 0은 조용히 CI를 통과시킨다.
+
+    이 테스트는 그 회귀를 고정한다 — 진입점은 예외를 코드로 번역하지 않는다.
+    닫힌 파이프는 `_TolerantOutput`이 **쓰기 지점에서** 무해하게 만든다.
     """
     monkeypatch.setattr(sys, "stdout", io.StringIO())
     monkeypatch.setattr(sys, "stderr", io.StringIO())
@@ -230,9 +244,139 @@ def test_run_turns_a_closed_pipe_into_zero(monkeypatch):
 
     monkeypatch.setattr(cli, "app", raise_epipe)
 
-    with pytest.raises(SystemExit) as caught:
+    with pytest.raises(BrokenPipeError):
         run()
-    assert caught.value.code == 0
+
+
+def test_run_installs_the_tolerant_proxies(monkeypatch):
+    """프록시를 설치하지 않으면 click이 쓰는 경로(exit 2·70)가 다시 열린다."""
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    seen: dict[str, object] = {}
+
+    def capture():
+        seen["stdout"] = sys.stdout
+        seen["stderr"] = sys.stderr
+
+    monkeypatch.setattr(cli, "app", capture)
+    run()
+
+    assert isinstance(seen["stdout"], cli._TolerantOutput)
+    assert isinstance(seen["stderr"], cli._TolerantOutput)
+
+
+def test_tolerant_output_swallows_a_closed_pipe_but_not_a_full_disk():
+    """`ENOSPC`를 삼키면 잘린 출력이 성공으로 보고된다."""
+    closed = cli._TolerantOutput(_FlushFails(errno.EPIPE))
+    closed.flush()  # 예외가 나지 않아야 한다
+    assert closed.downstream_closed is True
+
+    full = cli._TolerantOutput(_FlushFails(errno.ENOSPC))
+    with pytest.raises(OSError) as caught:
+        full.flush()
+    assert caught.value.errno == errno.ENOSPC
+    assert full.downstream_closed is False
+
+
+def test_tolerant_output_gives_up_only_on_its_own_stream():
+    """stdout이 파이프이고 stderr가 터미널인 `... | head -1`에서 진단이 사라지면 안 된다.
+
+    이전 판은 한쪽이 실패하면 **양쪽을** devnull로 갈아 끼웠다 —
+    `_discard_stream` 독스트링이 "실패한 스트림만"이라고 적었는데 호출부가 어겼다.
+    """
+    out = cli._TolerantOutput(_FlushFails(errno.EPIPE))
+    err = cli._TolerantOutput(io.StringIO())
+
+    out.flush()
+
+    assert out.downstream_closed is True
+    assert err.downstream_closed is False
+    err.write("진단은 살아 있어야 한다")
+    assert err.wrapped.getvalue() == "진단은 살아 있어야 한다"
+
+
+class _WriteFails(io.StringIO):
+    """write에서만 터지는 스트림."""
+
+    def __init__(self, err: int) -> None:
+        super().__init__()
+        self._err = err
+
+    def write(self, data: str) -> int:
+        raise OSError(self._err, os.strerror(self._err))
+
+
+def test_tolerant_output_swallows_a_closed_pipe_on_write_but_not_a_full_disk():
+    """쓰기 지점도 flush와 같은 규칙을 따라야 한다 — 대부분의 출력은 write로 나간다."""
+    closed = cli._TolerantOutput(_WriteFails(errno.EPIPE))
+    assert closed.write("한 줄") == len("한 줄"), "쓴 만큼 반환해야 호출자가 정상으로 본다"
+    assert closed.downstream_closed is True
+
+    full = cli._TolerantOutput(_WriteFails(errno.ENOSPC))
+    with pytest.raises(OSError) as caught:
+        full.write("한 줄")
+    assert caught.value.errno == errno.ENOSPC
+
+
+def test_tolerant_output_stops_touching_a_stream_it_gave_up_on():
+    """포기한 뒤에는 원본을 다시 건드리지 않는다.
+
+    매번 다시 시도하면 큰 리포트에서 실패한 쓰기가 줄 수만큼 반복된다.
+    """
+    inner = _WriteFails(errno.EPIPE)
+    proxy = cli._TolerantOutput(inner)
+    proxy.write("첫 줄")  # 여기서 포기한다
+
+    # 포기 후에는 원본 write를 부르지 않으므로 예외가 나지 않아야 한다.
+    assert proxy.write("둘째 줄") == len("둘째 줄")
+    proxy.flush()
+
+
+def test_not_implemented_survives_a_closed_stderr(monkeypatch):
+    """`typer.secho`가 터져도 **70에 도달해야 한다.**
+
+    실측된 회귀: 이 방어가 없고 진입점 프록시도 없으면 `transcribe ... 2>&1 | head -0`이
+    70이 아니라 **조용한 0**으로 나갔다. 프록시가 있으면 여기까지 오지 않지만,
+    `app()`을 직접 부르는 호출자는 프록시를 받지 못한다.
+    """
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    def raise_epipe(*args, **kwargs):
+        raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+
+    monkeypatch.setattr(cli.typer, "secho", raise_epipe)
+
+    # `typer.Exit`는 click 예외라 `SystemExit`이 아니다 — click이 나중에 종료 코드로 바꾼다.
+    with pytest.raises(cli.typer.Exit) as caught:
+        cli._not_implemented("transcribe")
+    assert caught.value.exit_code == cli.EXIT_NOT_IMPLEMENTED
+
+
+def test_not_implemented_reraises_a_full_disk(monkeypatch):
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    def raise_enospc(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(cli.typer, "secho", raise_enospc)
+
+    with pytest.raises(OSError) as caught:
+        cli._not_implemented("transcribe")
+    assert caught.value.errno == errno.ENOSPC
+
+
+def test_tolerant_output_proxies_feature_detection():
+    """`isatty`·`encoding`·`fileno`가 통과해야 click과 rich가 정상 동작한다.
+
+    click의 `PacifyFlushWrapper`가 같은 이유로 `__getattr__` 위임을 쓴다.
+    """
+    inner = io.StringIO()
+    proxy = cli._TolerantOutput(inner)
+
+    assert proxy.isatty() is False
+    assert proxy.writable() is True
+    proxy.write("가")
+    assert inner.getvalue() == "가"
 
 
 class _FlushFails(io.StringIO):

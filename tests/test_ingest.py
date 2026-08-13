@@ -155,7 +155,7 @@ def test_json_shaped_files_raise_ingest_error_not_a_bare_keyerror(tmp_path, labe
         load_subtitle(target)
 
 
-def _json_track(start: object, end: object) -> str:
+def _json_track(start: object, end: object, text: object = "정상 큐입니다") -> str:
     """스키마가 **정상인** pysubs2 JSON 한 큐. 타임코드 타입만 갈아 끼운다.
 
     C2(깨진 JSON)와 갈라놓는 것이 요점이다 — 스키마를 깨면 `parse`로 잡혀
@@ -170,7 +170,7 @@ def _json_track(start: object, end: object) -> str:
                 {
                     "start": start,
                     "end": end,
-                    "text": "정상 큐입니다",
+                    "text": text,
                     "marked": False,
                     "layer": 0,
                     "style": "Default",
@@ -228,6 +228,33 @@ def test_non_integer_timecodes_are_rejected_at_the_ingest_boundary(
     # `parse`가 나오면 스키마가 깨져 C2 경로로 잡힌 것이라 타입 검사를 검증하지 못한 것이다.
     # `bad_timecode`를 재사용하지 않는 것은 "역전"과 "타입 틀림"이 섞이면 진단이 무뎌지기 때문이다.
     assert exc.value.reason == "timecode_type"
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [("null", None), ("숫자", 123), ("객체", {"a": 1}), ("배열", [1, 2])],
+)
+@pytest.mark.parametrize("suffix", [".json", ".srt"])
+def test_non_string_text_is_rejected_at_the_ingest_boundary(
+    tmp_path, label: str, text: object, suffix: str
+):
+    """`text`가 문자열이 아니면 **필터링 단계에서** 죽는다 (설계 §4).
+
+    `_keep_displayed`의 `e.is_drawing`이 `parse_tags(self.text)`를 부르는데 그것이
+    `TypeError: expected string or bytes-like object`를 낸다.
+
+    **C3(타임코드 타입) 수정이 이 경로를 못 막았다.** `_require_int_timecodes`는
+    `_to_segments` 안에 있는데 `_keep_displayed`가 **그보다 먼저** 돌기 때문이다.
+    C3에서 배운 "검사는 우회되지 않는 위치에 둬야 한다"가 같은 파일 안에서
+    한 단계 더 앞으로 밀린 것이다.
+    """
+    target = tmp_path / f"text{suffix}"
+    target.write_text(_json_track(0, 3000, text=text), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "text_type"
 
 
 def test_non_integer_timecodes_are_rejected_regardless_of_extension(tmp_path):

@@ -78,12 +78,20 @@ class FailOn(StrEnum):
 
 
 def _not_implemented(command: str) -> None:
-    typer.secho(
-        f"'{command}'는 아직 구현되지 않았습니다 (골격 단계). "
-        f"진행 상황: https://github.com/withwooyong/cuesift/issues",
-        fg=typer.colors.YELLOW,
-        err=True,
-    )
+    # `typer.secho`는 `_echo`를 지나지 않는다. 진입점의 `_TolerantOutput`이 이 경로도
+    # 덮지만, 닫힌 파이프에서 여기서 예외가 새면 아래 `typer.Exit(70)`에 도달하지 못해
+    # **70이 조용한 0이 된다**(실측된 회귀). 방어를 쓰기 지점에 함께 둔다.
+    try:
+        typer.secho(
+            f"'{command}'는 아직 구현되지 않았습니다 (골격 단계). "
+            f"진행 상황: https://github.com/withwooyong/cuesift/issues",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    except OSError as exc:
+        if not _is_closed_output(exc):
+            raise
+        _discard_stream(sys.stderr)
     raise typer.Exit(EXIT_NOT_IMPLEMENTED)
 
 
@@ -177,12 +185,73 @@ def _discard_stream(stream: IO[str]) -> None:
         os.close(devnull)
 
 
-def _echo(message: str = "", *, err: bool = False) -> None:
-    """파이프가 닫혀도 **종료 코드를 지키며** 출력한다.
+class _TolerantOutput:
+    """닫힌 파이프에 쓰는 것을 무해하게 만드는 프록시 (설계 §7.1).
 
-    닫힌 파이프에서 예외가 커맨드 본문을 빠져나가면 `check()`가 `typer.Exit(1)`에
-    도달하지 못해 **위반을 찾고도 종료 코드가 1이 아니게 된다.** 그래서 삼키는 위치가
-    진입점이 아니라 여기여야 한다 — 진입점은 이미 "어떤 코드였어야 하는가"를 모른다.
+    **종료 코드를 지키는 유일하게 균일한 방법이다.** 예외를 나중에 잡는 방식은
+    "누가 썼는가"에 따라 구멍이 난다 — 종료 코드 2는 click의 `UsageError.show()`가,
+    70은 `typer.secho`가 쓰므로 커맨드 본문의 방어가 닿지 않는다. 실측된 회귀:
+    `cuesift check nope.srt --spec ko 2>&1 | head -0`이 2가 아니라 **0**으로 나갔고,
+    `transcribe`도 70이 아니라 0이었다. **120은 시끄럽지만 0은 조용히 CI를 통과시킨다.**
+    쓰기 지점 자체를 무해하게 만들면 어느 코드 경로가 쓰든 같은 결과가 된다.
+
+    **프록시 패턴은 click의 선례다** — `PacifyFlushWrapper`가 같은 목적으로
+    `__getattr__` 위임을 쓴다. `isatty`·`encoding`·`fileno`·`buffer` 같은 기능 탐지가
+    그대로 통과해야 rich와 click이 정상 동작한다.
+
+    **부수 효과로 플랫폼 차이도 사라진다.** click의 `_main`은 `errno == EPIPE`일 때만
+    `sys.exit(1)`을 하는데(typer/core.py) POSIX는 EPIPE, Windows는 EINVAL이라
+    같은 사고가 Linux에서는 1, Windows에서는 우리 처리로 갔다. 여기서 막으면
+    click의 그 분기에 애초에 도달하지 않는다.
+
+    `ENOSPC`는 그대로 올린다 — 삼키면 잘린 출력이 성공으로 보고된다.
+    """
+
+    def __init__(self, wrapped: IO[str]) -> None:
+        self.wrapped = wrapped
+        self.downstream_closed = False
+
+    def write(self, data: str) -> int:
+        if self.downstream_closed:
+            return len(data)
+        try:
+            return self.wrapped.write(data)
+        except OSError as exc:
+            if not _is_closed_output(exc):
+                raise
+            self._give_up()
+            return len(data)
+
+    def flush(self) -> None:
+        if self.downstream_closed:
+            return
+        try:
+            self.wrapped.flush()
+        except OSError as exc:
+            if not _is_closed_output(exc):
+                raise
+            self._give_up()
+
+    def _give_up(self) -> None:
+        """이 스트림만 포기한다. **다른 스트림은 건드리지 않는다.**
+
+        stdout이 파이프이고 stderr가 터미널인 `check bad.srt --spec ko | head -1`에서
+        stderr까지 버리면 사용자가 진단 메시지를 잃는다.
+        """
+        self.downstream_closed = True
+        _discard_stream(self.wrapped)
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(self.wrapped, attr)
+
+
+def _echo(message: str = "", *, err: bool = False) -> None:
+    """커맨드 본문의 출력. 닫힌 파이프에서도 **종료 코드를 지킨다.**
+
+    `_TolerantOutput`이 설치되면 여기까지 예외가 오지 않지만, 이 방어를 남겨 두는 것은
+    `app()`을 직접 부르는 호출자(테스트·라이브러리 사용)가 프록시를 못 받기 때문이다.
+    그때 예외가 본문을 빠져나가면 `check()`가 `typer.Exit(1)`에 도달하지 못해
+    **위반을 찾고도 종료 코드가 1이 아니게 된다.**
     """
     stream = sys.stderr if err else sys.stdout
     try:
@@ -475,38 +544,30 @@ def run() -> None:
     """콘솔 스크립트 진입점 (`pyproject.toml`의 `[project.scripts]`).
 
     **`app`을 직접 진입점으로 두면 `cuesift --help | less`가 종료 코드 120을 낸다.**
-    `--help`·`--version`·사용법 오류의 출력은 click이 쓰므로 `_echo`가 닿지 않고,
-    커맨드 본문이 끝난 뒤의 인터프리터 종료 flush도 마찬가지다. 그 둘을 여기서 받는다.
+    `--help`·`--version`·사용법 오류(2)·미구현(70)의 출력은 커맨드 본문 밖에서 일어나
+    `_echo`가 닿지 않는다.
 
-    **두 층이 각각 다른 것을 지킨다** — 하나로는 부족하다.
+    **종료 코드를 여기서 바꾸지 않는 것이 계약이다.** 이전 판은 닫힌 파이프를 잡아
+    `SystemExit(0)`으로 바꿨는데, 그것이 **exit 2와 exit 70을 조용한 0으로 만들었다**
+    (실측). 지금은 출력 지점을 무해하게 만들어 각 커맨드가 고른 코드가 그대로 나가게 한다.
 
-    | 층 | 위치 | 지키는 것 |
+    | 층 | 무엇 | 지키는 것 |
     | --- | --- | --- |
-    | 1 | `_echo` (커맨드 본문) | **종료 코드의 값.** 위반을 찾았으면 1로 끝나야 한다 |
-    | 2 | 여기 | **종료 코드가 덮이지 않는 것.** 종료 flush가 120으로 바꾸는 것을 막는다 |
+    | 1 | `_TolerantOutput` (여기서 설치) | 어느 코드 경로가 쓰든 쓰기가 실패하지 않는다 |
+    | 2 | `_echo` (커맨드 본문) | `app()`을 직접 부르는 호출자를 위한 방어 |
+    | 3 | 아래 `finally` | 종료 flush가 120을 만들지 못하게 한다 |
 
-    `check`의 계약 코드(0·1·2·66)는 1층이 본문 안에서 지키므로 아래 `except`까지
-    오지 않는다. 여기 도달하는 것은 커맨드가 코드를 정하기 전에 출력이 끊긴 경우
-    (`--help | head -1` 등)뿐이고, 그때는 **하류가 원하는 만큼 받고 닫은 것**이므로 0이다.
+    `ENOSPC`는 어느 층도 삼키지 않는다 — 잘린 출력이 성공으로 보고되면 안 된다.
     """
+    sys.stdout = _TolerantOutput(sys.stdout)  # type: ignore[assignment]
+    sys.stderr = _TolerantOutput(sys.stderr)  # type: ignore[assignment]
     try:
         app()
-    except OSError as exc:
-        if not _is_closed_output(exc):
-            raise
-        _discard_stream(sys.stdout)
-        _discard_stream(sys.stderr)
-        raise SystemExit(0) from None
     finally:
-        # 버퍼에 남은 것을 여기서 흘려보낸다. 실패하면 fd를 devnull로 바꿔 두어
-        # **인터프리터의 마지막 flush가 120을 만들지 못하게** 한다.
-        for stream in (sys.stdout, sys.stderr):
-            try:
-                stream.flush()
-            except OSError as exc:
-                if not _is_closed_output(exc):
-                    raise
-                _discard_stream(stream)
+        # 버퍼에 남은 것을 여기서 흘려보낸다. 프록시가 닫힌 파이프를 이미 삼키므로
+        # 여기서 터지는 것은 진짜 I/O 오류뿐이고, 그때는 **올라가야 한다.**
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 if __name__ == "__main__":  # pragma: no cover

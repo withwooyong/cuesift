@@ -534,8 +534,8 @@ def test_json_shaped_garbage_named_srt_also_exits_66(tmp_path):
     assert result.exit_code == 66
 
 
-def _json_track(start: object, end: object) -> str:
-    """스키마가 **정상인** JSON 한 큐. 타임코드 타입만 바꾼다 (근거는 `test_ingest.py`)."""
+def _json_track(start: object, end: object, text: object = "정상 큐입니다") -> str:
+    """스키마가 **정상인** JSON 한 큐. 타입만 바꾼다 (근거는 `test_ingest.py`)."""
     return json.dumps(
         {
             "info": {},
@@ -544,7 +544,7 @@ def _json_track(start: object, end: object) -> str:
                 {
                     "start": start,
                     "end": end,
-                    "text": "정상 큐입니다",
+                    "text": text,
                     "marked": False,
                     "layer": 0,
                     "style": "Default",
@@ -588,6 +588,28 @@ def test_non_integer_timecodes_exit_66_not_1(
     """
     target = tmp_path / f"times{suffix}"
     target.write_text(_json_track(start, end), encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    assert result.exit_code == 66, (
+        f"{label}{suffix}: exit {result.exit_code} — 1이면 규격 위반으로 오보된다"
+    )
+    assert result.stdout.strip() == "", "진단 실패인데 산출물이 나왔다"
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [("null", None), ("숫자", 123), ("객체", {"a": 1}), ("배열", [1, 2])],
+)
+@pytest.mark.parametrize("suffix", [".json", ".srt"])
+def test_non_string_text_exits_66_not_1(tmp_path, label: str, text: object, suffix: str):
+    """`"text": null` 12바이트급 파일이 exit 1을 내면 자막 결함으로 오보된다.
+
+    **C3(타임코드 타입) 수정이 이 경로를 못 막았다** — `_keep_displayed`가
+    `_to_segments`보다 먼저 돌기 때문이다. 근거는 `test_ingest.py` 참조.
+    """
+    target = tmp_path / f"text{suffix}"
+    target.write_text(_json_track(0, 3000, text=text), encoding="utf-8")
 
     result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
 
