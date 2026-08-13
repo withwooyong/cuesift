@@ -211,3 +211,23 @@ def test_load_profile_normalizes_deep_nesting(tmp_path):
     path.write_text("a: " + "[" * 600 + "]" * 600, encoding="utf-8")
     with pytest.raises(ValueError):
         load_profile(path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["max_chars_per_line", "max_cps", "max_lines", "min_duration_ms", "max_duration_ms"],
+)
+def test_load_profile_rejects_an_oversized_integer(tmp_path, field):
+    """float로 표현할 수 없는 거대 정수는 `ValueError`다.
+
+    `math.isfinite`가 int를 float로 바꾸려다 `OverflowError`를 낸다 —
+    약 1.8e308(310자리)이 경계다. 이 예외는 `ValueError`가 아니라서
+    `cli.py`의 `except (OSError, ValueError)`를 그대로 빠져나가고
+    **종료 코드 1**("규격 위반 발견")이 된다.
+
+    **숫자 필드 전부를 도는 이유**는 직전 라운드에서 `max_duration_ms`
+    하나가 검증 루프에서 빠져 뚫렸기 때문이다. 필드 목록을 손으로 관리하는
+    한 빠뜨린 하나로 뚫리므로, 테스트도 필드마다 돈다.
+    """
+    with pytest.raises(ValueError):
+        load_profile(_write(tmp_path / "t.yaml", **{field: "1" + "0" * 309}))

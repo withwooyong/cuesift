@@ -58,7 +58,16 @@ def _require_positive(raw: dict[str, Any], key: str) -> None:
         # 오보된다. 따옴표 친 숫자('20')와 빈 값은 YAML 초심자의 표준 실수다.
         raise ValueError(f"{key}는 숫자여야 한다 (받은 값: {value!r})")
 
-    if not math.isfinite(value):
+    # float 변환을 여기서 미리 해 본다. 아래 isfinite도, SpecProfile을 만들 때의
+    # float()도 거대 정수에서 OverflowError를 낸다 — 약 1.8e308(310자리)이 경계다.
+    # int는 임의 정밀도라 YAML에서 얼마든지 커질 수 있고, OverflowError는
+    # ValueError가 아니라서 호출자의 except를 그대로 빠져나간다.
+    try:
+        as_float = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{key}가 너무 크다 (자릿수: {len(str(value))})") from exc
+
+    if not math.isfinite(as_float):
         # NaN은 모든 비교가 False라 해당 위반이 영원히 발화하지 않는데,
         # 로드에는 성공하므로 신호가 **조용히** 죽는다. 다른 위반은 계속
         # 발화해 겉보기엔 정상이라 더 위험하다. inf는 int() 변환에서 터진다.
@@ -81,6 +90,10 @@ def load_profile(path: Path) -> SpecProfile:
     남아 있었다. 뒤처진 쪽으로 샌 예외는 미처리 traceback이 되어 종료 코드 1로
     나가고, 이 저장소에서 1은 "규격 위반 발견"이라 설정 사고가 자막 결함으로
     오보된다. 정규화를 여기서 하면 호출자는 `ValueError` 하나만 알면 된다.
+
+    **`cli.py`의 `_resolve_profile`이 이 계약을 믿고 예외 열거를 그만뒀다.**
+    여기를 느슨하게 만들면 그쪽이 조용히 무방비가 된다 — 호출부에는 아무 표시도
+    나지 않고 새 예외가 그대로 통과한다. 정규화를 줄이려면 `cli.py`를 함께 봐야 한다.
     """
     text = path.read_text(encoding="utf-8")
     try:
