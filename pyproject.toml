@@ -42,7 +42,9 @@ dev = [
 ]
 
 [project.scripts]
-cuesift = "cuesift.cli:app"
+# `cli:app`이 아니라 `cli:run`이다. `app`을 직접 두면 `cuesift --help | less`처럼
+# 하류가 먼저 닫는 흔한 사용에서 종료 코드가 120으로 덮인다 — `run`이 그것을 막는다.
+cuesift = "cuesift.cli:run"
 
 [project.urls]
 Homepage = "https://github.com/withwooyong/cuesift"

@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+import json
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -118,6 +122,265 @@ def test_non_subtitle_text_raises_parse():
         load_subtitle(FIXTURES / "not_subtitle.txt")
 
     assert exc.value.reason == "parse"
+
+
+# pysubs2의 JSON 포맷은 **내용으로** 판별된다 — `text.startswith('{"') and '"info":' in text`.
+# 따라서 확장자로는 막을 수 없고, 스키마가 조금이라도 어긋나면 파서가 KeyError·TypeError·
+# AttributeError를 낸다. 이것들은 Pysubs2Error도 ValueError도 아니다.
+_JSON_SHAPED = {
+    "12바이트": '{"info": {}}',
+    "events 키 없음": '{"info": {}, "styles": {}}',
+    "events가 null": '{"info": {}, "styles": {}, "events": null}',
+    "다른 도구 스키마": '{"info": {}, "styles": {}, "events": [{"begin": 0, "end": 1}]}',
+    "styles가 리스트": '{"info": {}, "styles": [], "events": []}',
+}
+
+
+@pytest.mark.parametrize("label", list(_JSON_SHAPED))
+def test_json_shaped_files_raise_ingest_error_not_a_bare_keyerror(tmp_path, label: str):
+    """JSON처럼 생긴 파일이 `IngestError` 밖으로 새면 안 된다 (설계 §5).
+
+    `_load`의 `except (Pysubs2Error, ValueError)`는 pysubs2의 JSON 파서가 내는
+    `KeyError`·`TypeError`·`AttributeError`를 **하나도 못 잡는다.** 새면 호출자의
+    `except IngestError`도 통과해 미처리 traceback이 되고 종료 코드 1이 된다 —
+    1은 "규격 위반 발견"이라 **12바이트짜리 쓰레기 파일이 자막 결함으로 오보된다.**
+
+    `tmp_path`에 내용을 직접 쓰는 것은 이 입력들이 자막 픽스처가 아니라 **퇴화 입력**이라
+    파일로 두면 `test_ingest_fixtures.py`의 목록만 6줄 늘고 내용은 안 보이기 때문이다.
+    """
+    target = tmp_path / "input.json"
+    target.write_text(_JSON_SHAPED[label], encoding="utf-8")
+
+    with pytest.raises(IngestError):
+        load_subtitle(target)
+
+
+# 기본 본문이 **규격을 위반하는** 긴 줄인 것은 의도적이다(ko는 16자/줄).
+# 위반이 0건이면 `_format_report`가 `_format_timecode`에 **닿지 않아**
+# float 타임코드가 수정 전에도 `exit 0 · "위반 없음"`으로 조용히 통과한다(실측).
+# 그 문서로 테스트를 짜면 "리포트에서 죽는다"는 근거 서술이 자기 픽스처에 대해 거짓이 된다.
+_VIOLATING_LINE = "열여섯 자를 확실히 넘기는 아주 긴 줄입니다 정말로"
+
+
+def _json_track(start: object, end: object, text: object = _VIOLATING_LINE) -> str:
+    """스키마가 **정상인** pysubs2 JSON 한 큐. 타입만 갈아 끼운다.
+
+    C2(깨진 JSON)와 갈라놓는 것이 요점이다 — 스키마를 깨면 `parse`로 잡혀
+    타입 검사가 없어도 66이 나오고, 그러면 이 테스트가 **아무것도 검증하지 않는다.**
+    아래 `reason`을 `timecode_type`으로 못 박는 이유가 그것이다.
+    """
+    return json.dumps(
+        {
+            "info": {},
+            "styles": {"Default": {}},
+            "events": [
+                {
+                    "start": start,
+                    "end": end,
+                    "text": text,
+                    "marked": False,
+                    "layer": 0,
+                    "style": "Default",
+                    "name": "",
+                    "marginl": 0,
+                    "marginr": 0,
+                    "marginv": 0,
+                    "effect": "",
+                    "type": "Dialogue",
+                }
+            ],
+        }
+    )
+
+
+def test_the_json_fixture_helper_is_valid_with_int_times(tmp_path):
+    """대조군 — 이 문서가 int일 때 로드되지 않으면 아래 테스트들이 스키마 오류를 재는 것이다."""
+    target = tmp_path / "ok.json"
+    target.write_text(_json_track(1000, 4000), encoding="utf-8")
+
+    result = load_subtitle(target)
+
+    assert result.format == "json"
+    assert result.segments[0].start_ms == 1000
+
+
+@pytest.mark.parametrize(
+    ("label", "start", "end"),
+    [
+        # 위반이 있는 본문이므로 이 문서는 수정 전 `_format_timecode`에서 ValueError를 냈다.
+        ("float", 1000.0, 4000.0),
+        ("str", "1000", "4000"),
+        # bool은 int의 하위형이라 산술이 **통과한다.** 크래시가 아니라 조용히 틀린
+        # 리포트가 나왔다 — `_VIOLATING_LINE` 기준으로 `false`/`true`는 길이 1ms짜리
+        # 큐가 되어 `cps 24500.0 > 12.0`까지 날조했다(실측).
+        ("bool", True, True),
+        ("bool-false-true", False, True),
+    ],
+)
+def test_non_integer_timecodes_are_rejected_at_the_ingest_boundary(
+    tmp_path, label: str, start: object, end: object
+):
+    """`Segment`의 `start_ms: int`는 **런타임에 아무것도 막지 않는다** (`@dataclass`다).
+
+    pysubs2의 json 포맷만 `SSAEvent(**fields)`로 원본 값을 그대로 넣는다 —
+    srt·vtt·ass·ssa는 `times_to_ms`·`make_time`이 int를 반환하므로 이 경로가 없다.
+
+    **검증을 `Segment.__post_init__`에 두면 exit이 여전히 1이다.** `load_subtitle`이
+    `_to_segments`를 `try` **밖에서** 부르므로 `ValueError`가 `IngestError`를 우회한다.
+    지적이 옳아도 위치가 틀리면 아무것도 안 고쳐진다 — 그래서 경계인 `_to_segments`가 막는다.
+    """
+    target = tmp_path / f"{label}.json"
+    target.write_text(_json_track(start, end), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    # `parse`가 나오면 스키마가 깨져 C2 경로로 잡힌 것이라 타입 검사를 검증하지 못한 것이다.
+    # `bad_timecode`를 재사용하지 않는 것은 "역전"과 "타입 틀림"이 섞이면 진단이 무뎌지기 때문이다.
+    assert exc.value.reason == "timecode_type"
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [("null", None), ("숫자", 123), ("객체", {"a": 1}), ("배열", [1, 2])],
+)
+@pytest.mark.parametrize("suffix", [".json", ".srt"])
+def test_non_string_text_is_rejected_at_the_ingest_boundary(
+    tmp_path, label: str, text: object, suffix: str
+):
+    """`text`가 문자열이 아니면 **필터링 단계에서** 죽는다 (설계 §4).
+
+    `_keep_displayed`의 `e.is_drawing`이 `parse_tags(self.text)`를 부르는데 그것이
+    `TypeError: expected string or bytes-like object`를 낸다.
+
+    **C3(타임코드 타입) 수정이 이 경로를 못 막았다.** `_require_int_timecodes`는
+    `_to_segments` 안에 있는데 `_keep_displayed`가 **그보다 먼저** 돌기 때문이다.
+    C3에서 배운 "검사는 우회되지 않는 위치에 둬야 한다"가 같은 파일 안에서
+    한 단계 더 앞으로 밀린 것이다.
+    """
+    target = tmp_path / f"text{suffix}"
+    target.write_text(_json_track(0, 3000, text=text), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "text_type"
+
+
+@pytest.mark.parametrize(
+    ("label", "start", "end"),
+    [
+        ("str/int", "1000", 4000),
+        ("int/str", 1000, "4000"),
+        ("float/str", 1000.0, "4000"),
+        ("null/int", None, 4000),
+        ("int/null", 1000, None),
+    ],
+)
+def test_mixed_type_timecodes_prove_the_check_runs_before_the_reversal_test(
+    tmp_path, label: str, start: object, end: object
+):
+    """**타입 검사가 역전 검사보다 먼저라는 순서를 고정한다.**
+
+    `_to_segments`는 `_require_int_timecodes` 다음에 `event.end < event.start`를 본다.
+    순서를 뒤집으면 그 비교가 `TypeError`를 내고 `IngestError`를 우회해 **exit 1**이 된다.
+
+    **혼합 타입이어야만 이 게이트가 작동한다**(실측). 두 필드가 **같은** 잘못된 타입이면
+    비교가 조용히 성공한다 — `"4000" < "1000"`은 사전순으로 `False`다. 그래서
+    `("1000", "4000")` 같은 str/str 케이스로는 순서를 뒤집어도 **아무것도 드러나지 않는다.**
+    실제로 순서만 뒤집은 변이에서 리포 전체 테스트가 통과한 적이 있다.
+    """
+    target = tmp_path / f"{label.replace('/', '_')}.json"
+    target.write_text(_json_track(start, end), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "timecode_type"
+
+
+def test_non_integer_timecodes_are_rejected_regardless_of_extension(tmp_path):
+    """포맷 판별이 내용 기준이므로 `.srt` 이름을 붙여도 json 파서로 간다."""
+    target = tmp_path / "looks_like_a_subtitle.srt"
+    target.write_text(_json_track(1000.0, 4000.0), encoding="utf-8")
+
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(target)
+
+    assert exc.value.reason == "timecode_type"
+
+
+def test_json_detection_ignores_the_extension(tmp_path):
+    """확장자로 막을 수 없다는 것이 이 결함의 핵심이다.
+
+    pysubs2는 **내용**으로 포맷을 고르므로 `.srt` 이름을 붙여도 JSON 파서로 간다.
+    확장자 화이트리스트를 대책으로 삼으면 이 경로가 그대로 열린 채 남는다.
+    """
+    target = tmp_path / "looks_like_a_subtitle.srt"
+    target.write_text('{"info": {}}', encoding="utf-8")
+
+    with pytest.raises(IngestError):
+        load_subtitle(target)
+
+
+def test_unreadable_file_raises_unreadable_not_a_bare_oserror(tmp_path):
+    """읽을 수 없는 파일도 `IngestError`로 모은다 (설계 §5).
+
+    **정규화하지 않으면 `PermissionError`가 호출자의 `except IngestError`를 통과해**
+    미처리 traceback이 되고 종료 코드 1이 된다 — 이 저장소에서 1은 "규격 위반 발견"이라
+    **잠긴 파일이 자막 결함으로 오보된다.** Windows에서는 편집기·트랜스코더·OneDrive가
+    자막을 잡고 있는 것이 흔하다.
+
+    `path.is_file()`은 존재만 보고 읽기 권한은 보지 않으므로 이 경로를 못 막는다.
+    실제로 읽을 수 없게 만들어 확인한다 — mock으로 확인하면 `pysubs2.load`가 정말
+    `OSError`를 내는지를 우리가 가정하게 되고, 그 가정이 이 테스트의 검증 대상이다.
+    """
+    target = tmp_path / "locked.srt"
+    target.write_bytes((FIXTURES / "minimal.srt").read_bytes())
+
+    with _unreadable(target):
+        # 잠금·권한이 실제로 읽기를 막았는지 먼저 본다. 막지 못했다면 아래 단언은
+        # 통과해도 아무것도 검증하지 않은 것이다 — 검사하지 않고 통과하는 게이트다.
+        try:
+            target.read_bytes()
+        except OSError:
+            pass
+        else:
+            pytest.skip("이 환경에서는 파일을 읽을 수 없게 만들지 못했다 (root 등)")
+
+        with pytest.raises(IngestError) as exc:
+            load_subtitle(target)
+
+    # 기존 6종(empty·decode·parse·not_found·video_input·bad_timecode)과 겹치지 않는다.
+    assert exc.value.reason == "unreadable"
+
+
+@contextmanager
+def _unreadable(path: Path) -> Iterator[None]:
+    """파일을 실제로 읽을 수 없게 만든다 — 플랫폼마다 수단이 다르다.
+
+    Windows에서 `chmod 000`은 읽기를 막지 못하고(읽기 전용 플래그만 선다)
+    POSIX에는 `msvcrt`가 없다. 한쪽 수단만 쓰면 다른 플랫폼에서 조용히 통과한다.
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        size = path.stat().st_size
+        with path.open("r+b") as handle:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, size)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, size)
+    else:
+        original = path.stat().st_mode
+        path.chmod(0o000)
+        try:
+            yield
+        finally:
+            # 되돌리지 않으면 pytest의 tmp_path 정리가 실패한다.
+            path.chmod(original)
 
 
 def test_comments_and_drawings_are_excluded_from_segments():

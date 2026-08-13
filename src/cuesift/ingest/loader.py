@@ -64,7 +64,7 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
     """
     _reject_non_subtitle(path)
     subs = _load(path)
-    events = _keep_displayed(subs)
+    events = _keep_displayed(subs, path)
     if not events:
         raise IngestError(
             "empty",
@@ -87,6 +87,11 @@ def _load(path: Path) -> pysubs2.SSAFile:
 
     번역하지 않으면 호출자가 pysubs2 예외 계층을 알아야 하고,
     그 순간 §7.2의 "외부 의존을 인터페이스 뒤로 격리"가 무너진다.
+
+    **호출자가 예외를 열거하지 않아도 되게 하는 것이 계약이다** (`spec/profile.py`가
+    내용 오류를 `ValueError`로 모은 것과 같은 판단). 열거는 계약이 아니라 관찰이라
+    피호출자가 새 예외를 낼 때마다 뒤처지고, 뒤처진 쪽으로 샌 예외는 미처리
+    traceback이 되어 종료 코드 1로 나간다 — 이 저장소에서 1은 "규격 위반 발견"이다.
     """
     try:
         return pysubs2.load(path, encoding="utf-8")
@@ -99,8 +104,44 @@ def _load(path: Path) -> pysubs2.SSAFile:
             f"{path}: utf-8로 읽을 수 없다 (바이트 {exc.start}). "
             "파일을 utf-8로 변환한 뒤 다시 시도한다.",
         ) from exc
+    except OSError as exc:
+        # `_reject_non_subtitle`의 `is_file()`은 **존재만 보고 읽기 권한은 보지 않는다.**
+        # 여기서 잡지 않으면 `PermissionError`가 호출자의 `except IngestError`를 그대로
+        # 통과해 미처리 traceback이 되고 종료 코드 1이 된다 — 1은 "규격 위반 발견"이라
+        # **잠긴 파일이 자막 결함으로 오보된다.** Windows에서는 편집기·트랜스코더·
+        # OneDrive가 자막을 잡고 있는 것이 흔하고, Linux에서는 mode 000이 같은 결과다.
+        #
+        # 검사와 열기 사이에 파일이 사라지면 `FileNotFoundError`도 여기로 온다.
+        # `not_found`로 되돌리지 않는 것은 그 경합에서 참인 진술이 "없다"가 아니라
+        # "읽을 수 없다"이기 때문이다 — 진단이 원인을 좁히지 못하는 편이 틀리는 것보다 낫다.
+        #
+        # OSError는 `Pysubs2Error`·`ValueError`와 서로 겹치지 않으므로(실측)
+        # 아래 절과 순서를 바꿔도 결과가 같다. 읽기 실패를 먼저 두는 것은 읽기가
+        # 파싱보다 먼저 일어나기 때문이다.
+        raise IngestError(
+            "unreadable",
+            f"{path}: 파일을 읽을 수 없다 ({exc.strerror or exc}). "
+            "다른 프로그램이 파일을 잡고 있는지, 읽기 권한이 있는지 확인한다.",
+        ) from exc
     except (Pysubs2Error, ValueError) as exc:
-        raise IngestError("parse", f"{path}: 자막으로 해석할 수 없다 — {exc}") from exc
+        raise IngestError("parse", f"{path}: 자막으로 해석할 수 없다 - {exc}") from exc
+    except Exception as exc:
+        # **`except Exception`이 여기 있는 이유는 이 줄이 외부 라이브러리 경계이기 때문이다.**
+        # 우리 코드에 쓰면 프로그래밍 오류를 숨기지만, `pysubs2.load` **한 줄**에 쓰면
+        # "남의 파서가 무엇을 던지든 그것은 파싱 실패다"라는 정확한 계약이 된다.
+        #
+        # 열거로는 못 닫힌다는 것이 실측됐다 — pysubs2의 JSON 포맷은 내용으로 판별되는데
+        # (`{"` 로 시작하고 `"info":` 포함) 스키마가 어긋나면 `KeyError`·`TypeError`·
+        # `AttributeError`를 낸다. 셋 다 `Pysubs2Error`도 `ValueError`도 아니다.
+        # `{"info": {}}` **12바이트**면 충분하고 `.srt` 이름을 붙여도 같다.
+        # 위 절들을 남겨 둔 것은 reason과 메시지가 다르기 때문이지 그것들로 충분해서가 아니다.
+        #
+        # **`try` 범위를 넓히면 안 된다.** `_to_segments` 같은 우리 코드가 이 안에 들어오면
+        # 진짜 버그가 `parse` 오류로 뭉개져 영원히 안 보인다.
+        raise IngestError(
+            "parse",
+            f"{path}: 자막으로 해석할 수 없다 - {type(exc).__name__}: {exc}",
+        ) from exc
 
 
 def _reject_non_subtitle(path: Path) -> None:
@@ -120,7 +161,7 @@ def _reject_non_subtitle(path: Path) -> None:
         )
 
 
-def _keep_displayed(subs: pysubs2.SSAFile) -> list[tuple[int, pysubs2.SSAEvent]]:
+def _keep_displayed(subs: pysubs2.SSAFile, path: Path) -> list[tuple[int, pysubs2.SSAEvent]]:
     """화면에 나오는 이벤트만 남기고 원본 위치를 함께 돌려준다 (설계 §4).
 
     `is_comment`는 ASS의 `Comment:` 줄, `is_drawing`은 벡터 드로잉이다.
@@ -130,8 +171,87 @@ def _keep_displayed(subs: pysubs2.SSAFile) -> list[tuple[int, pysubs2.SSAEvent]]
 
     둘 다 SRT·VTT에서는 항상 False이므로(실측 §12) 포맷 분기 없이 적용한다.
     **텍스트가 빈 큐는 남긴다** — FR-3.2가 hard fail로 잡을 대상이다.
+
+    **`text` 타입 검사가 여기 있는 이유**는 `is_drawing`이 `parse_tags(self.text)`를
+    부르기 때문이다. json 포맷은 `"text": null`을 그대로 통과시키고, 그때 `TypeError`가
+    나면서 `IngestError`를 우회해 **종료 코드 1**이 된다 — 1은 "규격 위반 발견"이다.
+    `_to_segments`의 타임코드 검사로는 못 막는다. **이 함수가 그보다 먼저 돌기 때문이다.**
+    검사는 우회되지 않는 위치에 둬야 한다는 규칙이 여기서 한 단계 더 앞으로 밀린다.
+
+    **필터 전에, 모든 이벤트를 검사한다.** `is_comment`·`is_drawing`을 부르려면 이미
+    타입이 성립해야 하므로 주석·드로잉이라고 건너뛸 수 없다.
+
+    `type`·`style`·`name`·`effect`는 검사하지 않는다 — 넷 다 문자열이 아니어도
+    예외를 내지 않는 것을 실측했다(우리 파이프라인은 넷을 읽지 않는다). 읽지도 않는
+    필드를 거절하면 실제로 동작하는 파일을 막게 된다.
     """
-    return [(i, e) for i, e in enumerate(subs) if not e.is_comment and not e.is_drawing]
+    kept: list[tuple[int, pysubs2.SSAEvent]] = []
+    for index, event in enumerate(subs):
+        _require_text(event, index, path)
+        if event.is_comment or event.is_drawing:
+            continue
+        kept.append((index, event))
+    return kept
+
+
+def _require_text(event: pysubs2.SSAEvent, raw_index: int, path: Path) -> None:
+    """`text`가 문자열임을 보증한다 (설계 §4·§6).
+
+    `_require_int_timecodes`와 같은 판단이다 — `@dataclass`의 타입 힌트는 런타임에
+    아무것도 막지 않고, json 포맷만 파일의 값을 그대로 넣는다.
+    """
+    if not isinstance(event.text, str):
+        raise IngestError(
+            "text_type",
+            f"{path}: {raw_index + 1}번째 큐의 text가 문자열이 아니다 "
+            f"(형 {type(event.text).__name__}). 자막 본문은 문자열이어야 한다.",
+        )
+
+
+def _require_int_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) -> None:
+    """타임코드가 **정수임을 런타임에 보증한다** (설계 §6).
+
+    `Segment.start_ms: int`는 `@dataclass`의 타입 힌트라 런타임에 아무것도 막지 않는다.
+    `Span.__post_init__`이 `side`를 검사하며 적어 둔 이유와 같은데 타임코드에는 없었다.
+
+    **진입로는 json 포맷 하나다.** srt·vtt·ass·ssa·microdvd·tmp·mpl2는
+    `times_to_ms`·`make_time`·`frames_to_ms`가 전부 int를 반환하지만, json만
+    `SSAEvent(**fields)`로 파일의 값을 그대로 넣는다.
+
+    **증상이 타입마다 다르고, 그중 둘은 조용하다**(전부 실측).
+
+    | 값 | 증상 |
+    | --- | --- |
+    | `1000.0` (위반 있는 파일) | `_format_timecode`의 `{hours:02d}`에서 `ValueError` -> exit 1 |
+    | `1000.0` (**위반 0건 파일**) | **크래시 없음. exit 0 · "위반 없음"으로 조용히 통과** |
+    | `"1000"` | `duration_ms` 뺄셈에서 `TypeError` -> exit 1 (위반 유무와 무관) |
+    | `true`/`true` | 크래시 없음. 길이 **0ms**짜리 큐가 되어 `duration_short`가 붙는다 |
+    | `false`/`true` | 크래시 없음. 길이 1ms라 **`cps 24500.0 > 12.0`** 이라는 수치를 날조한다 |
+
+    (bool 두 행의 수치는 테스트의 `_VIOLATING_LINE` 본문 기준이다. 본문을 바꾸면 값이
+    달라지므로 **수치를 인용할 때 어느 본문인지 함께 봐야 한다** — 실제로 이 표가 한 번
+    삭제된 옛 본문의 값을 실측으로 인용한 적이 있다.)
+
+    **`type(v) is not int`인 것은 `bool`을 막기 위해서다.** `isinstance(True, int)`가
+    참이라 `isinstance`로 "완화"하면 위 두 bool 케이스가 그대로 통과한다.
+    `false`/`true`가 특히 나쁘다 — 날조된 CPS는 자릿수만 클 뿐 형식이 정상 위반과 같아
+    검수자가 의심하지 않는다. `profile.py`의 `_require_positive`가 bool을 먼저 막는 것과
+    같은 판단이다: **이 저장소에서 조용히 틀린 답은 크래시보다 나쁘다.**
+
+    **`Segment.__post_init__`이 아니라 여기서 막는 것이 핵심이다.** `load_subtitle`은
+    `_to_segments`를 `try` **밖에서** 부르므로 `Segment`가 던지는 `ValueError`는
+    `IngestError`를 우회해 미처리 traceback이 되고 **종료 코드 1**이 된다 —
+    1은 "규격 위반 발견"이다. 같은 검사라도 위치가 틀리면 아무것도 고쳐지지 않는다.
+    """
+    for field in ("start", "end"):
+        value = getattr(event, field)
+        if type(value) is not int:
+            raise IngestError(
+                "timecode_type",
+                f"{path}: {raw_index + 1}번째 큐의 {field} 타임코드가 정수가 아니다 "
+                f"(받은 값: {value!r}, 형 {type(value).__name__}). "
+                "타임코드는 밀리초 정수여야 한다.",
+            )
 
 
 def _to_segments(
@@ -143,12 +263,22 @@ def _to_segments(
     정렬이 혼란스러워진다. 원본 위치는 `event_index`가 보존하므로
     라운드트립에 필요한 정보는 잃지 않는다.
 
-    역전 타임코드는 여기서 잡는다. `Segment`에 맡기면 `ValueError`가 나지만
-    **몇 번째 큐인지가 메시지에 없어** 사람이 파일에서 찾을 수 없다.
+    타임코드의 **타입과 역전**을 둘 다 여기서 잡는다. `Segment`에 맡기면 `ValueError`가
+    나는데 몇 번째 큐인지가 메시지에 없고, 무엇보다 이 함수가 `try` 밖에서 불리므로
+    그 예외는 `IngestError`를 우회한다(위 `_require_int_timecodes` 참조).
     """
     segments: list[Segment] = []
     event_index: dict[str, int] = {}
     for index, (raw_index, event) in enumerate(events):
+        # **타입 검사가 역전 검사보다 먼저여야 한다.** 아래 `event.end < event.start`는
+        # **두 필드의 타입이 서로 다를 때** TypeError를 내고 그것이 `IngestError`를
+        # 우회한다 — `"1000" < 4000` · `None < 1000` · `1000.0 < "4000"`이 그렇다.
+        #
+        # **str끼리는 트리거가 아니다**(실측). `"4000" < "1000"`은 사전순으로 조용히
+        # `False`를 낸다. 그래서 두 필드가 **같은** 잘못된 타입인 케이스로는 순서를
+        # 뒤집어도 아무것도 드러나지 않는다 — 순서를 지키는 게이트는 반드시
+        # **혼합 타입** 입력이어야 한다(`test_mixed_type_timecodes_...`).
+        _require_int_timecodes(event, raw_index, path)
         if event.end < event.start:
             raise IngestError(
                 "bad_timecode",
