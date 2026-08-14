@@ -543,6 +543,11 @@ def test_limit_does_not_change_the_exit_code():
     limited = runner.invoke(app, [*args, "--limit", "1"])
 
     assert full.exit_code == 1, f"픽스처가 위반을 내지 않는다: exit {full.exit_code}"
+    # **`CliRunner`는 미처리 예외도 exit 1로 만든다** — `typer.Exit(1)`과 종료 코드로
+    # 구별되지 않는다(리뷰 실측: `KeyError`도 `SystemExit`도 똑같이 `exit_code=1`).
+    # 종료 코드만 단언하면 **전체 출력만 크래시하는 회귀**가 그대로 통과한다.
+    # `limited` 쪽은 아래 "생략" 단언이 우연히 막고 있었고 이쪽만 열려 있었다.
+    assert "위반 4건" in full.stdout, f"exit 1이지만 정상 산출물이 아니다: {full.stdout}"
     assert limited.exit_code == 1, "출력을 자르니 종료 코드가 바뀌었다"
     assert "생략" in limited.stdout, (
         f"절단이 일어나지 않아 이 테스트가 무의미하다: {limited.stdout}"
@@ -594,8 +599,10 @@ def test_negative_timecodes_exit_66_regardless_of_spec_violations(tmp_path, labe
     두 행을 함께 두는 이유는 판정 결과와 무관하게 66이어야 하기 때문이다. 위반 있는
     케이스만 두면 "1이 아니다"만 확인해 exit 0 누수를 못 잡는다.
 
-    **음수는 json으로만 표현할 수 있다** — SRT·VTT의 타임코드 문법에 부호 자리가 없다.
-    `loader.py`가 타입 오염을 두고 "진입로는 json 포맷 하나다"라고 적은 것과 같은 문이다.
+    여기서 json을 쓰는 것은 **부호를 한 줄로 주입하기 쉬워서지 진입로가 하나여서가
+    아니다.** pysubs2는 ASS·SAMI·MPL2에서도 음수를 파싱한다 — 평문 포맷 쪽은
+    `test_negative_timecodes_are_rejected_in_ass_not_only_json`이 픽스처로 덮는다.
+    (SRT·VTT는 부호 자리가 없어 앞의 `-`를 조용히 무시하므로 여기서 못 쓴다.)
     """
     payload = {
         "info": {},

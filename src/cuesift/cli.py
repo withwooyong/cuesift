@@ -490,8 +490,9 @@ def _format_report(
     # 폭이 모자라면 자릿수가 큰 줄부터 뒤 열이 통째로 오른쪽으로 밀린다.
     cue_width = len(str(max(event_index.values(), default=0) + 1))
     # **`limit <= 0`이지 `limit == 0`이 아니다.** 음수를 그대로 흘리면 `violations[:-1]`이
-    # 되어 **마지막 위반이 조용히 사라진다.** CLI는 typer의 `min=0`이 막지만 이 함수는
-    # 라이브러리로도 불리므로 여기서도 닫는다.
+    # 되어 **마지막 위반이 조용히 사라진다.** CLI 경로는 typer의 `min=0`이 본문 전에 막으므로
+    # (실측: `--limit -1`·`-1` 등호형·`--limit 2 --limit -1` 모두 exit 2) 이 방어가 실제로
+    # 필요한 호출자는 **이 함수를 직접 부르는 테스트**다 — 프로덕션 호출자는 `check()` 하나뿐이다.
     shown = violations if limit <= 0 else violations[:limit]
     for track_violation in shown:
         # **원본 파일의 "이벤트 순번"이지 SRT에 인쇄된 번호가 아니다.**

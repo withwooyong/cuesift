@@ -325,6 +325,48 @@ def test_negative_timecodes_are_rejected_at_the_ingest_boundary(
     assert exc.value.reason == "negative_timecode"
 
 
+def test_a_cue_starting_at_zero_loads_normally():
+    """**`< 0`이지 `<= 0`이 아니다** — 이 경계를 지키는 유일한 게이트다.
+
+    `0`은 영상 첫 프레임을 가리키는 정상 값이고 `00:00:00,000`으로 시작하는 자막은
+    흔하다. `<= 0`으로 조이면 그런 자막이 **전부 exit 66("파일 내용이 틀림")**이 된다.
+
+    **이 테스트가 없을 때 그 변이가 497건 전체 스위트를 통과했다**(리뷰 실측, 두 리뷰어가
+    독립적으로 같은 결론). 바로 옆 `spec/profile.py`의 `_require_positive`가 `<= 0`을
+    쓰므로 "타임코드도 0보다 커야지"라는 오독은 그럴듯하다.
+
+    **픽스처를 새로 만들어야 했다** — 기존 13종 중 `0`을 지나가는 것이 하나도 없었다.
+    `_json_track(0, ...)`을 쓰는 테스트가 둘 있지만 둘 다 `text`를 비정상으로 넣어
+    `_keep_displayed`에서 먼저 죽으므로 부호 검사에 닿지 않는다.
+    """
+    result = load_subtitle(FIXTURES / "starts_at_zero.srt")
+
+    assert result.segments[0].start_ms == 0, "0에서 시작하는 큐가 살아남지 못했다"
+    assert len(result.segments) == 2
+
+
+def test_negative_timecodes_are_rejected_in_ass_not_only_json():
+    """**음수의 진입로는 json 하나가 아니다** — 이 저장소가 세 곳에 적었던 전제가 거짓이었다.
+
+    pysubs2는 ASS·SAMI(`.smi`)·MPL2에서 음수를 **의도적으로** 파싱한다 —
+    `substation.py`에 `# handle negative timestamps` 분기가 있고 `mpl2.py`의 정규식에
+    부호가 명시돼 있으며 `sami.py`는 `int()`로 그대로 받는다. 반면 SRT·VTT·MicroDVD·TMP는
+    부호 자리가 없어 앞의 `-`를 **조용히 무시**한다(전부 리뷰 실측).
+
+    이것이 중요한 이유는 README가 SAMI를 "한국 레거시 자막의 주력 포맷"으로 **지원
+    선언**했기 때문이다. json 픽스처만 두면 다음 사람이 "json만 조심하면 된다"는 틀린
+    지도를 받고 평문 포맷 회귀 테스트를 만들지 않는다.
+
+    **쓰기 경로는 pysubs2가 전부 클램프한다**(실측). 그래서 "우리 도구로 왕복시켜 보니
+    괜찮더라"는 검증이 통과해 버리고, 진짜 위험인 **외부 도구가 만든 파일**은 그 검증을
+    통째로 비켜 간다. 라이브러리 경계는 read 경로와 write 경로를 따로 봐야 한다.
+    """
+    with pytest.raises(IngestError) as exc:
+        load_subtitle(FIXTURES / "negative_timecode.ass")
+
+    assert exc.value.reason == "negative_timecode"
+
+
 def test_negative_check_runs_before_the_reversal_test(tmp_path):
     """**음수 검사가 역전 검사보다 먼저라는 순서를 고정한다.**
 
