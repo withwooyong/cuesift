@@ -312,3 +312,18 @@ def test_저장_실패는_예외를_내지_않는다(tmp_path: Path, monkeypatch
 
     with pytest.raises(OSError):
         store(tmp_path, _request(), _completion())
+
+
+def test_OSError가_아닌_저장_실패도_임시_파일을_남기지_않는다(tmp_path: Path) -> None:
+    # WP7b Task 2 리뷰 라운드 2 실측: content에 짝 없는 서러게이트(U+D800)가
+    # 있으면 json.dumps는 통과하지만 tmp.write_text(encoding="utf-8")가
+    # UnicodeEncodeError(ValueError의 하위)를 낸다. `except OSError`만
+    # 걸려 있으면 이것을 못 잡아 tmp가 그대로 남는다 - pid가 매 실행
+    # 달라지므로 같은 서러게이트 콘텐츠가 반복되는 실행에서 잔해가 쌓인다.
+    request = _request()
+    completion = _completion(text="\ud800broken")
+
+    with pytest.raises(ValueError):
+        store(tmp_path, request, completion)
+
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []

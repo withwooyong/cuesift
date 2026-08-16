@@ -10,9 +10,11 @@
 자손만 잡는다 - 그 계약은 이 계층의 존재와 무관하게 이미 성립해야 하고,
 캐시를 끼우는 행위 자체가 그 계약 밖의 새 실패 모드를 만들면 안 된다.
 그래서 캐시 **자신의** 읽기·쓰기가 내는 예외(디스크 I/O·직렬화)는
-`ProviderError` 계열이 아니어도 이 계층에서 흡수한다. `_CACHE_IO_ERRORS`
-참고. **inner가 던진 예외는 여기서 잡지 않는다** - 이미 분류돼 있고, 또
-잡으면 재시도·폴백 분류가 이 계층에서 뭉개진다.
+`ProviderError` 계열이 아니어도 이 계층에서 흡수한다. `cache._CACHE_IO_ERRORS`
+참고 - `store()`의 tmp 정리도 **같은 상수**를 쓴다(갈라지면 "정리는 되는데
+흡수 못 함" 또는 "흡수는 되는데 tmp 안 지워짐"의 틈이 생긴다). **inner가
+던진 예외는 여기서 잡지 않는다** - 이미 분류돼 있고, 또 잡으면 재시도·폴백
+분류가 이 계층에서 뭉개진다.
 
 **예외를 캐시하지 않는 것은 구조적으로 보장된다.** 안쪽 `complete()`가
 던지면 아래 저장 코드에 도달하지 못한다. 조건문으로 거르는 것이 아니라서
@@ -24,21 +26,14 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from cuesift.store.cache import CacheRequest, load, store
+from cuesift.store.cache import _CACHE_IO_ERRORS, CacheRequest, load, store
 from cuesift.translate.provider import ChatMessage, Completion, Provider
 
-# 캐시 자신의 읽기·쓰기가 낼 수 있는 예외 셋. `OSError`(디스크 I/O)만으로는
-# 부족하다 - 리뷰 실측: 자막에 U+D800(짝 없는 서러게이트) 같은, 파이썬
-# 문자열로는 유효하지만 UTF-8로 인코딩할 수 없는 문자가 들어오면
-# `store()` 안에서 `json.dumps`는 통과하고 `Path.write_text(encoding="utf-8")`가
-# `UnicodeEncodeError`(`ValueError`의 하위)를 낸다. `CacheRequest.key`가
-# 비수치형 `temperature`(`None`·문자열)에서 `float(...)`를 계산하다
-# `TypeError`/`ValueError`를 내는 경로(`load()`·`store()` 양쪽에서
-# `request.key` 평가 시 발생)도 같은 부류다. 셋 중 하나라도 빠지면
-# `ProviderError` 밖으로 새어 engine의 배치 폴백(FR-2.6)을 우회하고,
-# 캐시 없이는 완주하던 실행이 캐시를 끼우면 죽는다(리뷰 실측: 세그먼트
-# 4개·배치 2개 실행에서 캐시 없음은 완주, `CachingProvider` 경유는 중단).
-_CACHE_IO_ERRORS = (OSError, ValueError, TypeError)
+# 정의는 `cache.py`에 있다 - 그쪽이 `store()`의 tmp 정리에도 같은 값을
+# 쓰므로, 여기서 별도 상수를 두면 두 곳이 갈라질 위험이 생긴다(모듈
+# 독스트링 참고). `cache.py`가 이 패키지 안에서 더 낮은 계층이라
+# (`provider.py`가 `cache.py`를 이미 임포트한다) 반대 방향으로 임포트하면
+# 순환 임포트가 된다.
 
 
 def _ignore(_message: str) -> None:
