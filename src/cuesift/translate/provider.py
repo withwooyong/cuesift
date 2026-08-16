@@ -104,8 +104,14 @@ class RetryableProviderError(ProviderError):
         # 무효값에 예외를 던지지 않는 것이 핵심이다. 예외를 만드는 중에 예외를
         # 던지면 원래 실패 원인(429·503)이 그 자리에서 사라진다.
         #
-        # isfinite가 필요한 이유: nan은 어떤 비교에도 False라 `< 0` 검사만으로는
-        # 무효값이 그대로 통과한다.
+        # isfinite가 필요한 이유: 아래 조건은 **수용형**("0 이상이면 받는다")이라
+        # 음수도 nan도 `>= 0.0`에서 이미 걸린다(nan은 어떤 비교에도 False다).
+        # isfinite가 **혼자 막는 값은 `+inf` 하나뿐**이다 - `inf >= 0.0`이 True라
+        # 비교를 통과한다. 지우면 inf가 그대로 실려 나가 호출부의 sleep(inf)가
+        # OverflowError를 내는데, 그것은 ProviderError 밖이라 호출부의
+        # `except RetryableProviderError`가 잡지 못한다 (설계 §4.2).
+        # 조건을 거부형(`if x < 0: 버린다`)으로 뒤집으면 이번엔 nan이 샌다 -
+        # isfinite는 두 형태 모두에서 필요하고 막는 값만 달라질 뿐이다.
         # isinstance가 필요한 이유: 숫자가 아닌 값(파싱하지 않은 Retry-After 헤더
         # 문자열이 대표적이다)에 isfinite를 걸면 TypeError가 나는데, 그것이 바로
         # 이 줄들이 막으려는 "생성자가 던지는 예외"다.
