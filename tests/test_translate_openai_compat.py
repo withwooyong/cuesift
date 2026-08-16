@@ -13,6 +13,7 @@ RetryableProviderError` / `except FatalProviderError`)이 받지 못해
 
 from __future__ import annotations
 
+import gzip
 import inspect
 import json
 import math
@@ -311,11 +312,41 @@ def test_Fatal과_Retryable은_서로를_잡지_않는다() -> None:
     assert not isinstance(r.value, FatalProviderError)
 
 
-def test_399는_오류가_아니다() -> None:
-    # 오류 경계는 400이다. 399를 오류로 보면 리다이렉트 응답이 Fatal이 되고,
-    # 400을 정상으로 보면 스키마 오류가 본문 파싱 실패로 위장된다.
-    provider = _provider(lambda _r: httpx.Response(399, json=_ok_body()))
+@pytest.mark.parametrize("status", [200, 201, 299])
+def test_2xx는_정상이다(status: int) -> None:
+    provider = _provider(lambda _r: httpx.Response(status, json=_ok_body()))
     assert provider.complete(_MESSAGES, temperature=0.0, max_tokens=None).text == "hello"
+
+
+@pytest.mark.parametrize("status", [300, 301, 302, 307, 399])
+def test_3xx는_리다이렉트로_따로_말한다(status: int) -> None:
+    """3xx를 본문 파싱에 흘려보내면 사용자가 **엉뚱한 원인**을 본다.
+
+    실측: 301 + 빈 본문은 `FatalProviderError: 응답이 JSON이 아니다`가 됐다.
+    게이트웨이의 `http`->`https` 리다이렉트 오설정에서 나오는 흔한 형태인데,
+    사용자는 "서버가 JSON을 안 준다"로 읽고 `base_url`을 의심하지 않는다.
+
+    따라가지 않는 것은 그대로다 - `follow_redirects`를 켜는 것은 정책 변경이고,
+    OpenAI 호환 엔드포인트가 리다이렉트를 요구하면 그것은 설정 오류다.
+    """
+    provider = _provider(
+        lambda _r: httpx.Response(status, headers={"location": "https://y/v1"}, content=b"")
+    )
+    with pytest.raises(FatalProviderError) as exc:
+        provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+    assert "리다이렉트" in str(exc.value)
+    assert "base_url" in str(exc.value)
+
+
+def test_오류_본문은_200자에서_자른다() -> None:
+    # 자르지 않으면 HTML 오류 페이지 전문이 로그와 실패 리포트에 그대로
+    # 실린다. 800개 세그먼트면 그 페이지가 800번 실린다.
+    provider = _provider(lambda _r: httpx.Response(400, text="x" * 5000))
+    with pytest.raises(FatalProviderError) as exc:
+        provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+    message = str(exc.value)
+    assert "x" * 200 in message
+    assert "x" * 201 not in message
 
 
 # --------------------------------------------------------------------------
@@ -478,6 +509,59 @@ def test_전송_계층_실패는_전부_Retryable이다(error: Exception) -> Non
         _call(_provider(_raising(error)))
 
 
+def test_깨진_압축_본문은_Retryable이다() -> None:
+    """`DecodingError`는 `RequestError`지만 **`TransportError`가 아니다**.
+
+    실측(httpx 0.28.1): `issubclass(httpx.DecodingError, httpx.TransportError)`가
+    `False`다. 그래서 `except httpx.TransportError`로 좁히면 이 예외가 두 절을
+    모두 지나쳐 `ProviderError` 밖으로 샌다. 발생 지점이 `client.post()`
+    **안**(`Response.read()`의 압축 해제)이라 상태 코드 분류에도 닿지 않는다.
+
+    도달 경로가 흔하다. httpx는 기본으로 `Accept-Encoding: gzip, deflate`를
+    보내므로, 이중 압축 프록시·헤더만 붙이고 압축은 안 하는 게이트웨이·전송
+    중 끊긴 gzip 본문이 전부 여기다.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, content=b"not gzip at all")
+
+    with pytest.raises(RetryableProviderError) as exc:
+        _call(_provider(handler))
+    # 메시지까지 본다. 분류만 보면 세 `except` 절을 뭉개는 변이가 살아남는다 -
+    # 타임아웃 절에서 이미 배운 것을 새 절에 적용하지 않아 실제로 살아남았다.
+    assert "응답 처리 실패" in str(exc.value)
+
+
+def test_리다이렉트_루프는_Retryable이다() -> None:
+    # TooManyRedirects도 RequestError지만 TransportError가 아니다. 같은 구멍이다.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": str(request.url)})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    provider = OpenAICompatibleProvider(base_url="http://x/v1", model="m", client=client)
+    with pytest.raises(RetryableProviderError) as exc:
+        provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+    assert "응답 처리 실패" in str(exc.value)
+
+
+def test_정상_gzip_응답을_읽는다() -> None:
+    """목이 광고한 능력을 한 번은 행사해야 한다.
+
+    129개 테스트가 **한 번도 압축 응답을 돌려주지 않아서** 위의
+    `DecodingError` 누수가 가려져 있었다. 진짜 서버(OpenAI, nginx·Cloudflare
+    뒤의 vLLM)는 대부분 gzip으로 돌려준다 - 목이 실제보다 단순하면 그 차이
+    안에 결함이 숨는다.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        body = gzip.compress(json.dumps(_ok_body("압축된 번역")).encode())
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, content=body)
+
+    completion = _provider(handler).complete(_MESSAGES, temperature=0.0, max_tokens=None)
+    assert completion.text == "압축된 번역"
+    assert completion.usage.calls == 1
+
+
 # --------------------------------------------------------------------------
 # 본문 파싱 - 전부 ProviderError 안으로 떨어져야 한다
 # --------------------------------------------------------------------------
@@ -548,11 +632,29 @@ def test_content가_null이면_Retryable이다() -> None:
         provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
 
 
-def test_content_키가_없으면_Fatal이다() -> None:
-    # null과 구분한다. 규격은 content를 **항상 싣되 null일 수 있다**고
-    # 정하므로, 키 자체가 없는 것은 서버가 호환이 아니라는 신호다.
-    # 재시도해도 같은 형태가 온다.
+def test_content_키가_없어도_Retryable이다() -> None:
+    """**키 부재와 `null`을 같게 다룬다.** 둘의 차이는 직렬화 정책뿐이다.
+
+    앞선 판정("키 부재는 서버가 호환이 아니라는 신호")은 틀렸다.
+    Pydantic·FastAPI 기반 OpenAI 호환 서버가 `exclude_none=True`로 덤프하면
+    `"content": null`이 **키째로 사라진다.** 같은 "이번 생성이 비었다"가
+    서버 A에서는 Retryable(비용이 `max_retries+1`회로 유한)이 되고 서버 B에서는
+    Fatal(실행 전체 사망)이 된다는 뜻이다.
+
+    **표기 차이로 실행 전체의 생사가 갈리면 안 된다.** 판별 신호가 의미가
+    아니라 표기라서 분류 근거로 쓸 수 없다. 비호환 판정은 표기가 아니라
+    **구조**에만 맡긴다 - `message`가 객체가 아니거나 `choices`가 없는 경우다.
+    """
     body = {"choices": [{"message": {"role": "assistant"}}]}
+    provider = _provider(lambda _r: httpx.Response(200, json=body))
+    with pytest.raises(RetryableProviderError):
+        provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+
+
+def test_message가_객체가_아니면_Fatal이다() -> None:
+    # 구조가 어긋난 것은 표기가 아니라 의미의 문제다. 재시도해도 같은
+    # 형태가 온다. 위의 "키 부재"와 한 조건에 묶여 있었는데 성격이 다르다.
+    body = {"choices": [{"message": "hi"}]}
     provider = _provider(lambda _r: httpx.Response(200, json=body))
     with pytest.raises(FatalProviderError):
         provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
@@ -663,6 +765,43 @@ def test_usage가_유한하지_않으면_0이다(value: float) -> None:
     assert provider.complete(_MESSAGES, temperature=0.0, max_tokens=None).usage.prompt_tokens == 0
 
 
+@pytest.mark.parametrize("digits", [309, 310, 1000, 4299])
+def test_310자리_이상의_거대_정수도_죽지_않는다(digits: int) -> None:
+    """`math.isfinite`가 인자를 float로 변환하므로 큰 int에서 `OverflowError`다.
+
+    `OverflowError`는 `ArithmeticError`의 자손이라 `ProviderError` 밖이고,
+    engine의 폴백이 받지 못한다. 실측: `math.isfinite(10**309)`가 죽는다.
+
+    **경계가 비대칭이다.** 4300자리 이상은 오히려 안전하다 - 파이썬 3.11+의
+    int 문자열 변환 한도에 `json`이 먼저 걸려 `ValueError`를 내고, 그것은
+    `_to_completion`의 `except ValueError`가 Fatal로 받는다. 즉
+    **310~4299자리만 샌다.** 그 구간을 넣지 않으면 이 결함이 보이지 않는다.
+
+    `_token_count`의 독스트링이 "못 읽으면 0"이라고 **전역 함수를 선언**하는데,
+    이 구간에서 부분 함수가 되면 그 선언이 거짓이 된다.
+    """
+    raw = (
+        b'{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":1'
+        + b"0" * digits
+        + b"}}"
+    )
+    provider = _provider(lambda _r: httpx.Response(200, content=raw))
+    completion = provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+    assert completion.usage.calls == 1
+
+
+def test_4300자리_이상은_JSON_단계에서_Fatal이다() -> None:
+    # 위 테스트의 짝이다. 경계의 반대편도 ProviderError 안이라는 것을 못박는다.
+    raw = (
+        b'{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":1'
+        + b"0" * 4300
+        + b"}}"
+    )
+    provider = _provider(lambda _r: httpx.Response(200, content=raw))
+    with pytest.raises(FatalProviderError):
+        provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+
+
 # --------------------------------------------------------------------------
 # 생성자
 # --------------------------------------------------------------------------
@@ -678,6 +817,12 @@ def test_usage가_유한하지_않으면_0이다(value: float) -> None:
         "ftp://x/v1",  # UnsupportedProtocol = TransportError의 자손
         "http://x:port/v1",  # httpx.InvalidURL
         "http://x\n/v1",  # httpx.InvalidURL
+        # 아래 넷은 **스킴만 보는 가드를 통과했다.** rstrip이 "http://"를
+        # "http:"로 만들어도 scheme은 여전히 "http"라 검사를 지난다.
+        "http://",
+        "http:///v1",
+        "https:///",
+        "http://:8080/v1",
     ],
 )
 def test_HTTP가_아닌_base_url은_생성_시점에_거부한다(base_url: str) -> None:
@@ -701,13 +846,110 @@ def test_HTTP가_아닌_base_url은_생성_시점에_거부한다(base_url: str)
         OpenAICompatibleProvider(base_url=base_url, model="m")
 
 
-@pytest.mark.parametrize("base_url", ["http://x/v1", "https://x/v1", "HTTPS://X/v1"])
-def test_HTTP_계열_base_url은_받는다(base_url: str) -> None:
+def test_호스트가_없는_base_url이_막는다고_적은_실패를_그대로_낸다() -> None:
+    """가드의 독스트링이 막겠다고 적은 실패 모드가 정확히 재현됐었다.
+
+    실측: `base_url="http://"`는 `rstrip("/")` 뒤 `"http:"`가 되는데
+    `httpx.URL("http:").scheme`은 여전히 `"http"`라 스킴 검사를 통과했다.
+    그리고 실제 클라이언트로 호출하면 `UnsupportedProtocol`이 나와
+    **Retryable로 분류됐다** - 가드가 막겠다고 적은 바로 그 형태다.
+    `http://${OLLAMA_HOST}/v1`에서 변수가 비었을 때 나오는 흔한 형태다.
+
+    `rstrip` 순서를 바꾸는 것만으로는 고쳐지지 않는다. 호스트를 봐야 한다.
+    """
+    with pytest.raises(ValueError, match="base_url"):
+        OpenAICompatibleProvider(base_url="http://", model="m")
+
+
+@pytest.mark.parametrize("base_url", ["http://x/v1?key=1", "http://x/v1#frag"])
+def test_쿼리나_프래그먼트가_붙은_base_url을_거부한다(base_url: str) -> None:
+    """붙여 쓰면 **조용히 다른 경로로 간다.**
+
+    실측: `http://x/v1?key=1` + `/chat/completions`는
+    `http://x/v1?key=1/chat/completions`가 되고 실제 경로는 `/v1`이다.
+    404가 나고 404는 Fatal이라 사용자는 "모델이 없다"로 읽는다.
+    `rstrip("/")`을 넣은 이유와 똑같은 실패 모드다.
+    """
+    with pytest.raises(ValueError, match="base_url"):
+        OpenAICompatibleProvider(base_url=base_url, model="m")
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://x/v1",
+        "https://x/v1/",
+        "HTTPS://X/v1",
+        "http://localhost:11434/v1",
+        "http://[::1]:8080/v1",
+        "https://api.openai.com/v1",
+    ],
+)
+def test_정상적인_base_url은_받는다(base_url: str) -> None:
+    # 가드를 조이면 정상 형태를 막기 쉽다. IPv6 리터럴과 포트가 특히 그렇다.
     provider = OpenAICompatibleProvider(base_url=base_url, model="m")
     try:
         assert provider.name == "openai-compatible"
     finally:
         provider.close()
+
+
+def test_비ASCII_api_key를_거부한다() -> None:
+    """실측: `UnicodeEncodeError`가 `ProviderError` 밖으로 샜다.
+
+    HTTP 헤더는 ASCII다. 키를 복사하다 전각 문자나 스마트 따옴표가 섞이는
+    것은 `base_url` 오타와 **정확히 같은 부류의 설정 오류**인데 한쪽만
+    가드가 있었다. 호출 시점이 아니라 생성 시점에 막는다.
+    """
+    with pytest.raises(ValueError, match="api_key"):
+        OpenAICompatibleProvider(base_url="http://x/v1", model="m", api_key="키값")
+
+
+def test_api_key는_오류_메시지에_실리지_않는다() -> None:
+    # 비밀이다. 로그와 실패 리포트에 남으면 안 된다.
+    with pytest.raises(ValueError) as exc:
+        OpenAICompatibleProvider(base_url="http://x/v1", model="m", api_key="sk-비밀값")
+    assert "비밀값" not in str(exc.value)
+    assert "sk-" not in str(exc.value)
+
+
+@pytest.mark.parametrize("temperature", [math.nan, math.inf, -math.inf])
+def test_유한하지_않은_temperature는_Fatal이다(temperature: float) -> None:
+    """실측: httpx 0.28의 `encode_json`이 `allow_nan=False`를 쓴다.
+
+    `ValueError: Out of range float values are not JSON compliant: nan`이
+    `ProviderError` 밖으로 샜다. 도달 경로가 실재한다 - `temperature`는
+    설정에서 오고 **YAML 1.1은 `.nan`·`.inf`를 float으로 파싱한다.**
+
+    설정 오류라 재시도가 무의미하므로 `Fatal`이다.
+    """
+    with pytest.raises(FatalProviderError, match="temperature"):
+        _provider(lambda _r: httpx.Response(200, json=_ok_body())).complete(
+            _MESSAGES, temperature=temperature, max_tokens=None
+        )
+
+
+@pytest.mark.parametrize("temperature", ["0.0", None, [0.0]])
+def test_수가_아닌_temperature도_Fatal이다(temperature: object) -> None:
+    # `math.isfinite`에 수가 아닌 값을 주면 TypeError다. 같은 부류의 누수다.
+    with pytest.raises(FatalProviderError, match="temperature"):
+        _provider(lambda _r: httpx.Response(200, json=_ok_body())).complete(
+            _MESSAGES,
+            temperature=temperature,  # type: ignore[arg-type]
+            max_tokens=None,
+        )
+
+
+def test_client와_timeout을_함께_주면_거부한다() -> None:
+    """실측: 함께 주면 `timeout`이 **조용히 무시됐다.**
+
+    `timeout=1.5, client=<timeout 99.0>`에서 실제 값은 99.0이었고 경고도
+    오류도 없었다. 호출부는 1.5초를 설정했다고 믿는다. 둘 중 하나만 받으면
+    표면이 줄고 거짓 믿음이 사라진다.
+    """
+    client = httpx.Client(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={})))
+    with pytest.raises(ValueError, match="timeout"):
+        OpenAICompatibleProvider(base_url="http://x/v1", model="m", timeout=1.5, client=client)
 
 
 def test_기본_타임아웃은_60초다() -> None:
