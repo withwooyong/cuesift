@@ -130,3 +130,48 @@ def test_string_targets_are_rejected_at_load(tmp_path):
     )
     with pytest.raises(ValueError, match="리스트가 아니다"):
         load_glossary(path, "en")
+
+
+def test_terms_in_원문에_등장하는_용어만_고른다() -> None:
+    g = Glossary(
+        entries=(
+            GlossaryEntry(source="기후변화", targets=("climate change",)),
+            GlossaryEntry(source="탄소중립", targets=("carbon neutrality",)),
+        )
+    )
+    found = g.terms_in("기후변화는 시급한 문제다")
+    assert [e.source for e in found] == ["기후변화"]
+
+
+def test_terms_in_대소문자를_무시한다() -> None:
+    g = Glossary(entries=(GlossaryEntry(source="AI", targets=("AI",)),))
+    assert len(g.terms_in("ai가 바꾼다")) == 1
+
+
+def test_terms_in_단어_경계를_지킨다() -> None:
+    # violations()와 같은 규칙이어야 한다. 갈리면 프롬프트에 넣은 용어와
+    # 위반으로 잡는 용어가 어긋난다 (설계 §5.3).
+    g = Glossary(entries=(GlossaryEntry(source="AI", targets=("AI",)),))
+    assert g.terms_in("SAID that") == []
+
+
+def test_terms_in_CJK는_조사가_붙어도_찾는다() -> None:
+    # `\b`가 CJK를 깨뜨려 폐기된 이력이 _BOUNDARY 주석에 남아 있다.
+    g = Glossary(entries=(GlossaryEntry(source="気候変動", targets=("climate change",)),))
+    assert len(g.terms_in("これは気候変動です")) == 1
+
+
+def test_terms_in_빈_용어집은_빈_리스트() -> None:
+    assert Glossary().terms_in("아무 문장") == []
+
+
+def test_terms_in과_violations가_같은_판정을_쓴다() -> None:
+    # 원문에 있다고 terms_in이 고른 용어는, 번역문에 대응어가 없으면
+    # 반드시 violations에도 잡혀야 한다. 어긋나면 프롬프트에 주입해 놓고
+    # 위반으로도 안 잡거나, 주입하지 않고 위반으로 잡는다.
+    g = Glossary(entries=(GlossaryEntry(source="기후변화", targets=("climate change",)),))
+    source, target = "기후변화 대응", "response to warming"
+    matched = [e.source for e in g.terms_in(source)]
+    # 양쪽이 다 비어도 등식은 성립한다. 공허한 통과를 먼저 막는다.
+    assert matched == ["기후변화"]
+    assert matched == [e.source for e in g.violations(source, target)]
