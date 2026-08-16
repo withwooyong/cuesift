@@ -274,13 +274,60 @@ def test_게이트_훅이_정상_설정을_통과시킨다(pytestconfig: pytest.
     ],
 )
 def test_게이트_훅이_설정_이탈을_실제로_거부한다(변경: dict, 기대: str) -> None:
-    """**훅을 지우거나 무르게 만들면 여기가 죽는다.**
+    """**훅을 무르게 만들면 여기가 죽는다.**
 
-    훅이 없으면 네 가지 우회가 전부 되살아나는데, 그 우회들은 하나같이
-    **조용하다**(exit 0에 초록). 훅의 존재 자체를 지키는 것이 이 테스트다.
+    다만 이것은 **로직만** 검사한다. 배선은 아래 테스트가 본다.
     """
     with pytest.raises(pytest.UsageError, match=기대):
         pytest_configure(_FakeConfig(**{**_GOOD, **변경}))  # type: ignore[arg-type]
+
+
+def test_게이트_훅이_pytest에_실제로_등록돼_있다(pytestconfig: pytest.Config) -> None:
+    """**로직이 옳아도 배선이 끊기면 훅은 아무것도 막지 못한다.**
+
+    위 두 테스트는 함수를 **직접 부른다.** 그래서 함수 이름에서 `pytest_`
+    접두사를 떼면 pluggy가 더 이상 훅으로 인식하지 않는데도 **한 건도 죽지
+    않는다.** 실측(2026-08-16):
+
+    | 변이 | 결과 |
+    | --- | --- |
+    | `pytest_configure` -> `_check_gate_config` | `839 passed`, exit 0. **0건 사망** |
+    | 위 + `addopts`에 `-m live` | `1 skipped, 839 deselected`, exit 0. **우회 부활** |
+
+    접두사를 **유지하는** 개명은 pluggy가 `PluginValidationError`(exit 3)로
+    막지만, 접두사를 **버리면** 그 검증을 그냥 지나간다. 즉 지금까지 배선은
+    pluggy의 명명 규칙이라는 **우연한** 보호에만 기대고 있었다.
+
+    "게이트는 실패시켜 본 뒤에야 게이트다"는 훅의 로직뿐 아니라 **배선에도**
+    걸린다.
+    """
+    impls = pytestconfig.pluginmanager.hook.pytest_configure.get_hookimpls()
+    ours = [impl for impl in impls if impl.function is pytest_configure]
+    assert len(ours) == 1, (
+        "conftest의 게이트 훅이 pytest에 등록되지 않았다. "
+        f"등록된 pytest_configure 구현 {len(impls)}개 중 우리 것은 {len(ours)}개다"
+    )
+
+
+def test_임포트_시점_검사가_conftest_최상위에서_호출된다() -> None:
+    """**둘째 방어선의 배선도 검사한다.** 위 테스트와 대칭이다.
+
+    `_check_on_import()`는 모듈 최상위에서 불려야 의미가 있다. 함수만 남기고
+    호출을 지우면 **훅 개명 + `-m live` 덧붙임** 조합이 되살아나는데, 그
+    조합에서는 위 등록 테스트마저 deselect되어 아무것도 죽지 않는다.
+
+    호출문이 최상위에 있는지는 실행으로 확인할 수 없다(이미 임포트가 끝났고,
+    통과했다는 사실이 호출 여부를 알려주지 않는다). 그래서 ast로 본다.
+    """
+    source = (_REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+    calls = [
+        node.value.func.id
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+    ]
+    assert "_check_on_import" in calls, f"conftest 최상위 호출: {calls}"
 
 
 def test_live_마커가_등록되고_기본_제외된다() -> None:
@@ -308,18 +355,33 @@ def test_live_테스트_모듈이_마커를_단다() -> None:
     설정과 표식은 **둘 다 있어야** 동작하는 한 쌍이라, 한쪽만 검사하면
     나머지 한쪽을 지우는 변이가 그대로 통과한다.
 
-    **파일명 하나에 못 박으면 안 된다.** 초판은 `test_translate_live.py`만
-    봤고, 마커 없는 두 번째 live 파일을 넣으니 **0건이 죽은 채 그 파일이
-    기본 수집에 들어와 그대로 실행됐다**(이 검사를 고치기 전 실측:
-    `833 passed, 1 deselected` — 새 파일이 833번째로 조용히 늘었다).
-    게이트가 막으려던 피해가 정확히 그 형태로 재현된다.
+    **파일명으로 찾으면 안 된다.** 판정 기준을 두 번 좁혀 왔고 두 번 다
+    뚫렸다(전부 실측).
+
+    | 판정 기준 | 뚫는 변이 | 결과 |
+    | --- | --- | --- |
+    | `test_translate_live.py` 하나 | 마커 없는 두 번째 live 파일 | `833 passed`. **0건 사망** |
+    | `test_*live*.py` 파일명 | 이름을 `test_ollama_roundtrip.py`로 | `840 passed`. **0건 사망** |
+
+    그래서 지금은 **live를 만드는 것**을 본다 - 소스에 엔드포인트 환경변수가
+    있으면 live 파일이다. 이름은 저자가 마음대로 짓지만 환경변수를 읽지
+    않고서는 실 엔드포인트를 칠 수 없다.
 
     **이것은 가정이 아니라 예정된 경로다** - WBS가 다음 순위로 못 박은
-    WP7b가 `cuesift translate` CLI의 live 테스트를 추가한다.
+    WP7b가 `cuesift translate` CLI의 live 테스트를 추가하고, 그 파일 이름이
+    `live`를 포함할 보장은 없다.
     """
-    live_files = sorted(_REPO_ROOT.glob("tests/test_*live*.py"))
-    # **빈 목록을 실패로 못 박는다.** 없으면 파일명 규칙이 바뀌는 날 이
-    # 테스트가 0개를 검사하며 초록이 된다 - 0개 수집은 통과가 아니다.
+    # **이 파일 자신은 제외한다.** 아래 리터럴 때문에 스스로가 live 파일로
+    # 잡혀 항상 실패한다. 대가는 "이 파일 안에 live 테스트를 넣으면 못
+    # 잡는다"인데, 이 파일은 게이트 검사 전용이라 그럴 이유가 없다.
+    myself = pathlib.Path(__file__).resolve()
+    live_files = sorted(
+        path
+        for path in _REPO_ROOT.glob("tests/test_*.py")
+        if path.resolve() != myself and "CUESIFT_LIVE" in path.read_text(encoding="utf-8")
+    )
+    # **빈 목록을 실패로 못 박는다.** 없으면 판정 기준이 바뀌는 날 이 테스트가
+    # 0개를 검사하며 초록이 된다 - 0개 수집은 통과가 아니라 설정 오류다.
     assert live_files, "live 테스트 파일을 하나도 못 찾았다"
 
     for path in live_files:

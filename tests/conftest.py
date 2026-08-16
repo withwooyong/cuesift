@@ -27,10 +27,60 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shlex
+import tomllib
 
 import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+_GATE_HINT = (
+    " || 이 검사는 `live` 마커 게이트를 지킨다(설계 §9.2). "
+    "`-c`·`--override-ini`로 임시로 덮는 것도 여기 걸린다 - "
+    "설정을 바꾸려면 pyproject.toml을 직접 고쳐라."
+)
+
+
+def _markexpr_problems(addopts: list[str]) -> list[str]:
+    """`-m` 기본 제외식이 온전한가. **두 자리에서 부른다** (아래 참조)."""
+    if addopts.count("-m") != 1:
+        # 뒤의 `-m`이 이기므로 첫 번째만 보는 검사는 덧붙이기로 뚫린다.
+        return [f"addopts의 -m이 하나가 아니다(뒤가 이긴다): {addopts}"]
+    if addopts[addopts.index("-m") + 1] != "not live":
+        return [f"addopts의 기본 제외식이 'not live'가 아니다: {addopts}"]
+    return []
+
+
+def _check_on_import() -> None:
+    """**임포트되는 것만으로 돈다.** 훅도 아니고 테스트도 아니다.
+
+    아래 `pytest_configure`가 이미 같은 것을 보는데 왜 또 보는가 - **두
+    방어선의 실패 모드가 다르기 때문이다.** 실측(2026-08-16):
+
+    | 변이 | 훅 | 이 검사 |
+    | --- | --- | --- |
+    | `addopts`에 `-m live` 덧붙임 | 잡는다 (exit 4) | 잡는다 |
+    | 훅 함수 개명(`pytest_` 접두사 제거) | **무력화** — pluggy가 등록하지 않는다 | 무관 |
+    | 위 **둘을 동시에** | 무력화 | **잡는다** |
+
+    셋째 행이 이 함수의 존재 이유다. 훅이 끊기면 `-m live` 덧붙임이 되살아나고,
+    그것을 감시하는 테스트(`test_게이트_훅이_pytest에_실제로_등록돼_있다`)마저
+    840개와 함께 deselect되어 **exit 0으로 초록이 난다**(실측). 모듈 최상위
+    코드는 **개명할 이름도 없고 deselect의 대상도 아니라서** 그 조합에서
+    유일하게 살아남는다.
+
+    대신 `config`가 없어 pytest가 **실제로 읽은** ini가 무엇인지는 모른다 -
+    그쪽은 훅만 볼 수 있다. 그래서 둘 다 필요하고, 둘은 서로 다른 경로로
+    같은 사실에 도달한다(이쪽은 pyproject 원문 + `shlex`, 훅은 `getini`).
+    """
+    ini = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    addopts = ini["tool"]["pytest"]["ini_options"]["addopts"]
+    problems = _markexpr_problems(shlex.split(addopts))
+    if problems:
+        raise pytest.UsageError("게이트 설정이 어긋났다: " + " / ".join(problems) + _GATE_HINT)
+
+
+_check_on_import()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -54,7 +104,12 @@ def pytest_configure(config: pytest.Config) -> None:
 
     # pytest.ini·tox.ini가 생기면 pyproject보다 그쪽이 이긴다. 우리 설정이
     # 통째로 무시된 채 초록이 나는 경로다.
-    if config.inipath != _REPO_ROOT / "pyproject.toml":
+    #
+    # **양쪽 다 `resolve()`해야 한다.** `_REPO_ROOT`는 `Path(__file__).resolve()`라
+    # 링크가 풀려 있는데 `config.inipath`는 pytest의 `absolutepath()`에서 와
+    # 풀리지 않는다. 맞추지 않으면 리포를 junction·`subst` 드라이브·symlink
+    # 경유로 열었을 때 **정상 설정에서도 exit 4**가 난다.
+    if config.inipath is None or config.inipath.resolve() != (_REPO_ROOT / "pyproject.toml"):
         problems.append(f"pytest가 읽은 설정이 우리 pyproject가 아니다: {config.inipath}")
 
     # 미등록 마커를 에러로 만드는 플래그. 꺼지면 설계 §9.2의 전제가 무너진다.
@@ -64,14 +119,15 @@ def pytest_configure(config: pytest.Config) -> None:
     # **다시 shlex로 쪼개면 안 된다.** `getini("addopts")`는 pytest가 이미
     # 분리해 둔 리스트라, 합쳤다 다시 나누면 `"not live"`가 `"not"`과
     # `"live"` 두 토큰이 되어 아래 비교가 정상 설정에서도 실패한다(실측).
-    addopts = list(config.getini("addopts"))
-    if addopts.count("-m") != 1:
-        problems.append(f"addopts의 -m이 하나가 아니다(뒤가 이긴다): {addopts}")
-    elif addopts[addopts.index("-m") + 1] != "not live":
-        problems.append(f"addopts의 기본 제외식이 'not live'가 아니다: {addopts}")
+    # `_check_on_import`가 pyproject 원문을 shlex로 읽는 것과 **다른 경로**로
+    # 같은 사실에 도달한다.
+    problems += _markexpr_problems(list(config.getini("addopts")))
 
     if problems:
-        raise pytest.UsageError("게이트 설정이 어긋났다: " + " / ".join(problems))
+        # 힌트를 함께 낸다. `-c other.ini`나 `--override-ini=addopts=`도 여기
+        # 걸리는데(설계 의도다), 그 사실을 모르는 사람은 "게이트 설정이
+        # 어긋났다"만 보고 **자기가 뭔가 깼다고 오해한다.**
+        raise pytest.UsageError("게이트 설정이 어긋났다: " + " / ".join(problems) + _GATE_HINT)
 
 
 # 유니코드 Box Drawing 블록. `rich`의 패널 테두리가 전부 여기 있다.
