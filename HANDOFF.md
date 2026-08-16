@@ -1,161 +1,164 @@
 # Session Handoff
 
-> Last updated: 2026-08-13 (KST)
-> Branch: **`main`** — [PR #2](https://github.com/withwooyong/cuesift/pull/2)를
-> **squash 머지**했다(사용자 승인). `feat/check-cli`는 삭제됐다.
-> **CI 3잡 전부 통과**(`test 3.11` · `test 3.12` · `docs`) 후 머지.
-> **다음 세션은 WP5 또는 WP7부터 시작한다** — `check` 배선은 끝났다
+> Last updated: 2026-08-16 (KST)
+> Branch: **`fix/check-output-and-negative-timecode`** — 커밋 3개, `main`에 아직 안 올라갔다.
+> **로컬 게이트 5종 전부 통과**했으나 **CI는 아직 돌지 않았다** — PR을 만들어야 돈다.
+> **다음 세션은 WP7(번역 계층)부터 시작한다** — `check` 표면은 닫혔다.
+> 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
 ## Current Status
 
-**`cuesift check`가 실제로 동작한다.** WBS가 지목한 **"가장 짧은 쓸 수 있는 제품" 경로**에
-도달했다 — 번역(WP7)도 STT(WP9)도 없이 완결되는 유일한 지점이었고, v0.1 전체를 기다리지
-않고 나온 첫 중간 산출물이다.
+**`check` 표면을 마무리했다.** 직전 세션이 파킹 1순위로 남긴 두 항목(U11 출력 억제 ·
+음수 타임코드 exit 0)을 닫았고, 리뷰 2축이 찾은 지적 5건을 반영했다.
 
 | | 이전 세션 | 이번 세션 |
 | --- | --- | --- |
-| v0.1 FR 완료 | 19/42 (45%) | **21/42 (50%)** — FR-8.2 · FR-7.5 |
-| 테스트 | 316 | **486** |
-| 제품 상태 | 모든 서브커맨드가 `70` | **`check`는 동작 · `translate`·`transcribe`만 `70`** |
-| 산출물 | 설계 스펙 1건 | 구현 계획 1건 + 코드 + 테스트 170건 + 문서 정정 |
+| v0.1 FR 완료 | 21/42 (50%) | **21/42 (50%)** — 새 FR 없음. 표면 확장과 결함 수정이다 |
+| 테스트 | 486 | **499** |
+| 인제스트 픽스처 | 13종 | **15종** (`starts_at_zero.srt` · `negative_timecode.ass`) |
+| 음수 타임코드 | **exit 0 · "위반 없음"** | exit 66 |
+| 출력 억제 | 없음 | `--limit N` (기본 0 = 무제한) |
 
 ```bash
-cuesift check dist/episode01.ja.srt --spec ja --fail-on hard
+cuesift check dist/episode01.ja.srt --spec ja --limit 50
 ```
 
-종료 코드 5종이 **실측으로 갈린다.**
+종료 코드 5종은 그대로다. **`--limit`은 종료 코드를 보지 않는다.**
 
 | 코드 | 뜻 |
 | --- | --- |
 | `0` | 위반 없음 (또는 `--fail-on none`) |
 | `1` | **규격 위반 발견** |
-| `2` | 명령줄이 틀림 — 파일 없음·디렉터리·프로파일 해석 실패 |
-| `66` | 파일 내용이 틀림 — 자막 아님·utf-8 아님·읽기 불가·파싱 실패·큐 0개·타임코드 역전/타입 오류 |
+| `2` | 명령줄이 틀림 — 파일 없음·디렉터리·프로파일 해석 실패·**`--limit` 음수/비정수** |
+| `66` | 파일 내용이 틀림 — 자막 아님·utf-8 아님·읽기 불가·파싱 실패·큐 0개·타임코드 역전/**음수**/타입 오류 |
 | `70` | 미구현 (`translate`·`transcribe`) |
 
 저장소: <https://github.com/withwooyong/cuesift> (Public).
 
 ## Completed This Session
 
-7개 태스크 전부. 브랜치는 `main` 기준 **37커밋**이다.
+| 커밋 | 내용 |
+| --- | --- |
+| `49fab82` | 음수 타임코드를 인제스트 경계에서 거부 (exit 66) · `_format_timecode` 부호 보존 |
+| `fb0949d` | `--limit N`과 요약 이중 출력 |
+| `b0a76ec` | 리뷰 지적 5건 반영 — 거짓 전제 둘, 한쪽만 막던 게이트 하나, 근거 문장 하나, 설계 문서 하나 |
 
-| # | 태스크 | 핵심 커밋 |
-| --- | --- | --- |
-| 0 | [구현 계획](docs/superpowers/plans/2026-08-13-check-cli.md) (7태스크 분해 · 실측으로 설계 5건 정정) | `5c07fc0` |
-| 1 | `--fail-on`을 `hard\|any\|none`으로 | `90c6a7d` |
-| 2 | `check_empty_cues` — 어느 경로로도 안 잡히던 사각지대 | `a580a66` |
-| 3 | `TrackViolation` · `check_track` | `5c5dd5a`·`95e182a` |
-| 4 | `_resolve_profile` — `--spec`을 확장자로 가른다 (FR-5.3 도달) | `f16bb0f`·`8845d5a`·`70f5aef` |
-| 5 | `_format_report` 순수 함수 | `800d17c`·`ca29ef5`·`7d3e5f6` |
-| 6 | `check()` 배선 · 종료 코드 5종 (fix 6라운드) | `4899fec`·`59c7b51`·`955b4cd`·`6b45f95`·`c61a067`·`819b861` |
-| 7 | 문서 정정과 진척 기록 | `a205bd4`·`c228dbf` |
-| — | 최종 브랜치 리뷰 fix (Important 2 · Minor 2) | `8199887` |
+## 🔴 즉시 해야 할 것 — PR을 만들어야 CI가 돈다
 
-**요구사항정의서 §3.2 S3 정정은 닫혔다** — `--spec th` → `--spec ja`, **사용자 승인 2026-08-13**.
-파일명도 함께 바꿨다(`--spec`만 고치면 "태국어 파일을 일본어 규격으로 검사"가 된다).
+**브랜치가 origin에 올라갔지만 PR이 없으면 CI가 한 번도 돌지 않는다.**
+`.github/workflows/ci.yml`의 `push` 트리거는 `branches: [main]`뿐이다.
+직전 세션이 **35커밋을 CI 없이 쌓았다가 마지막에 `rich` 렌더링 실패로 터진** 전례가 있다.
+
+```bash
+gh pr create --base main
+gh pr checks --watch      # test 3.11 · test 3.12 · docs
+gh pr merge --squash
+```
+
+**로컬 venv는 Python 3.14, CI는 3.11/3.12다.** 로컬 통과가 CI 통과를 뜻하지 않는다.
 
 ## In Progress / Pending
 
 | # | 작업 | 상태 | 비고 |
 | --- | --- | --- | --- |
-| 1 | WP5 나머지 (FR-7.1~7.4) | ⬜ | `review.json`·`report.html`·요약 통계. **WP7 뒤가 낫다** — 리포트에 실을 신호가 번역 계층에서 나온다 |
-| 2 | WP7 번역 → WP8 Tier 1 | ⬜ **다음 후보** | **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나 |
-| 3 | WP6 나머지 (FR-8.1·8.3~8.5) | ⬜ | `translate`·`transcribe` 배선 · `cuesift.yaml` 로더. **`--config`는 지금 경고만 낸다**(D12 구현) — 로더를 만들 때 그 경고를 지운다 |
+| 0 | **PR 생성 · CI 통과 · 머지** | ⬜ **최우선** | 위 참조 |
+| 1 | WP7 번역 → WP8 Tier 1 | ⬜ **다음 후보** | **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나 |
+| 2 | WP5 나머지 (FR-7.1~7.4) | ⬜ | `review.json`·`report.html`·요약 통계. **WP7 뒤가 낫다** — 리포트에 실을 신호가 번역 계층에서 나온다 |
+| 3 | WP6 나머지 (FR-8.1·8.3~8.5) | ⬜ | `translate`·`transcribe` 배선 · `cuesift.yaml` 로더. **`--config`는 지금 경고만 낸다**(D12) |
 | 4 | WP9 STT | ⬜ | 런타임 의존성 4개 고정과 충돌 — 호출 방식 미결 |
-| 5 | **출력 억제 수단** (`--limit`·`--summary`) | ⬜ **파킹 1순위** | 위반 682건이면 686줄이 나가고 **요약 줄이 맨 아래**라, 로그를 절단하는 CI에서 가장 중요한 한 줄이 먼저 사라진다. 26화 × 3언어 매트릭스에서 프로파일을 잘못 물리면 약 5만 줄 |
 
-**WP7을 먼저 하면 `cli.py`의 스트림 배관 ~140줄**(`_TolerantOutput`·`_echo`·
-`_harden_output_streams`)**을 `cuesift/console.py`로 뽑을 때다.** 그 블록은 `check`와
-결합돼 있지 않고, `_harden_output_streams` 독스트링이 스스로 "`translate`·`transcribe`가
-구현되면 같은 문제를 각자 다시 풀어야 한다"를 근거로 든다 — 그 근거가 곧 분리 근거다.
-
-**CI는 로컬과 다른 것을 검증한다** — 로컬 venv는 Python 3.14인데 CI는 3.11/3.12다.
-`docs` 잡(markdownlint + 링크 검사)도 함께 돈다.
+**WP7 착수 시 `cli.py`의 스트림 배관 ~161줄을 `cuesift/console.py`로 뽑을 때다.**
+`_harden_output_streams` 독스트링이 스스로 "`translate`·`transcribe`가 구현되면 같은
+문제를 각자 다시 풀어야 한다"를 근거로 든다 — 그 근거가 곧 분리 근거다.
 
 ## 파킹 목록 — 후속 작업 후보
 
-**하나만 순위가 매겨져 있다.**
+**직전 세션의 1순위 U11과 음수 타임코드는 닫혔다.** 리뷰가 선존 결함 둘을 새로 찾았다.
 
 | # | 항목 | 왜 미뤘나 | 틀렸을 때 비용 |
 | --- | --- | --- | --- |
-| **U11** | **출력 억제 수단이 없다 (`--summary`·`--limit N`)** — **후속 1순위** | 새 플래그라 FR-8.2 표면 확장이다 | 26화 × 3언어에서 프로파일을 잘못 물리면 약 5만 줄이 쌓이고, **요약 줄이 맨 아래라 로그를 절단하는 CI에서 가장 중요한 한 줄이 먼저 사라진다** |
-| U3 | `overlap`이 상대 큐를 안 알려준다 | `SpecViolation`에 필드가 늘어 Task 3 계약 변경 | 긴 큐가 여럿을 덮을 때 직전 큐를 헛되이 확인한다. 인접 겹침(대다수)은 타임코드로 복구된다 |
-| — | **음수 타임코드가 exit 0** | 타입·역전 사이에 "범위" 검사가 비어 있다 | `_format_timecode`가 `max(ms, 0)`으로 `00:00:00.000`을 찍어 **검수자가 그 자리에 가면 아무것도 없다** |
+| **N1** | **stdout을 완전히 닫으면(`1>&-`) 모든 종료 코드가 120** | 부모 커밋 `de938e1`에서도 재현되는 **선존 결함**이라 이번 브랜치 범위 밖 | `EBADF`(errno 9)가 `_CLOSED_OUTPUT_ERRNOS = {EPIPE, EINVAL}`에 없다. `run()` 독스트링 표 3행("아래 `finally`가 120을 만들지 못하게 한다")이 이 경우 **거짓**이다. 현실적 호출인 `\| head`는 전부 정상이라 실사용 위험은 낮다 |
+| **N2** | `ascii`·`cp1252` 로케일에서 그룹 `--help`가 exit 1 | 선존. `cp949`(대상 로케일)와 utf-8은 정상 | 그룹 help의 한글 자체가 원인이고 `_harden_output_streams`가 eager 옵션에 닿지 않는다는 기존 문서와 일치한다 |
+| **N3** | **음수 타임코드 한 큐가 파일 전체를 죽인다** | 대안이 전부 더 나쁘다(아래 Key Decisions 참조) | 실측: 800큐 ASS에서 `-10ms` 하나가 실제 규격 위반 **17건**을 통째로 가렸다. SAMI가 지원 선언 포맷이라 사정거리가 있다 |
+| U3 | `overlap`이 상대 큐를 안 알려준다 | `SpecViolation`에 필드가 늘어 계약 변경 | 긴 큐가 여럿을 덮을 때 직전 큐를 헛되이 확인한다 |
 | B4 | VTT `&nbsp;` 엔티티가 리터럴로 남아 CPS를 부풀린다 | 인제스트 계층이라 범위 밖 | 해당 큐의 CPS가 과대 계산된다. 빈도 미상 |
-| m4 | **`cli.py`의 스트림 배관 161줄(전체 606줄의 27%)을 `console.py`로** | 동작에 문제가 없다 | 없음. **WP7 착수 시 후보** — `translate`가 같은 배관을 물려받는다 |
-| M7~M9 | exit 2 메시지가 영어(typer 기본) · 파일 간 구분선 없음 · 출력 상한 없음 | 표면 확장이거나 typer 기본값 | 낮음 |
-| — | `{"events":[{}]}` → exit 1 | FR-3.2의 **설계된 동작**이다(빈 값은 hard fail) | 없음 |
+| m4 | `cli.py`의 스트림 배관 161줄을 `console.py`로 | 동작에 문제가 없다 | 없음. **WP7 착수 시 후보** |
+| M7~M9 | exit 2 메시지가 영어(typer 기본) · 파일 간 구분선 없음 | 표면 확장이거나 typer 기본값 | 낮음 |
 | — | ENOSPC의 120이 CPython flush 실패와 같은 코드 | 구분할 수단이 없다 | 디스크 가득 참과 파이프 사고가 같은 코드로 보인다 |
-| — | `isinstance(proxy, io.TextIOBase)`가 False | rich·typer에 그 검사가 없다(A/B 바이트 동일) | 그 검사를 하는 라이브러리가 들어오면 깨진다 |
 
 ## Known Issues — 다음 세션이 반드시 알아야 할 것
 
-### 🔴 측정 환경이 cp949 문제를 가린다
+### 🔴 pysubs2는 음수를 **읽을 때 보존하고 쓸 때 클램프한다**
 
-**`PYTHONIOENCODING=utf-8:surrogateescape`가 설정된 환경에서는 cp949 결함이 재현되지 않는다.**
-모르고 재검증하면 **"문제 없다"는 틀린 결론**에 도달한다. 바닐라 Windows를 재현하려면
-`PYTHONIOENCODING=cp949`로 명시하거나 변수를 지운다.
+이번 세션에서 가장 값진 발견이고, **다른 라이브러리를 감쌀 때도 같은 질문을 해야 한다.**
 
-이것이 왜 중요한가 — 이 저장소에서 **exit 1은 "규격 위반 발견"**이다. cp949로 인코딩할 수
-없는 문자(파일명의 `é`·`–`, 출력 리터럴의 em dash)가 리다이렉트 시 `UnicodeEncodeError`를
-내면 프로세스가 exit 1로 죽고, **위반 0건인 깨끗한 자막이 CI에서 실패로 읽힌다.**
+| 방향 | 동작 |
+| --- | --- |
+| **읽기** | ASS·SAMI(`.smi`)·MPL2에서 음수를 **의도적으로 파싱**한다 (`substation.py`의 `# handle negative timestamps`, `mpl2.py` 정규식의 `(-?\d+)`, `sami.py`의 `int()`) |
+| 읽기 (부호 무시) | SRT·VTT·MicroDVD·TMP는 부호 자리가 없어 앞의 `-`를 **조용히 무시**한다 |
+| **쓰기** | **전부 클램프한다** (`substation.py`·`subrip.py`·`tmp.py`·`ttml.py`·`microdvd.py`) |
 
-방어는 두 층이다. `_harden_output_streams()`(그룹 콜백, `errors="backslashreplace"`)가
-사용자 입력이 흐르는 경로를 덮고, **`--help`·`--version`은 eager 옵션이라 콜백보다 먼저
-렌더되므로 거기가 닿지 않는다** — 그쪽은 리터럴에서 em dash를 빼는 것으로만 막히고
-`test_help_output_is_encodable_in_the_cp949_locale`이 고정한다.
+**그래서 "우리 도구로 왕복시켜 보니 괜찮더라"는 검증이 통과하고, 진짜 위험(외부 도구가
+만든 파일)은 그 검증을 통째로 비켜 간다.** 라이브러리 경계는 read 경로와 write 경로를
+따로 봐야 한다.
 
-### 방법론 교훈 둘 — 이 세션이 실제로 지불한 값
+### 🔴 방법론 교훈 — 이 세션이 실제로 지불한 값
 
-**① 방어는 "아는 경로"가 아니라 모든 경로가 반드시 지나는 지점에 둔다.**
+**① 거짓 전제를 정정하는 커밋이 같은 종류의 거짓 전제를 두 개 새로 들여왔다.**
 
-Critical 5건 중 2건(C1 파이프·C3 타임코드)이 같은 형태였다 — 구현자가 아는 경로에만 방어를
-두었고 열거에서 빠진 경로로 샜다. 해법은 경로를 더 열거하는 것이 아니라 **길목**에 두는
-것이었다: 스트림 객체(`_TolerantOutput`)와 인제스트 경계(`_to_segments`).
+`_format_timecode` 독스트링의 "음수는 상류가 이미 막는다"를 정정하면서,
+그 자리를 메운 새 코드가 ⓐ "음수는 json으로만 표현할 수 있다" ⓑ "`minimal.srt`를
+비롯한 픽스처가 `0`을 실제로 쓴다"를 새로 적었다. **둘 다 거짓이었고 둘 다 리뷰가
+찾았다.** 교훈을 알고 있다는 것과 그 교훈에 걸리지 않는 것은 다르다.
 
-**fix round 1이 상황을 악화시킨 것이 이 교훈의 증거다** — 닫힌 파이프를 잡아
-`SystemExit(0)`으로 바꿨더니 **exit 2와 70이 조용한 0**이 됐다. 120은 시끄럽지만
-0은 조용히 CI를 통과시킨다.
+**② 리뷰 2축이 독립적으로 같은 결함을 찾은 것이 축을 나눈 값어치다.**
 
-**② 주석·계획서의 "무엇이 깨지는가"는 주장이므로 테스트와 같은 기준으로 검증한다.**
+`< 0` → `<= 0` 변이가 497건 전체 스위트를 통과하는 것을 **두 리뷰어가 각각** 발견했다.
+한 명에게 전부 맡겼다면 "계획대로 구현됨"으로 승인됐을 것이다.
 
-**이 세션에서 네 번 틀렸고 넷 다 한 줄 실행이면 반증됐다.** 고치기는 쉬운데 가장 자주
-재발했다. 마지막 사례가 가장 비쌌다 — **`--config`를 "구현하지 않는다"고 룰링한 근거가
-거짓이었다**: `check x.srt --config c.yaml` → exit 2를 보고 "옵션이 애초에 없다"고 결론
-냈는데, `--config`는 **그룹 옵션이라 서브커맨드 앞**에 와야 하고 거기서는 조용히 exit 0이었다.
-**관찰은 맞았고 추론이 틀렸다 — 옵션이 없는 위치에서만 시험했다.**
+**③ 변이 실험은 무엇을 임포트하는지 먼저 확인해야 한다.**
 
-### 🔴 `rich`는 호스트 플랫폼에 따라 다른 문자를 그린다 — 테스트가 그것에 의존하면 안 된다
+리뷰어가 변이 13종을 사본에 심었는데 **전부 "생존"으로 나왔다.** 원인은 `.venv`의
+`_editable_impl_cuesift.pth`(`C:\Users\aeby\vscode\cuesift\src`)가 사본이 아니라
+**리포 원본을 임포트**시킨 것이었다. `PYTHONPATH`를 사본 `src`로 명시하자 12종이
+killed로 뒤집혔다. 다음에 변이 실험을 하려면:
 
-**로컬 485 passed인데 CI가 실패했다.** 이 브랜치의 35커밋이 그때까지 **CI를 한 번도 거치지
-않았기** 때문에 마지막에 한꺼번에 드러났다.
+```bash
+git archive HEAD | tar -x -C <사본>
+PYTHONPATH=<사본>/src .venv/Scripts/python.exe -c "import cuesift; print(cuesift.__file__)"
+```
 
-| 환경 | `rich`의 모서리 | cp949 |
-| --- | --- | --- |
-| Windows (`legacy_windows=True`) | `┌┐└┘` U+250C·2510·2514·2518 | **인코딩 된다** |
-| Linux CI (`legacy_windows=False`) | `╭╮╰╯` U+256D~2570 | **인코딩 안 된다** |
-| **실제 실행 + 리다이렉트** | **박스를 아예 안 그린다** | 무관 |
+**임포트 경로를 먼저 찍어 보라.** "무엇을 대상으로 통과했나"가 리뷰 절차 자체에서 발동했다.
 
-**세 번째 줄이 핵심이다** — 박스 문자는 `CliRunner`가 만들어 낸 산물이지 사용자가 만나는
-것이 아니다. 그것을 검사하면 Windows에서 통과하고 Linux에서만 실패한다.
+### 🔴 측정 환경이 cp949 문제를 가린다 (이전 세션에서 계속)
 
-**로컬에서 CI 렌더링을 재현하는 방법**(다음 세션이 다시 필요할 것이다):
+**`PYTHONIOENCODING=utf-8`이 설정된 환경에서는 cp949 결함이 재현되지 않는다.**
+바닐라 Windows를 재현하려면 `PYTHONIOENCODING=cp949`로 **명시**하거나 변수를 지운다.
+이 저장소에서 exit 1은 "규격 위반 발견"이므로, 인코딩 실패가 exit 1을 내면
+**위반 0건인 깨끗한 자막이 CI에서 실패로 읽힌다.**
+
+이번 세션에서 추가한 출력 문자열(생략 고지 줄 · 음수 메시지 · `--limit` help)에는
+em dash가 없다. 리뷰가 AST로 소스 전체 문자열 리터럴을 cp949 인코딩 시도해
+**cp949 불가 리터럴은 전부 독스트링이고 출력 경로에 실리는 것은 0건**임을 확인했다.
+
+### 🔴 `rich`는 호스트 플랫폼에 따라 다른 문자를 그린다 (이전 세션에서 계속)
+
+**`rich`가 렌더한 stderr에 긴 문자열·경로를 통째로 단언하지 않는다.** 강제 개행 위치가
+임시 디렉터리 경로 길이에 좌우돼 로컬과 CI에서 다른 곳에서 끊긴다.
+정규화 헬퍼가 `tests/conftest.py`에 있다 — `strip_rich_decoration`·`normalize_rich_message`.
+
+로컬에서 CI 렌더링을 재현하려면:
 
 ```python
 import rich.console as rc
 rc.detect_legacy_windows = lambda: False   # pytest 플러그인으로 -p 로 주입
 ```
 
-같은 이유로 **`rich`가 렌더한 stderr에 긴 문자열·경로를 통째로 단언하지 않는다.** 강제 개행
-위치가 임시 디렉터리 경로 길이에 좌우돼 **로컬과 CI에서 다른 곳에서 끊긴다**(실측: 로컬은
-`utf-8로 읽을 수 없다`가, CI는 `cp949-spec.yaml`이 끊겼다). 정규화 헬퍼가
-**`tests/conftest.py`**(이번에 신설)에 있다 — `strip_rich_decoration`·`normalize_rich_message`.
-
 ### 문서 게이트 — 두 게이트의 파일 개수 대조가 유일한 탐지 수단
 
 **링크 체커는 `git ls-files` 기준이라 미추적 파일을 건너뛴다.** 새 문서를 만들면
 `git add` 후에 돌려야 검사된다. markdownlint의 `Linting: N files`와 대조하는 것이
-누락을 잡는 유일한 방법이고, 이번 세션에도 실제로 썼다(**양쪽 19개 일치**).
+누락을 잡는 유일한 방법이다 (이번 세션 **양쪽 19개 일치**).
 
 앵커와 외부 URL은 **아무도 검사하지 않는다** — 절 번호를 바꾸면 조용히 깨진다.
 
@@ -163,51 +166,54 @@ rc.detect_legacy_windows = lambda: False   # pytest 플러그인으로 -p 로 �
 
 - `logprobs`는 백엔드에 따라 조용히 사라진다(Ollama 미지원)
 - 자가일관성 샘플링은 `n>1` 단일 호출이 아니라 **N회 개별 호출**이어야 이식성이 유지된다
-- **`spec.overlap` 기여도 `+0.0%`는 아직 "측정하지 못했다"** — `overlap.vtt` → `check_overlaps`
-  경로는 열렸으나 벤치 하네스가 여전히 겹침 0건인 합성 트랙을 쓴다
-- **WP5가 알아야 할 것**: `subs` + `event_index`로 SRT·VTT·ASS·SSA 4포맷 라운드트립이
-  성립하지만 **태그 보존은 안 된다** — `plaintext` setter가 텍스트를 통째로 대체해
-  번역을 되쓰면 `{\an8}`이 사라지고, VTT cue settings와 화자 태그는 로드 시점에 버려진다
+- **`spec.overlap` 기여도 `+0.0%`는 아직 "측정하지 못했다"** — 벤치 하네스가 여전히
+  겹침 0건인 합성 트랙을 쓴다
+- **WP5가 알아야 할 것**: `subs` + `event_index`로 4포맷 라운드트립이 성립하지만
+  **태그 보존은 안 된다** — `plaintext` setter가 텍스트를 통째로 대체한다
 - `IngestError.reason`이 자유 `str`이다. 타입 체커가 없어 `Literal`은 장식이 된다
 
 ## Key Decisions Made
 
-[설계 스펙](docs/superpowers/specs/2026-08-03-check-cli-design.md) §13에 결정 로그 12건이
-있다. 이번 세션에 **뒤집힌 것 하나**를 포함해 요약한다.
+- **음수 타임코드는 규격 위반(1)이 아니라 파일 결함(66)이다.** 축은 "호출이 틀렸나,
+  파일이 틀렸나"다. CPS·줄길이는 검수자가 그 큐의 텍스트를 고치면 되지만 음수 좌표는
+  싱크·변환 파이프라인의 사고라 자막을 들여다봐도 고칠 수 없다
+- **한 큐가 파일 전체를 죽이는 대가를 감수한다**(N3). 대안이 전부 더 나쁘다 —
+  허용 임계값은 출처가 없어 §11 R8("출처 없는 수치를 기본값으로 넣지 않음")에 걸리고,
+  해당 큐만 빼면 `검사 큐 N개` 헤더가 거짓이 되며, **0으로 클램프하는 것은 이번에
+  폐기한 "그럴듯한 거짓"과 같아진다.** 역전 타임코드가 이미 같은 동작이라 일관되기도 하다
+- **`_format_timecode`는 부호를 살린다.** 상류가 막아 도달 불가가 됐지만 클램프를
+  되살리지 않는 것은 클램프가 **적극적으로 거짓을 만들기** 때문이다
+- **`--limit` 기본값은 0(무제한)이다.** 상한을 기본으로 켜면 전체 목록을 파이프로 받아
+  grep하던 쓰임이 조용히 잘린다
+- **종료 코드는 `--limit`을 보지 않고 요약은 언제나 전체 기준이다.** 자른 뒤에 세면
+  `--limit 3`이 "위반 3건"이라는, 종료 코드와 모순되지 않아 **사용자가 검증할 수 없는**
+  거짓말을 낸다
+- **절단은 `_format_report` 안에서 한다.** 호출부에서 `lines[:N]`으로 자르면 요약 줄까지
+  함께 잘려 목적이 정확히 무너진다
 
-- **`check`는 신호 엔진을 통과하지 않는다**(D3). `collect_all`→`fuse`→`triage`가 얹는 넷
-  (점수화·`hard_fail`·융합·트리아지)을 하나도 쓰지 않기 때문이다. 직접 호출이 HANDOFF가
-  경고한 함정을 **회피가 아니라 소멸**시켰다 — `struct.*` 수집기가 아예 실행되지 않는다
-- **심각도는 단일 등급**이고 `--fail-on hard`와 `any`가 v0.1에서 같은 결과를 낸다.
-  등급을 발명하지 않은 것은 배정의 출처가 없기 때문이다(Netflix TTSG에 등급 구분이 없다)
-- **종료 코드 `2`와 `66`을 분리한다**(D8). 축은 "호출이 틀렸나, 파일이 틀렸나"다.
-  **`1`은 위반에만 쓴다** — 진단 실패를 1로 내면 CI가 "규격 위반"과 "파일을 못 읽음"에
-  같은 대응을 한다
-- **`--spec`은 확장자로 경로와 이름을 가른다**(D10, `.yaml`/`.yml`). 존재 여부로 가르면
-  오타 난 경로가 "내장 이름이 없다"는 **틀린 진단**을 받는다
-- **D12 `--config`는 경고하고 무시한다 — ❌ "구현하지 않는다"는 판단이 뒤집혔다.**
-  근거가 거짓 전제 위에 있었다(위 교훈 ②). 최종 리뷰에서 설계대로 구현했다
+결정의 전체 로그 12건은 [`check` 배선 설계 스펙](docs/superpowers/specs/2026-08-03-check-cli-design.md) §13에 있고,
+태스크 분해와 실측 정정 기록은 [구현 계획](docs/superpowers/plans/2026-08-13-check-cli.md)에 있다.
 
 ### 이전 세션에서 이어지는 결정 (변경 없음)
 
 초기 언어쌍 **ko→en/ja**(Q2) · 로컬 LLM은 **OpenAI 호환 엔드포인트로 일원화**(Q3) ·
 규격 1차 출처는 **Netflix TTSG**(Q5) · LLM 연동은 **자체 얇은 어댑터**(Q6) ·
-배수 헤드라인은 **예산 10%**에서 뽑는다 · **가중치는 튜닝하지 않는다** ·
-인제스트는 **단일 진입점** · 파싱한 파일은 항상 **`source_text`**에 들어간다.
+**`check`는 신호 엔진을 통과하지 않는다**(D3) · **심각도는 단일 등급**(등급 배정의
+출처가 없다) · **가중치는 튜닝하지 않는다** · 인제스트는 **단일 진입점**.
 
 ## 컨트롤러가 겪은 것 — 절차 규율
 
-- **리뷰가 도는 동안 구현자에게 지시를 보내지 않는다.** 실제로 작업트리가 움직이는 중에
-  변이 측정이 들어가 수집이 497 → 481로 줄었고, 재검토어가 **합계가 안 닫히는 것**
-  (`6+475=481 ≠ 497`)으로 붙잡았다. **이번엔 잡혔지만 다음엔 안 잡힌다.**
-  리뷰어에게는 커밋 해시를 주고 고정 트리에서 재게 한다
-- **수치를 적을 때 합계가 닫히는지 확인한다.** "5 failed, 488 passed"가 스위트 크기 497과
-  맞지 않았다(실제 7 failed). "0개 수집은 통과가 아니라 설정 오류다"와 같은 자리다
-- **`TaskUpdate`로 소유자를 기록하면 구현자에게 새 할당 신호로 전달된다**
-- **`Bash` 도구는 Git Bash다.** PowerShell here-string(`@'…'@`)을 쓰면 메시지 앞뒤에 `@`가
-  남는다. 여러 줄 커밋 메시지는 heredoc(`git commit --file=- <<'MSG'`)을 쓴다
-- **Git Bash는 `/no/such/path`를 `C:\Program Files\Git\no\such\path`로 변환한다** —
-  절대 경로를 인자로 넘기는 실측에서 출력이 예상과 달라 보일 수 있다
+- **리뷰어에게 도구가 없으면 보고 경로를 따로 못 박아야 한다.** `reviewer` 에이전트에
+  `SendMessage`가 없어 "최종 응답이 곧 보고서"라고만 적었더니 **한 명이 보고 없이
+  idle로 끝났다.** 재요청해서 받았다. 다음부터는 브리프에 `SendMessage`로 `main`에
+  보내라고 명시한다
+- **리뷰가 도는 동안 작업트리를 얼린다.** 이번엔 지켰다 — 두 리뷰어 모두 `fb0949d`
+  고정 트리에서 재고 `git status --porcelain`이 비어 있음을 보고했다
+- **브리프에 "확인했으나 문제 없던 것"을 요구하라.** 그것이 없으면 "발견 0건"이 참인지
+  못 찾은 것인지 구분할 수 없다. 실제로 종료 코드 축이 곱집합 27조합·인자 파싱 16케이스를
+  표로 내서 **누수 0건이 참임을 확인**할 수 있었다
+- **`Bash` 도구는 Git Bash다.** 여러 줄 커밋 메시지는 heredoc(`git commit --file=- <<'MSG'`)을
+  쓴다. PowerShell here-string(`@'…'@`)을 쓰면 메시지 앞뒤에 `@`가 남는다
 
 ## 게이트 실행 기록
 
@@ -216,19 +222,20 @@ rc.detect_legacy_windows = lambda: False   # pytest 플러그인으로 -p 로 �
 | 게이트 | 결과 |
 | --- | --- |
 | `ruff check .` | `All checks passed!` |
-| `ruff format --check .` | `57 files already formatted` |
-| `pytest --cov=cuesift` | **486 passed** · TOTAL 99% (`cli.py`·`spec/check.py`·`loader.py` 100%) |
+| `ruff format --check .` | `58 files already formatted` |
+| `pytest --cov=cuesift` | **499 passed** · TOTAL 99% (`cli.py`·`ingest/loader.py`·`spec/check.py` 100%) |
 | `scripts/check_links.py` | 마크다운 **19개** · 상대 링크 **69개** · 깨진 링크 **0** |
 | `markdownlint-cli2` | **`Linting: 19 files`** · 0 issues |
+
+**CI는 아직 돌지 않았다.** PR을 만들어야 한다.
 
 ## Files Modified This Session
 
 ```text
-src/cuesift/cli.py              check() 배선 · _resolve_profile · _format_report · 스트림 배관
-src/cuesift/spec/check.py       TrackViolation · check_empty_cues · check_track
-src/cuesift/spec/profile.py     내용 오류를 ValueError로 정규화 (utf-8 디코드 포함)
-src/cuesift/ingest/loader.py    타임코드·텍스트 타입을 경계에서 보증 · OSError 정규화
-tests/test_cli_check.py         신규 · tests/test_cli.py 확장 · check_violations.ass 픽스처
-docs/superpowers/plans/2026-08-13-check-cli.md   구현 계획 (신규)
-README.md · CHANGELOG.md · docs/WBS.md · docs/요구사항정의서.md · 설계 스펙 2건
+src/cuesift/ingest/loader.py    _require_non_negative_timecodes · 검사 순서 타입→부호→역전
+src/cuesift/cli.py              _format_timecode 부호 보존 · _format_report의 limit·요약 이중 · --limit 옵션
+tests/fixtures/ingest/starts_at_zero.srt        신규 — `0` 경계를 지나가는 유일한 픽스처
+tests/fixtures/ingest/negative_timecode.ass     신규 — 음수 진입로가 json만이 아님을 고정
+tests/test_ingest.py · test_ingest_fixtures.py · test_cli_check.py
+README.md · CHANGELOG.md · docs/WBS.md · docs/superpowers/specs/2026-08-03-check-cli-design.md
 ```
