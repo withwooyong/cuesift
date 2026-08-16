@@ -153,6 +153,56 @@ def test_저장_실패는_번역을_죽이지_않는다(tmp_path: Path, monkeypa
     assert len(warnings) == 1
 
 
+def test_저장이_새는_예외를_내도_inner_결과가_그대로_나간다(tmp_path: Path) -> None:
+    # 리뷰 실측: content에 짝 없는 서러게이트(U+D800)가 섞이면 store()의
+    # json.dumps는 통과하지만 tmp.write_text(encoding="utf-8")가
+    # UnicodeEncodeError(ValueError의 하위)를 낸다. `except OSError`만
+    # 걸려 있으면 이것이 그대로 새어 ProviderError 밖으로 나가고, engine의
+    # 배치 폴백(FR-2.6)이 받지 못해 완주하던 실행이 중단된다.
+    warnings: list[str] = []
+    inner = ScriptedProvider(["\ud800broken"])
+    provider = CachingProvider(inner, identity="i|u|m", cache_dir=tmp_path, warn=warnings.append)
+
+    got = provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+
+    assert got.text == "\ud800broken"
+    assert len(warnings) == 1
+
+
+@pytest.mark.parametrize("temperature", [None, "hot"])
+def test_비수치형_temperature도_inner를_부른다(tmp_path: Path, temperature: object) -> None:
+    # 리뷰 실측: request.key가 float(temperature)를 계산하는데, load() 안에서
+    # 이 계산이 try 밖에 있다. temperature가 None이면 TypeError, 문자열이면
+    # ValueError가 캐시 계층에서 그대로 샌다 - 캐시가 없으면 openai_compat의
+    # 가드가 FatalProviderError로 분류해 죽이는 것과 대비된다. 캐시 조회
+    # 실패는 미스로 떨어져야 하고, 그러면 inner가 불려야 한다 - 그 다음
+    # 무슨 일이 나든(성공이든 FatalProviderError든) 그건 inner의 몫이다.
+    inner = ScriptedProvider(["ok"])
+    provider = _cached(inner, tmp_path)
+
+    got = provider.complete(_MESSAGES, temperature=temperature, max_tokens=None)  # type: ignore[arg-type]
+
+    assert got.text == "ok"
+    assert len(inner.calls) == 1
+
+
+@pytest.mark.parametrize("temperature", [float("nan"), float("inf")])
+def test_nan_inf_temperature는_여전히_미스로_inner를_거친다(
+    tmp_path: Path, temperature: float
+) -> None:
+    # 폭을 넓히는 수정이 nan·inf 경로를 바꾸지 않았음을 고정한다. nan·inf는
+    # float이라 request.key 계산(float(temperature))에서 죽지 않는다 - 미스로
+    # 떨어져 inner가 불리고, 실제 값 판정(FatalProviderError)은 여전히
+    # inner(openai_compat)의 몫이라는 것을 확인한다.
+    inner = ScriptedProvider([FatalProviderError("temperature가 유한한 수가 아니다")])
+    provider = _cached(inner, tmp_path)
+
+    with pytest.raises(FatalProviderError):
+        provider.complete(_MESSAGES, temperature=temperature, max_tokens=None)
+
+    assert len(inner.calls) == 1
+
+
 def test_손상된_캐시는_다시_부른다(tmp_path: Path) -> None:
     inner = ScriptedProvider(["응답1", "응답2"])
     provider = _cached(inner, tmp_path)

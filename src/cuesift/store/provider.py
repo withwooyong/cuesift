@@ -5,6 +5,15 @@
 재시도·백오프·배치 폴백·예외 분류가 전부 그대로 유효하고, 개별 폴백
 호출도 각각 캐시된다.
 
+**캐시는 engine이 분류할 수 없는 예외를 새로 만들지 않는다.** engine의
+배치 폴백(FR-2.6)은 `RetryableProviderError`·`FatalProviderError` 두
+자손만 잡는다 - 그 계약은 이 계층의 존재와 무관하게 이미 성립해야 하고,
+캐시를 끼우는 행위 자체가 그 계약 밖의 새 실패 모드를 만들면 안 된다.
+그래서 캐시 **자신의** 읽기·쓰기가 내는 예외(디스크 I/O·직렬화)는
+`ProviderError` 계열이 아니어도 이 계층에서 흡수한다. `_CACHE_IO_ERRORS`
+참고. **inner가 던진 예외는 여기서 잡지 않는다** - 이미 분류돼 있고, 또
+잡으면 재시도·폴백 분류가 이 계층에서 뭉개진다.
+
 **예외를 캐시하지 않는 것은 구조적으로 보장된다.** 안쪽 `complete()`가
 던지면 아래 저장 코드에 도달하지 못한다. 조건문으로 거르는 것이 아니라서
 새 예외 종류가 생겨도 규칙이 깨지지 않는다.
@@ -17,6 +26,19 @@ from pathlib import Path
 
 from cuesift.store.cache import CacheRequest, load, store
 from cuesift.translate.provider import ChatMessage, Completion, Provider
+
+# 캐시 자신의 읽기·쓰기가 낼 수 있는 예외 셋. `OSError`(디스크 I/O)만으로는
+# 부족하다 - 리뷰 실측: 자막에 U+D800(짝 없는 서러게이트) 같은, 파이썬
+# 문자열로는 유효하지만 UTF-8로 인코딩할 수 없는 문자가 들어오면
+# `store()` 안에서 `json.dumps`는 통과하고 `Path.write_text(encoding="utf-8")`가
+# `UnicodeEncodeError`(`ValueError`의 하위)를 낸다. `CacheRequest.key`가
+# 비수치형 `temperature`(`None`·문자열)에서 `float(...)`를 계산하다
+# `TypeError`/`ValueError`를 내는 경로(`load()`·`store()` 양쪽에서
+# `request.key` 평가 시 발생)도 같은 부류다. 셋 중 하나라도 빠지면
+# `ProviderError` 밖으로 새어 engine의 배치 폴백(FR-2.6)을 우회하고,
+# 캐시 없이는 완주하던 실행이 캐시를 끼우면 죽는다(리뷰 실측: 세그먼트
+# 4개·배치 2개 실행에서 캐시 없음은 완주, `CachingProvider` 경유는 중단).
+_CACHE_IO_ERRORS = (OSError, ValueError, TypeError)
 
 
 def _ignore(_message: str) -> None:
@@ -80,7 +102,7 @@ class CachingProvider:
             max_tokens=max_tokens,
             messages=tuple(messages),
         )
-        cached = load(self._cache_dir, request)
+        cached = self._load_or_none(request)
         if cached is not None:
             self.hits += 1
             # **저장된 usage를 그대로 낸다** (설계 §3.5.1). 0으로 만들면
@@ -90,14 +112,41 @@ class CachingProvider:
 
         self.misses += 1
         completion = self._inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        self._store_or_warn(request, completion)
+        return completion
+
+    def _load_or_none(self, request: CacheRequest) -> Completion | None:
+        """캐시 조회 실패를 미스로 떨어뜨린다. **경고 없이 조용히.**
+
+        `load()` 자신도 손상된 파일을 미스로 다룬다(`cache.py`: "캐시는
+        최적화이지 정확성의 근거가 아니다"). 여기서 새는 예외(비수치형
+        `temperature`에서 `request.key` 계산이 `TypeError`/`ValueError`를
+        내는 경로 등, `_CACHE_IO_ERRORS` 참고)도 같은 성격이다 - 미스로
+        떨어져도 바로 다음 줄에서 inner가 불려 **결과의 정확성은 그대로**다.
+        잃는 것은 이번 호출의 캐시 적중 하나뿐이다.
+
+        **트레이드오프를 적어 둔다.** 진짜 프로그래밍 오류(예: identity
+        조립 실수로 인한 예외)도 같은 경로로 조용히 미스가 될 수 있어,
+        성능 저하가 사용자에게 드러나지 않을 위험이 있다. `_store_or_warn`이
+        경고하는 것과 비대칭으로 보일 수 있지만 의도적이다 - 저장 실패는
+        "다음 실행에서 재개가 안 된다"는 사용자가 알아야 할 사실이고, 조회
+        실패는 "이번 호출이 조금 더 느리다"로 끝나 매 호출 경고할 만큼
+        사용자 행동을 바꾸지 않는다.
+        """
+        try:
+            return load(self._cache_dir, request)
+        except _CACHE_IO_ERRORS:
+            return None
+
+    def _store_or_warn(self, request: CacheRequest, completion: Completion) -> None:
         try:
             store(self._cache_dir, request, completion)
-        except OSError as exc:
-            # 디스크가 차거나 읽기 전용이어도 번역이 실패할 이유는 없다.
+        except _CACHE_IO_ERRORS as exc:
+            # 디스크가 차거나 읽기 전용이거나, 이번 응답이 UTF-8로
+            # 직렬화되지 않아도(서러게이트 등) 번역이 실패할 이유는 없다.
             # **다만 조용히 삼키지는 않는다** - 사용자는 재개가 되는 줄 안다.
             # 한 번만 내는 것은 수백 번 반복하면 진짜 출력이 묻히기 때문이다.
             self._warn_once(f"캐시를 쓰지 못했다(재개가 동작하지 않는다): {exc}")
-        return completion
 
     def _warn_once(self, message: str) -> None:
         if self._warned:
