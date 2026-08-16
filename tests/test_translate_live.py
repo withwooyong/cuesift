@@ -62,8 +62,12 @@ def _provider() -> OpenAICompatibleProvider:
     없을 때 실패로 처리하면 붉은 게이트가 상시화되고, 무시되는 게이트는
     없는 게이트와 같다.
 
-    `CUESIFT_LIVE_API_KEY`는 **선택**이다. 로컬 Ollama는 키를 요구하지 않고,
-    빈 문자열을 넘기면 어댑터가 `Authorization` 헤더를 아예 붙이지 않는다.
+    `CUESIFT_LIVE_API_KEY`는 **선택이라 설정하지 않아도 된다.** 로컬 Ollama는
+    키를 요구하지 않는다. 변수가 없으면 `os.environ.get`이 `None`을 주고,
+    어댑터는 `if self._api_key:`로 검사하므로 `None`과 빈 문자열 **둘 다**
+    `Authorization` 헤더를 붙이지 않는다. `is not None`이었다면 빈 문자열에서
+    `Bearer `가 나가 서버가 401을 냈을 것이고, 401은 Fatal이라 "키가 없다"가
+    "키가 틀렸다"로 둔갑한다.
     """
     base_url = os.environ.get("CUESIFT_LIVE_BASE_URL")
     model = os.environ.get("CUESIFT_LIVE_MODEL")
