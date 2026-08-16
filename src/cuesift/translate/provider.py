@@ -12,13 +12,12 @@ exit 66("파일 내용이 틀림")의 구분, 즉 "호출자가 틀렸나, 데�
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
 Role = Literal["system", "user", "assistant"]
-
-_ROLES = ("system", "user", "assistant")
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,13 +27,15 @@ class ChatMessage:
     role: Role
     content: str
 
+    _ROLES = ("system", "user", "assistant")
+
     def __post_init__(self) -> None:
         # Literal은 런타임에 아무것도 막지 않는다. 잘못된 역할은 서버가 400을
         # 내고 그 400은 FatalProviderError가 되어 전체를 중단시키는데, 그때는
         # 원인이 프롬프트 조립 코드라는 사실이 보이지 않는다. Span.__post_init__
         # 이 같은 이유로 side를 검사한다.
-        if self.role not in _ROLES:
-            raise ValueError(f"role({self.role!r})은 {_ROLES} 중 하나여야 한다")
+        if self.role not in self._ROLES:
+            raise ValueError(f"role({self.role!r})은 {self._ROLES} 중 하나여야 한다")
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,20 @@ class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     calls: int = 0
+
+    def __post_init__(self) -> None:
+        # 음수가 통과하면 NFR-2 비용 리포트가 **누적 도중에 조용히 줄어든다.**
+        # 합산이 끝나면 개별 항이 남지 않으므로 어느 호출이 음수를 넣었는지
+        # 역추적할 수 없고, 총계가 틀렸다는 사실조차 드러나지 않는다.
+        # 형제 모델 넷(Span·Segment·Signal·SegmentRisk)이 모두 같은 자리에서
+        # 방어한다. __add__도 이 생성자를 거치므로 합산 결과 역시 이 검사를 지난다.
+        for name, value in (
+            ("prompt_tokens", self.prompt_tokens),
+            ("completion_tokens", self.completion_tokens),
+            ("calls", self.calls),
+        ):
+            if value < 0:
+                raise ValueError(f"{name}({value})은 음수일 수 없다")
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
         """배치 루프가 빈 값부터 누적할 수 있게 한다."""
@@ -69,13 +84,37 @@ class ProviderError(Exception):
 class RetryableProviderError(ProviderError):
     """다시 걸면 성공할 수 있는 실패 - 429, 5xx, 타임아웃, 연결 끊김.
 
-    `retry_after_s`는 서버가 지정한 대기다. 무시하면 서버가 지정한 대기를
-    어겨 일시적 제한이 영구 차단으로 승격될 수 있다.
+    `retry_after_s`는 서버가 지정한 대기이고 **도메인은 "0 이상의 유한한 초"** 다.
+    이 값은 양쪽으로 위험하므로 한 방향만 막으면 안 된다.
+
+    - **무시하면** 서버가 지정한 대기를 어겨 일시적 제한이 영구 차단으로 승격된다.
+    - **그대로 존중하면** 도메인 밖 값이 `time.sleep()`에 들어가 음수·nan은
+      `ValueError`를, inf는 `OverflowError`를 낸다. 이 둘은 `ProviderError`의
+      자손이 **아니고**, 호출부의 `except RetryableProviderError` **핸들러 본문
+      안에서** 발생하므로 그 핸들러가 잡지 못한 채 번역 루프 밖으로 샌다 -
+      설계 §4.2가 그은 "호출자가 틀렸나 데이터가 틀렸나" 분기를 통째로 우회한다.
+
+    그래서 도메인 밖 값은 `None`("쓸 수 있는 힌트가 없음")으로 떨어뜨리고 호출부의
+    지수 백오프에 맡긴다. **상한은 여기서 다루지 않는다** - `Retry-After: 86400`을
+    그대로 자면 CLI가 하루 멈추지만 그것은 계약이 아니라 정책이라 백오프 계산의 몫이다.
     """
 
     def __init__(self, message: str, *, retry_after_s: float | None = None) -> None:
         super().__init__(message)
-        self.retry_after_s = retry_after_s
+        # 무효값에 예외를 던지지 않는 것이 핵심이다. 예외를 만드는 중에 예외를
+        # 던지면 원래 실패 원인(429·503)이 그 자리에서 사라진다.
+        #
+        # isfinite가 필요한 이유: nan은 어떤 비교에도 False라 `< 0` 검사만으로는
+        # 무효값이 그대로 통과한다.
+        # isinstance가 필요한 이유: 숫자가 아닌 값(파싱하지 않은 Retry-After 헤더
+        # 문자열이 대표적이다)에 isfinite를 걸면 TypeError가 나는데, 그것이 바로
+        # 이 줄들이 막으려는 "생성자가 던지는 예외"다.
+        usable = (
+            isinstance(retry_after_s, int | float)
+            and math.isfinite(retry_after_s)
+            and retry_after_s >= 0.0
+        )
+        self.retry_after_s = retry_after_s if usable else None
 
 
 class FatalProviderError(ProviderError):
@@ -89,11 +128,12 @@ class FatalProviderError(ProviderError):
 class Provider(Protocol):
     """LLM 호출의 계약. 표면을 최소로 두는 것이 NFR-5(코드 수정 없이 추가)를 돕는다.
 
-    **`@runtime_checkable`을 붙이지 않는다.** 붙이면 `isinstance`가 통과하는데
-    그 검사는 `complete`의 존재만 보고 시그니처는 보지 않는다 - 인자 이름과
-    키워드 전용 여부가 어긋난 구현이 "프로바이더 맞음"으로 통과하고, 실패는
-    검사 지점이 아니라 실제 호출 지점에서 드러난다. `signals/base.py`가 같은
-    이유로 프로토콜 `isinstance` 대신 `hasattr`로 갈랐다.
+    **`@runtime_checkable`을 붙이지 않는다.** 이 프로토콜은 정적 계약이고,
+    런타임에 "이것이 프로바이더인가"를 판별해야 하는 지점이 파이프라인 어디에도
+    없다. 붙이면 `isinstance`가 열리지만 그 검사는 `complete`의 **존재만** 보고
+    시그니처는 보지 않는다 - 인자 이름이나 키워드 전용(`*`) 여부가 어긋난 구현이
+    "프로바이더 맞음"으로 통과하고, 실패는 검사 지점이 아니라 한참 뒤 실제 호출
+    지점에서 드러난다. 쓰지 않는 검사 수단을 없애면 그 거짓 안심도 같이 사라진다.
     """
 
     name: str
