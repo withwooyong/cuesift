@@ -15,6 +15,7 @@ from cuesift.translate.provider import (
     FatalProviderError,
     Provider,
     RetryableProviderError,
+    TokenUsage,
 )
 
 
@@ -34,6 +35,39 @@ def _ok(ids: list[int]) -> str:
 def _user_content(provider: EchoProvider | ScriptedProvider, call_index: int = 0) -> str:
     """프로바이더가 받은 유저 메시지. 프롬프트 조립 인자가 실제로 흘렀는지 본다."""
     return provider.calls[call_index][-1].content
+
+
+def _expected_usage(provider: EchoProvider | ScriptedProvider) -> TokenUsage:
+    """가짜가 **실제로 돌려준** 사용량의 합.
+
+    기대값을 가짜의 산식과 중복 구현하지 않으려고 돌려준 것에서 되짚는다.
+    이것만으로는 "가짜가 0을 내고 엔진도 0을 낸다"를 구별하지 못하므로
+    호출부에서 `> 0`을 함께 단언한다.
+    """
+    total = TokenUsage()
+    for completion in provider.returned:
+        total = total + completion.usage
+    return total
+
+
+def _sections(user_content: str) -> dict[str, list[str]]:
+    """유저 메시지를 `## ` 절로 쪼개 **절별 id 목록**을 낸다.
+
+    `"[3]" in body` 형태로는 앞뒤 맥락이 **통째로 뒤바뀌어도** 통과한다 -
+    두 절 다 같은 본문 안에 있기 때문이다. FR-2.2의 요점은 "몇 개를 붙이나"가
+    아니라 "앞의 것을 앞에 붙이나"이고, 자막에서 앞뒤 역전은 대명사·시제·
+    존대를 직접 망친다. 그래서 소속 절까지 함께 본다.
+    """
+    out: dict[str, list[str]] = {}
+    current = ""
+    for line in user_content.splitlines():
+        if line.startswith("## "):
+            # 헤더는 "## 앞 맥락 - 번역하지 말 것"처럼 꼬리가 붙는다.
+            current = line.split(" - ")[0].strip()
+            out.setdefault(current, [])
+        elif line.startswith("[") and current:
+            out[current].append(line.partition("]")[0][1:])
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -72,6 +106,22 @@ def test_사용량을_누적한다() -> None:
         _segs(25), provider=provider, source_lang="ko", target_lang="en", batch_size=10
     )
     assert result.usage.calls == 3
+    # 호출 횟수만 보면 안 된다. NFR-2에서 사용자가 보는 숫자는 토큰 수이고,
+    # 엔진이 토큰을 통째로 버려도 calls는 맞는다.
+    assert result.usage == _expected_usage(provider)
+    assert result.usage.prompt_tokens > 0
+    assert result.usage.completion_tokens > 0
+
+
+def test_기본_호출_인자를_그대로_넘긴다() -> None:
+    # max_tokens를 값으로 단언하는 곳이 없으면 엔진이 max_tokens=16을
+    # 보내도 아무도 모른다 - 잘린 응답은 여전히 유효 JSON이고 개수·번호도
+    # 맞아 parse_translations를 통과하므로 **잘린 자막이 성공으로 보고된다.**
+    provider = EchoProvider()
+    translate_segments(
+        _segs(25), provider=provider, source_lang="ko", target_lang="en", batch_size=10
+    )
+    assert provider.kwargs == [(0.0, None)] * 3
 
 
 def test_빈_입력은_호출하지_않는다() -> None:
@@ -84,17 +134,15 @@ def test_빈_입력은_호출하지_않는다() -> None:
 
 def test_temperature를_그대로_넘긴다() -> None:
     # WP8 자가일관성이 의도적으로 올려 쓴다 (설계 §8.2).
-    seen: list[float] = []
-
-    class Recording(EchoProvider):
-        def complete(self, messages, *, temperature, max_tokens):  # type: ignore[no-untyped-def]
-            seen.append(temperature)
-            return super().complete(messages, temperature=temperature, max_tokens=max_tokens)
-
+    #
+    # 가짜가 kwargs를 기록하므로 인라인 서브클래스가 필요 없다. 그 서브클래스는
+    # **주석 없는 시그니처**라 요구 B의 `inspect.signature` 단언 대상이 아니었고,
+    # 프로토콜 준수를 강제하는 유일한 수단을 우회한 더블이 검증을 떠받치고 있었다.
+    provider = EchoProvider()
     translate_segments(
-        _segs(1), provider=Recording(), source_lang="ko", target_lang="en", temperature=0.9
+        _segs(1), provider=provider, source_lang="ko", target_lang="en", temperature=0.9
     )
-    assert seen == [0.9]
+    assert provider.kwargs == [(0.9, None)]
 
 
 # --------------------------------------------------------------------------
@@ -146,6 +194,23 @@ def test_폴백_사용량에_실패한_배치_호출이_포함된다() -> None:
     )
     # 배치 1회 + 개별 3회. 가짜는 호출당 calls=1을 낸다.
     assert result.usage.calls == 4
+    assert result.usage == _expected_usage(provider)
+    assert result.usage.prompt_tokens > 0
+    assert result.usage.completion_tokens > 0
+
+
+def test_폴백_개별_호출의_파싱_실패도_사용량에_남는다() -> None:
+    # 배치 경로의 같은 성질은 위 테스트가 지킨다. 폴백 개별 호출도 응답을
+    # 받았으니 요금이 나갔다 - 같은 논리인데 짝이 없었다.
+    provider = ScriptedProvider(["산문", "산문", _ok([1])])
+    result = translate_segments(
+        _segs(2), provider=provider, source_lang="ko", target_lang="en", batch_size=2
+    )
+    assert [f.segment_id for f in result.failures] == ["s0"]
+    # 깨진 배치 1회 + 실패한 개별 1회 + 성공한 개별 1회가 모두 계상된다.
+    assert result.usage.calls == 3
+    assert result.usage == _expected_usage(provider)
+    assert result.usage.completion_tokens > 0
 
 
 def test_폴백은_배치의_전역_번호를_그대로_기대한다() -> None:
@@ -183,12 +248,54 @@ def test_맥락이_있는_배치도_폴백할_수_있다() -> None:
     assert len(provider.calls) == 5
     assert result.failures == ()
     assert [s.target_text for s in result.segments] == [f"EN{i}" for i in range(6)]
-    # 폴백 호출에 맥락이 실제로 실렸다. 없으면 위 단언들은 맥락을 통째로
-    # 버리는 구현에서도 통과한다.
-    fallback_body = _user_content(provider, 2)
-    assert "## 앞 맥락" in fallback_body
-    assert "## 뒤 맥락" in fallback_body
-    assert "[2]" in fallback_body
+    # 폴백 호출에 맥락이 **절별로** 실렸다. `in` 검사만 두면 맥락을 통째로
+    # 버리는 구현에서도, 앞뒤를 맞바꾼 구현에서도 통과한다.
+    assert _sections(_user_content(provider, 2)) == {
+        "## 앞 맥락": ["0", "1"],
+        "## 번역 대상": ["2"],
+        "## 뒤 맥락": ["3", "4"],
+    }
+    assert _sections(_user_content(provider, 3)) == {
+        "## 앞 맥락": ["1", "2"],
+        "## 번역 대상": ["3"],
+        "## 뒤 맥락": ["4", "5"],
+    }
+
+
+def test_맥락_윈도우가_파일보다_커도_폴백_맥락이_옳다() -> None:
+    """앞에 있는 세그먼트 수보다 `context_window`가 큰 경우다.
+
+    `local[max(0, pos - cw) : pos]`에서 `max(0, ...)`를 지워도 **대부분의
+    조합에서는 결과가 같다** - 음수 시작이 stop보다 뒤라 슬라이스가 비기
+    때문이다. 실제로 달라지는 것은 여기처럼 파일이 짧고 윈도우가 클 때이고,
+    그때 s1은 앞 맥락 `[0]`을 통째로 잃는다(전수 조사에서 1,704쌍).
+
+    `_fallback_individually`가 `context_window`를 **인자로 받는** 이유이기도
+    하다. `max(len(before), len(after))`로 되짚으면 이 구성에서 둘 다 비어
+    0이 되고, 그러면 s0도 s1을 맥락으로 받지 못한다.
+    """
+    provider = ScriptedProvider(["산문", _ok([0]), _ok([1])])
+    result = translate_segments(
+        _segs(2),
+        provider=provider,
+        source_lang="ko",
+        target_lang="en",
+        batch_size=2,
+        context_window=2,
+    )
+    assert len(provider.calls) == 3
+    assert result.failures == ()
+    # 배치 호출에는 맥락이 없다 - 파일에 다른 세그먼트가 없기 때문이다.
+    assert _sections(_user_content(provider, 0)) == {"## 번역 대상": ["0", "1"]}
+    # 폴백에서는 서로가 서로의 맥락이 된다.
+    assert _sections(_user_content(provider, 1)) == {
+        "## 번역 대상": ["0"],
+        "## 뒤 맥락": ["1"],
+    }
+    assert _sections(_user_content(provider, 2)) == {
+        "## 앞 맥락": ["0"],
+        "## 번역 대상": ["1"],
+    }
 
 
 def test_치명적_실패는_폴백_도중에도_전파된다() -> None:
@@ -271,6 +378,57 @@ def test_배치_일부만_비어도_나머지는_전부_성공한다() -> None:
     ]
 
 
+def test_배치가_실패해도_남은_배치를_계속_돈다() -> None:
+    """FR-2.6의 "해당 세그먼트만 표시 후 진행"이 이 모듈의 존재 이유다.
+
+    실패를 담은 테스트가 전부 **단일 배치**면 두 결함이 동시에 열린다.
+
+    1. 첫 실패 배치에서 루프를 끊어도(`if batch_failures: break`) 아무도
+       모른다. 800큐 파일에서 20번째가 비면 나머지 780개가 사라지는데
+       `failures`는 1건이라 **조용히** 끝난다.
+    2. `failures.extend(...)`를 `failures = list(...)`로 바꿔도 모른다.
+       `translated.update`는 다중 배치 테스트가 지키는데 `failures`만 짝이
+       없었다. 검수 트리아지 엔진에서 실패 목록 누락은 안전한 실패가 아니다 -
+       **사람이 봐야 할 자막이 큐에서 빠진다.**
+    """
+    # 두 배치 모두에 빈 번역을 하나씩 넣는다.
+    first = json.dumps(
+        {
+            "translations": [
+                {"id": 0, "text": ""},
+                {"id": 1, "text": "EN1"},
+                {"id": 2, "text": "EN2"},
+            ]
+        }
+    )
+    second = json.dumps(
+        {
+            "translations": [
+                {"id": 3, "text": "EN3"},
+                {"id": 4, "text": "   "},
+                {"id": 5, "text": "EN5"},
+            ]
+        }
+    )
+    provider = ScriptedProvider([first, second])
+    result = translate_segments(
+        _segs(6), provider=provider, source_lang="ko", target_lang="en", batch_size=3
+    )
+    # 첫 배치가 실패를 냈어도 둘째 배치를 불렀다.
+    assert len(provider.calls) == 2
+    # 두 배치의 실패가 **모두** 남는다.
+    assert [f.segment_id for f in result.failures] == ["s0", "s4"]
+    # 뒤 배치의 성공분이 실제로 채워졌다.
+    assert [s.target_text for s in result.segments] == [
+        None,
+        "EN1",
+        "EN2",
+        "EN3",
+        None,
+        "EN5",
+    ]
+
+
 def test_실패한_세그먼트는_들어온_target_text를_남기지_않는다() -> None:
     # 같은 세그먼트를 en으로 채운 뒤 ja로 다시 넣는 사용법이 있다. 실패분에
     # 이전 언어의 번역문이 남으면 그것이 ja 결과로 보고되고, failures와
@@ -306,21 +464,51 @@ def test_재시도_가능_실패는_다시_건다() -> None:
     assert result.failures == ()
 
 
-def test_재시도가_소진되면_배치_전원이_실패한다() -> None:
-    provider = ScriptedProvider([RetryableProviderError("503")] * 4)
+def test_재시도가_소진되면_그_배치만_전원_실패한다() -> None:
+    """소진 테스트가 전부 **맥락이 빈 구성**이면 실패 명단이 검사되지 않는다.
+
+    `for s in window.batch`를 `for s in (*window.before, *window.batch)`로
+    바꿔도 죽는 테스트가 없었다. 그 변이본에서는 맥락 세그먼트가
+    **`target_text`가 채워져 있으면서 동시에 실패**로 실린다 - `failures`와
+    `segments`가 서로 다른 말을 한다. 게다가 실패 개수 부풀림은
+    `review_ratio()`를 통해 **Recall@Budget 배수를 직접 오염시킨다.**
+    """
+    # 배치 [0,1,2]는 성공, 배치 [3,4,5]만 소진, 배치 [6,7,8]은 다시 성공.
+    provider = ScriptedProvider(
+        [_ok([0, 1, 2])] + [RetryableProviderError("503")] * 4 + [_ok([6, 7, 8])]
+    )
     result = translate_segments(
-        _segs(3),
+        _segs(9),
         provider=provider,
         source_lang="ko",
         target_lang="en",
         batch_size=3,
+        context_window=3,
         max_retries=3,
         sleep=lambda _s: None,
     )
-    # 최초 1회 + 재시도 3회 = 4회. **개별 폴백은 타지 않는다** (설계 §6.3).
-    assert len(provider.calls) == 4
-    assert [f.segment_id for f in result.failures] == ["s0", "s1", "s2"]
-    assert all(f.reason == "provider_error" for f in result.failures)
+    # 성공 1 + (최초 1회 + 재시도 3회) + 성공 1 = 6회.
+    # **개별 폴백은 타지 않는다** (설계 §6.3) - 탔다면 3회가 더 붙는다.
+    assert len(provider.calls) == 6
+    # 맥락(0~2·6~8)은 실패 명단에 없다.
+    assert [f.segment_id for f in result.failures] == ["s3", "s4", "s5"]
+    assert [f.reason for f in result.failures] == ["provider_error"] * 3
+    # 실패한 것에는 번역문이 없고, 앞뒤 배치는 살아 있다 (FR-2.6).
+    assert [s.target_text for s in result.segments] == [
+        "EN0",
+        "EN1",
+        "EN2",
+        None,
+        None,
+        None,
+        "EN6",
+        "EN7",
+        "EN8",
+    ]
+    # 소진 경로는 응답을 한 번도 받지 못했으므로 그 배치의 토큰은 0이다.
+    # 성공한 두 배치분만 남는다 ("실패한 호출은 계상하지 않는다"의 고정).
+    assert result.usage.calls == 2
+    assert result.usage == _expected_usage(provider)
 
 
 def test_소진된_실패는_시도_횟수를_기록한다() -> None:
@@ -540,15 +728,12 @@ def test_맥락_윈도우가_프롬프트에_실린다(context_window: int) -> N
         batch_size=3,
         context_window=context_window,
     )
-    second = _user_content(provider, 1)
-    assert "## 앞 맥락" in second
-    assert "## 뒤 맥락" in second
-    before_ids = [f"[{i}]" for i in range(3 - context_window, 3)]
-    after_ids = [f"[{i}]" for i in range(6, 6 + context_window)]
-    for token in before_ids + after_ids:
-        assert token in second
-    # 윈도우 밖은 실리지 않는다. 없으면 "전부 붙인다"와 구별되지 않는다.
-    assert f"[{3 - context_window - 1}]" not in second
+    # 절별 id 목록으로 본다. `"[2]" in body` 형태는 앞뒤 맥락이 **통째로
+    # 뒤바뀌어도** 통과한다 - 둘 다 같은 본문 안이기 때문이다.
+    sections = _sections(_user_content(provider, 1))
+    assert sections["## 앞 맥락"] == [str(i) for i in range(3 - context_window, 3)]
+    assert sections["## 번역 대상"] == ["3", "4", "5"]
+    assert sections["## 뒤 맥락"] == [str(i) for i in range(6, 6 + context_window)]
 
 
 def test_context_window_0이면_맥락_절이_없다() -> None:
@@ -582,6 +767,39 @@ def test_용어집이_프롬프트에_실린다() -> None:
     assert "Sentence One" in system
 
 
+def test_폴백_호출에도_용어집이_실린다() -> None:
+    # 폴백은 구조가 복제된 두 번째 호출부라 검사가 통째로 빠지기 쉽다.
+    # FR-2.3이 하필 **모델이 이미 형식을 어긴 자리**에서 빠지면 안 된다.
+    #
+    # 세 세그먼트 **모두**에 용어가 나오게 짠다. 한 세그먼트에만 두면
+    # 나머지 폴백 호출에는 용어집 절이 정당하게 빠지므로(등장하지 않는
+    # 용어는 주입하지 않는 것이 FR-2.3이다) 단언이 그 자리를 못 가린다.
+    segments = [
+        Segment(
+            id=f"g{i}",
+            index=i,
+            start_ms=i * 1000,
+            end_ms=i * 1000 + 900,
+            source_text=f"기후 변화 이야기 {i}",
+        )
+        for i in range(3)
+    ]
+    glossary = Glossary(entries=(GlossaryEntry(source="기후 변화", targets=("climate change",)),))
+    provider = EchoProvider(fail_batches_of_size=2)
+    translate_segments(
+        segments,
+        provider=provider,
+        source_lang="ko",
+        target_lang="en",
+        batch_size=3,
+        glossary=glossary,
+    )
+    # 0번은 깨진 배치 호출이다. 1번부터가 개별 폴백이다.
+    assert len(provider.calls) == 4
+    for call_index in (1, 2, 3):
+        assert "climate change" in provider.calls[call_index][0].content
+
+
 def test_작품_맥락이_프롬프트에_실린다() -> None:
     provider = EchoProvider()
     translate_segments(
@@ -595,12 +813,46 @@ def test_작품_맥락이_프롬프트에_실린다() -> None:
     assert "기후 위기에 대한 TED 강연이다" in system
 
 
+def test_폴백_호출에도_작품_맥락이_실린다() -> None:
+    provider = EchoProvider(fail_batches_of_size=2)
+    translate_segments(
+        _segs(3),
+        provider=provider,
+        source_lang="ko",
+        target_lang="en",
+        batch_size=3,
+        work_context="기후 위기에 대한 TED 강연이다",
+    )
+    assert len(provider.calls) == 4
+    for call_index in (1, 2, 3):
+        assert "기후 위기에 대한 TED 강연이다" in provider.calls[call_index][0].content
+
+
+def test_폴백_호출에도_temperature가_그대로_간다() -> None:
+    # 폴백에서 0.0으로 고정되면 WP8 자가일관성(설계 §8.2 - N회 개별 호출로
+    # 온도를 올려 쓴다)이 하필 그 구간에서 무력화된다.
+    provider = EchoProvider(fail_batches_of_size=2)
+    translate_segments(
+        _segs(3),
+        provider=provider,
+        source_lang="ko",
+        target_lang="en",
+        batch_size=3,
+        temperature=0.7,
+    )
+    assert [t for t, _ in provider.kwargs] == [0.7, 0.7, 0.7, 0.7]
+
+
 def test_언어쌍이_프롬프트에_실린다() -> None:
+    # 문장으로 단언한다. `"ko" in system` + `"ja" in system`은 방향이
+    # 뒤바뀐 프롬프트("ja 자막을 ko로")에서도 **양쪽 다 참**이라 통과한다.
+    # 함께 있던 `result.target_lang == "ja"`도 인자를 되돌려준 값이라
+    # 프롬프트를 전혀 보지 않는다. Q2가 ko->en/ja로 확정돼 있어 방향이
+    # 뒤집히면 모델이 대체로 뭔가를 돌려주고 전 계층을 통과한다.
     provider = EchoProvider()
     result = translate_segments(_segs(1), provider=provider, source_lang="ko", target_lang="ja")
     system = provider.calls[0][0].content
-    assert "ko" in system
-    assert "ja" in system
+    assert "ko 자막을 ja로 번역한다" in system
     assert result.target_lang == "ja"
 
 
@@ -679,5 +931,10 @@ def test_가짜_프로바이더가_Provider_시그니처를_지킨다(fake: type
     `inspect.signature` 비교는 인자 이름·키워드 전용 여부·기본값·주석을
     전부 본다. 기본값까지 보는 것이 요점이다 - 프로토콜의 `max_tokens`에는
     기본값이 없으므로 가짜가 `= None`을 붙이면 여기서 죽는다.
+
+    `name`도 함께 본다. 프로토콜의 멤버는 `name`과 `complete` **둘**인데
+    `complete`만 검사하면 "유일한 수단"이라는 이 독스트링의 선언이 반쪽이
+    된다 - 실제로 `name` 줄을 통째로 지워도 죽는 테스트가 없었다.
     """
     assert inspect.signature(fake.complete) == inspect.signature(Provider.complete)
+    assert isinstance(getattr(fake, "name", None), str)

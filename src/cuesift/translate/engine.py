@@ -153,6 +153,7 @@ def translate_segments(
             target_lang=target_lang,
             glossary=glossary,
             work_context=work_context,
+            context_window=context_window,
             temperature=temperature,
             max_retries=max_retries,
             sleep=sleep,
@@ -182,6 +183,7 @@ def _run_window(
     target_lang: str,
     glossary: Glossary | None,
     work_context: str | None,
+    context_window: int,
     temperature: float,
     max_retries: int,
     sleep: Callable[[float], None],
@@ -231,6 +233,7 @@ def _run_window(
             target_lang=target_lang,
             glossary=glossary,
             work_context=work_context,
+            context_window=context_window,
             temperature=temperature,
             max_retries=max_retries,
             sleep=sleep,
@@ -251,6 +254,7 @@ def _fallback_individually(
     target_lang: str,
     glossary: Glossary | None,
     work_context: str | None,
+    context_window: int,
     temperature: float,
     max_retries: int,
     sleep: Callable[[float], None],
@@ -260,17 +264,34 @@ def _fallback_individually(
     인자를 **kwargs로 뭉뚱그리지 않는다. 이 함수는 호출 비용이 배치 크기만큼
     늘어나는 자리라, 어떤 설정으로 강등됐는지가 인자 목록에 보여야 한다.
 
-    맥락은 원래 배치의 것을 그대로 쓴다. 배치 안의 이웃을 맥락으로 끌어오면
-    그 세그먼트의 번호가 맥락과 번역 대상에 동시에 실려 `build_messages`의
-    번호 충돌 검사에 걸린다 - 지금 형태에서는 batch·before·after가 서로
-    겹치지 않으므로 1개짜리 배치도 그 성질을 그대로 물려받는다.
+    **맥락은 세그먼트마다 다시 잡는다.** 원래 배치의 `before`/`after`를 그대로
+    물려주면 배치 `[10,11,12]`에서 11을 개별 처리할 때 앞 맥락이 `[7][8][9]`가
+    된다 - 가장 가까운 이웃 10·12가 빠질 뿐 아니라 **엉뚱한 세그먼트가 인접
+    맥락 자리에 들어간다.** 하필 모델이 이미 형식을 어긴 자리에서 맥락이
+    가장 나빠지는 셈이다.
+
+    `[*before, *batch, *after]`가 원본의 **연속 구간**이라 여기서 슬라이스만
+    하면 된다 - `segments` 전체를 넘길 필요가 없다.
+
+    `context_window`를 인자로 받는 것은 `max(len(before), len(after))`로
+    되짚으면 **파일 전체가 배치 하나보다 짧을 때** 양쪽이 다 비어 0으로
+    떨어지기 때문이다. 그러면 세그먼트 2개짜리 파일에서 s0이 s1을 맥락으로
+    받지 못한다 - 짧은 클립에서 늘 일어난다.
     """
     usage = TokenUsage()
     texts: dict[str, str] = {}
     failures: list[SegmentFailure] = []
+    local = [*window.before, *window.batch, *window.after]
 
-    for segment in window.batch:
-        single = BatchWindow(batch=(segment,), before=window.before, after=window.after)
+    for offset, segment in enumerate(window.batch):
+        # max(0, ...)가 없으면 음수 시작이 슬라이스를 뒤에서부터 세게 한다
+        # (`_iter_batches`가 같은 자리에서 같은 이유로 막는다).
+        pos = len(window.before) + offset
+        single = BatchWindow(
+            batch=(segment,),
+            before=tuple(local[max(0, pos - context_window) : pos]),
+            after=tuple(local[pos + 1 : pos + 1 + context_window]),
+        )
         single_usage, single_texts, single_failures = _run_single(
             single,
             provider=provider,
@@ -402,7 +423,10 @@ def _call_with_retry(
     **이 절이 막지 못하는 것도 적어 둔다.** Fatal을 Retryable의 하위로
     옮기면 여기서 다시 던진 Fatal을 `_run_window`의 바깥
     `except RetryableProviderError`가 잡아 버린다 - 절이 있어도 2개가
-    죽었다. 두 예외를 형제로 두는 것이 계약의 일부라는 뜻이다.
+    죽었다. 즉 **두 예외를 형제로 두는 것이 계약의 일부다.** 그 계약을
+    실제로 지키는 것은 이 주석이 아니라
+    `tests/test_translate_provider.py::test_재시도_가능_실패는_서로_구분된다`이고,
+    상속 관계를 바꾸면 그쪽이 죽는다. 주석이 지워져도 계약은 남는다.
 
     마지막 시도 뒤에는 자지 않는다. 거기서 자면 아무도 기다릴 이유가 없는
     시간을 CLI가 쓴다 - 호출 N+1회에 대기는 N회다.

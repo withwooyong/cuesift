@@ -31,6 +31,10 @@ class ScriptedProvider:
     def __init__(self, responses: Sequence[str | ProviderError]) -> None:
         self._responses = list(responses)
         self.calls: list[list[ChatMessage]] = []
+        self.kwargs: list[tuple[float, int | None]] = []
+        # 돌려준 Completion을 남긴다. 테스트가 사용량 기대값을 가짜의
+        # 산식과 중복 구현하지 않고 "돌려준 것의 합"으로 쓸 수 있다.
+        self.returned: list[Completion] = []
 
     def complete(
         self,
@@ -40,12 +44,19 @@ class ScriptedProvider:
         max_tokens: int | None,
     ) -> Completion:
         self.calls.append(list(messages))
+        self.kwargs.append((temperature, max_tokens))
         if not self._responses:
             raise AssertionError(f"대본이 소진됐는데 {len(self.calls)}번째 호출이 왔다")
         item = self._responses.pop(0)
         if isinstance(item, ProviderError):
+            # 예외에는 응답 본문이 없으니 사용량도 남기지 않는다. 엔진이
+            # 실패 호출을 계상하지 않는다는 선언과 짝이다.
             raise item
-        return _completion(item)
+        return self._record(_completion(item))
+
+    def _record(self, completion: Completion) -> Completion:
+        self.returned.append(completion)
+        return completion
 
 
 class EchoProvider:
@@ -70,6 +81,10 @@ class EchoProvider:
         self._garbage = garbage
         self._fail_batches_of_size = fail_batches_of_size
         self.calls: list[list[ChatMessage]] = []
+        self.kwargs: list[tuple[float, int | None]] = []
+        # 돌려준 Completion을 남긴다. 테스트가 사용량 기대값을 가짜의
+        # 산식과 중복 구현하지 않고 "돌려준 것의 합"으로 쓸 수 있다.
+        self.returned: list[Completion] = []
 
     def complete(
         self,
@@ -79,22 +94,38 @@ class EchoProvider:
         max_tokens: int | None,
     ) -> Completion:
         self.calls.append(list(messages))
+        self.kwargs.append((temperature, max_tokens))
         pairs = _parse_targets(messages[-1].content)
 
-        if self._garbage:
-            return _completion("죄송합니다, 번역할 수 없습니다.")
         # 배치일 때만 깨뜨리고 개별 폴백은 성공시키기 위한 장치다.
-        if self._fail_batches_of_size is not None and len(pairs) >= self._fail_batches_of_size:
-            return _completion("죄송합니다, 번역할 수 없습니다.")
+        broken = self._garbage or (
+            self._fail_batches_of_size is not None and len(pairs) >= self._fail_batches_of_size
+        )
+        if broken:
+            return self._record(_completion("죄송합니다, 번역할 수 없습니다."))
 
         items = [{"id": i, "text": self._transform(t)} for i, t in pairs]
         if self._drop_last and len(items) > 1:
             items = items[:-1]
-        return _completion(json.dumps({"translations": items}, ensure_ascii=False))
+        return self._record(_completion(json.dumps({"translations": items}, ensure_ascii=False)))
+
+    def _record(self, completion: Completion) -> Completion:
+        self.returned.append(completion)
+        return completion
 
 
 def _completion(text: str) -> Completion:
-    return Completion(text=text, usage=TokenUsage(prompt_tokens=1, completion_tokens=1, calls=1))
+    """토큰 수를 **내용에 따라 다르게** 낸다 (NFR-2).
+
+    상수 1/1/1을 내면 "더하기가 실제로 되는가"를 구분하지 못한다 - 호출
+    횟수만 맞으면 합계가 맞는 것처럼 보이기 때문이다. 실제로 엔진이 토큰
+    수를 통째로 버려도, 가짜가 토큰을 0으로 내도 아무 테스트도 죽지 않았다.
+    사용자가 NFR-2에서 보는 숫자는 호출 횟수가 아니라 토큰 수다.
+    """
+    return Completion(
+        text=text,
+        usage=TokenUsage(prompt_tokens=len(text) // 10 + 1, completion_tokens=len(text), calls=1),
+    )
 
 
 def _parse_targets(user_content: str) -> list[tuple[int, str]]:
@@ -126,5 +157,16 @@ def _parse_targets(user_content: str) -> list[tuple[int, str]]:
 
 
 def _unescape_newlines(text: str) -> str:
-    """`prompt.py`의 `_escape_newlines`를 되돌린다. 둘은 짝이다."""
+    """`prompt.py`의 `_escape_newlines`에 대한 **왼쪽 역원**이다. 짝은 아니다.
+
+    원문에 리터럴 두 글자 `\\n`이 들어 있으면 왕복이 깨진다 -
+    `r"C:\\name"`이 `"C:<진짜개행>ame"`으로 돌아온다. 원인은 이 함수가
+    아니라 `_escape_newlines`가 **단사가 아닌** 것이다: 역슬래시를 먼저
+    escape하지 않아 "원래 있던 `\\n`"과 "개행을 바꾼 `\\n`"이 구별되지 않는다.
+
+    **이 가짜는 오히려 진짜 모델의 해석을 정확히 흉내 내고 있다.** 모델도
+    프롬프트에서 두 글자 `\\n`을 보면 줄바꿈으로 읽는다. 그러니 여기서
+    비대칭을 보정하면 가짜가 실제보다 더 똑똑해져 결함을 가린다.
+    `_escape_newlines` 쪽 수정은 프롬프트 계약 변경이라 별도 태스크다.
+    """
     return text.replace("\\n", "\n")
