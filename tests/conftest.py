@@ -60,7 +60,7 @@ _GATE_HINT = (
 )
 
 
-def _check_on_import(pyproject: pathlib.Path | None = None) -> None:
+def _check_addopts(pyproject: pathlib.Path) -> None:
     """**임포트되는 것만으로 돈다.** 훅도 아니고 테스트도 아니다.
 
     아래 `pytest_configure`가 이미 같은 것을 보는데 왜 또 보는가 - **두
@@ -81,16 +81,24 @@ def _check_on_import(pyproject: pathlib.Path | None = None) -> None:
 
     `config`가 없어 pytest가 **실제로 읽은** ini가 무엇인지는 모른다 - 그것은
     훅만 볼 수 있다. 따라서 **훅 개명 + `pytest.ini` 추가** 조합은 이 검사를
-    지나간다(실측: exit 0, 841 deselected). pyproject의 `addopts`는 멀쩡한
-    채로 pytest가 다른 파일을 읽기 때문이다. "모든 조합에서 살아남는다"가
+    지나간다(실측: **exit 0, 0건 사망** - 전량 deselect). pyproject의 `addopts`는
+    멀쩡한 채로 pytest가 다른 파일을 읽기 때문이다. "모든 조합에서 살아남는다"가
     아니라 **"pyproject를 건드리는 조합에서 살아남는다"** 가 정확한 서술이다.
 
-    `pyproject` 인자는 테스트가 로직을 검사하는 통로다. 없으면 이 함수의
-    본문에 테스트를 걸 수 없어 **본문을 `return` 한 줄로 바꿔도 0건이
-    죽는다**(실측).
+    **닫지 않기로 한 것이지 못 닫는 것이 아니다.** 임포트 시점에도
+    `_REPO_ROOT.iterdir()`로 경쟁 ini의 존재는 보이고 `sys.argv`도 이미 차 있다
+    (실측: ①에 4줄을 넣으니 그 조합이 exit 4로 잡혔다). 넣지 않는 이유는
+    비용 대비 이득이다 - 두 파일을 동시에 고쳐야 성립하는 조합이고,
+    `setup.cfg`를 다른 목적으로 두는 정상 사용에서 거짓 실패가 난다.
+    자세한 근거는 설계 §9.2.
+
+    `pyproject`를 **인자로 받는 것**은 테스트가 로직을 검사하는 통로다. 없으면
+    본문에 테스트를 걸 수 없어 **`return` 한 줄로 바꿔도 0건이 죽는다**(실측 N7).
+
+    그러나 이 인자를 **최상위 호출까지 노출하면 안 된다.** 아래
+    `_check_on_import`가 인자를 받지 않는 이유가 그것이다.
     """
-    path = pyproject if pyproject is not None else _REPO_ROOT / "pyproject.toml"
-    ini = tomllib.loads(path.read_text(encoding="utf-8"))
+    ini = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     raw = ini["tool"]["pytest"]["ini_options"]["addopts"]
     # pytest의 `addopts`는 `args` 타입이라 **TOML 배열도 완전히 유효한 표기**다.
     # 무조건 `shlex.split`하면 리스트에서 `AttributeError: 'list' object has no
@@ -102,7 +110,7 @@ def _check_on_import(pyproject: pathlib.Path | None = None) -> None:
     # 공유 헬퍼로 묶었더니 세 겹이 **한 술어에 매달렸다** - 그 함수 첫 줄에
     # `return []`을 넣으면 이 검사와 훅이 **동시에** 눈이 멀고, 그 상태에서
     # `-m live`를 덧붙이면 테스트는 deselect로 사라져 **0건이 죽었다**(실측 N9:
-    # exit 0, 1 skipped, 841 deselected). 방어를 나눈 목적이 통째로 무너진다.
+    # exit 0, 0건 사망 - 전량 deselect). 방어를 나눈 목적이 통째로 무너진다.
     #
     # `tests/test_translate_api.py`의 `_REQUIRED`가 `__all__`을 일부러 중복하는
     # 것과 같은 이유다 - 검사와 검사 대상이 같은 출처를 쓰면 검사가 아니다.
@@ -114,6 +122,31 @@ def _check_on_import(pyproject: pathlib.Path | None = None) -> None:
 
     if problems:
         raise pytest.UsageError("게이트 설정이 어긋났다: " + " / ".join(problems) + _GATE_HINT)
+
+
+def _check_on_import() -> None:
+    """배선 전용. **인자를 받지 않는다.**
+
+    `_check_addopts`가 경로를 받아야 테스트가 가능한데, 그 인자가 최상위
+    호출에까지 열려 있으면 **호출에 decoy 경로를 붙이는 것만으로 이 층이
+    조용히 죽는다.** 실측:
+
+    | 변이 | 결과 |
+    | --- | --- |
+    | 최상위 호출에 decoy 경로 인자 | `848 passed`, exit 0. **0건 사망** |
+    | 위 + 훅 개명 + `-m live` | `1 skipped, 848 deselected`, exit 0. **우회 부활** |
+
+    호출은 그대로 있고 이름도 맞는데 **다른 파일을 검사한다.** ast 배선
+    검사가 "호출이 있는가"만 보면 이것을 통과시킨다.
+
+    **인자를 0개로 두면 그 변이가 테스트 없이 죽는다** - 파이썬이 임포트
+    시점에 `TypeError`를 내기 때문이다. deselect도 개명도 우회할 수 없는
+    자리에서 **문법이 직접 막는 것**이 검사보다 강하다.
+
+    **이 seam은 로직 테스트를 가능하게 만드는 변경이 들여왔다.** 한 라운드의
+    수정이 다른 라운드의 보호를 깎을 수 있다는 실례다.
+    """
+    _check_addopts(_REPO_ROOT / "pyproject.toml")
 
 
 _check_on_import()

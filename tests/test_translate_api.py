@@ -32,7 +32,7 @@ import httpx
 import pytest
 
 import cuesift.translate as t
-from conftest import _check_on_import, pytest_configure
+from conftest import _check_addopts, pytest_configure
 
 
 def _submodules() -> tuple[ModuleType, ...]:
@@ -319,25 +319,46 @@ def test_게이트_훅이_pytest에_실제로_등록돼_있다(pytestconfig: pyt
     )
 
 
-def test_임포트_시점_검사가_conftest_최상위에서_호출된다() -> None:
+def test_임포트_시점_검사가_인자_없이_최상위에서_호출된다() -> None:
     """**둘째 방어선의 배선도 검사한다.** 위 테스트와 대칭이다.
 
-    `_check_on_import()`는 모듈 최상위에서 불려야 의미가 있다. 함수만 남기고
-    호출을 지우면 **훅 개명 + `-m live` 덧붙임** 조합이 되살아나는데, 그
-    조합에서는 위 등록 테스트마저 deselect되어 아무것도 죽지 않는다.
+    `_check_on_import()`는 모듈 최상위에서 불려야 의미가 있다. 호출을 지우면
+    **훅 개명 + `-m live` 덧붙임** 조합이 되살아나는데, 그 조합에서는 위 등록
+    테스트마저 deselect되어 아무것도 죽지 않는다.
 
     호출문이 최상위에 있는지는 실행으로 확인할 수 없다(이미 임포트가 끝났고,
     통과했다는 사실이 호출 여부를 알려주지 않는다). 그래서 ast로 본다.
+
+    ## 인자가 없어야 한다
+
+    **이름만 보면 안 된다.** `_check_on_import`에 `pyproject` 인자를 붙인 것은
+    로직을 시험하기 위해서인데(그전에는 본문 무력화에 0건이 죽었다), 그것이
+    동시에 **배선 검사를 무력화하는 통로**를 열었다. 실측:
+
+    | 변이 | 결과 |
+    | --- | --- |
+    | 최상위 호출에 decoy 경로 인자 | `848 passed`, exit 0. **0건 사망** |
+    | 위 + 훅 개명 + `-m live` | `1 skipped, 848 deselected`, exit 0. **우회 부활** |
+
+    호출은 그대로 있고 이름도 맞는데 **다른 파일을 검사한다.** 그래서 이름이
+    아니라 **호출 노드**를 보고 인자가 비었는지까지 단언한다.
+
+    **한 라운드의 수정이 다른 라운드의 보호를 깎은 사례다** - 검사를
+    테스트 가능하게 만드는 변경이 그 검사의 배선을 무르게 했다.
     """
     source = (_REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
     calls = [
-        node.value.func.id
+        node.value
         for node in ast.parse(source).body
         if isinstance(node, ast.Expr)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "_check_on_import"
     ]
-    assert "_check_on_import" in calls, f"conftest 최상위 호출: {calls}"
+    assert calls, "conftest 최상위에 _check_on_import() 호출이 없다"
+    # 인자를 주면 실제 pyproject가 아닌 파일을 검사하게 되어 ①이 조용히 죽는다.
+    붙은_인자 = [ast.unparse(call) for call in calls if call.args or call.keywords]
+    assert 붙은_인자 == [], f"최상위 호출에 인자가 붙었다: {붙은_인자}"
 
 
 def _write_pyproject(tmp_path: pathlib.Path, addopts: str) -> pathlib.Path:
@@ -373,7 +394,7 @@ def test_임포트_시점_검사의_로직(tmp_path: pathlib.Path, addopts: str,
     """**본문에 테스트가 없으면 배선만 지킨 것이다.**
 
     앞 테스트는 "호출문이 최상위에 있는가"만 본다. 그래서 함수 **본문**을
-    `return` 한 줄로 바꿔도 **0건이 죽었다**(실측: exit 0, 841 passed).
+    `return` 한 줄로 바꿔도 **0건이 죽었다**(실측: exit 0, 전량 통과).
     훅 쪽은 `_FakeConfig`가 5종 이탈을 검사하는데 이쪽은 0건이라 비대칭이었다.
 
     `pyproject` 인자가 그 비대칭을 푸는 통로다 - 실제 파일을 읽는 함수라
@@ -381,10 +402,10 @@ def test_임포트_시점_검사의_로직(tmp_path: pathlib.Path, addopts: str,
     """
     path = _write_pyproject(tmp_path, addopts)
     if 기대 is None:
-        _check_on_import(path)
+        _check_addopts(path)
         return
     with pytest.raises(pytest.UsageError, match=기대):
-        _check_on_import(path)
+        _check_addopts(path)
 
 
 def test_두_층이_판정_술어를_공유하지_않는다() -> None:
@@ -392,7 +413,7 @@ def test_두_층이_판정_술어를_공유하지_않는다() -> None:
 
     실측(N9): 공유 헬퍼 `_markexpr_problems` 첫 줄에 `return []`을 넣으면
     테스트 3건이 죽지만(N8), 거기에 `-m live` 덧붙이기를 더하면 그 테스트들이
-    deselect되어 **0건이 죽는다**(exit 0, 1 skipped, 841 deselected).
+    deselect되어 **0건이 죽는다**(exit 0, 전량 deselect).
     세 겹이 하나의 술어에 매달려 있었다.
 
     그래서 두 층이 판정 조건을 **각자** 갖는다. 이 저장소가 `_REQUIRED`를
@@ -407,7 +428,7 @@ def test_두_층이_판정_술어를_공유하지_않는다() -> None:
         for node in ast.parse(source).body
         if isinstance(node, ast.FunctionDef)
     }
-    for 이름 in ("_check_on_import", "pytest_configure"):
+    for 이름 in ("_check_addopts", "pytest_configure"):
         assert 이름 in 함수별, f"{이름}이 conftest에 없다"
         본문 = 함수별[이름]
         assert "count('-m')" in 본문, f"{이름}에 -m 개수 판정이 없다(공유로 되돌아갔나)"
@@ -452,7 +473,8 @@ def test_live_테스트_모듈이_마커를_단다() -> None:
 
     **사각지대: URL을 하드코딩하면 못 잡는다.** 실측 - `url =
     "http://localhost:11434/v1"`을 박아 넣은 마커 없는 live 파일은 이 검사를
-    그냥 지나간다(`841 passed`, 0건 사망). 그리고 이것은 억지 사례가 아니다 -
+    그냥 지나간다(**exit 0, 0건 사망** - 그 파일이 그대로 실행됐다).
+    그리고 이것은 억지 사례가 아니다 -
     **로컬 Ollama는 키가 필요 없어 하드코딩이 오히려 자연스럽고, WP7b가 겨누는
     것이 정확히 Ollama다.**
 
