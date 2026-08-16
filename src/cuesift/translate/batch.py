@@ -245,6 +245,55 @@ def parse_translations(raw: str, expected_ids: Sequence[int]) -> dict[int, str]:
     raise InvalidResponseError("JSON을 찾지 못했다 (펜스 블록과 텍스트 머리 모두)")
 
 
+def _normalize_id(value: Any) -> Any:
+    """정수로 **왕복하는** 문자열만 정수로 바꾼다. 나머지는 그대로 돌려준다.
+
+    실물 근거: qwen2.5:3b가 `{"id": "0"}`을 낸다 (2026-08-16 live 실행).
+    프롬프트가 자리표시자만 주고 타입을 말하지 않은 것이 직접 원인이고
+    그쪽도 고쳤지만, 프롬프트는 지시이지 강제가 아니라 여기 그물을 남긴다.
+
+    **거부하는 쪽이 보수적이라는 직관이 여기서는 틀린다.** 이 실패 양식에서
+    개별 폴백은 무력하다 - 타입 습관은 세그먼트 하나짜리 호출에서도 그대로
+    재현되므로 호출만 (1+N)배가 되고 배치는 통째로 버려진다. 그렇게 생긴
+    번역 실패는 `struct.empty`가 hard fail로 판정해 검수 예산을 우회하고,
+    실제 검수 비율을 부풀려 §9.1 배수의 분모를 망가뜨린다 (engine.py의
+    `TranslationResult` 독스트링 표).
+
+    경계를 `int()` 성공이 아니라 **`str(int(s)) == s` 왕복**으로 잡는 것이
+    이 함수의 전부다. 파이썬의 `int()`는 JSON 숫자 문법보다 넓다:
+
+    | 입력 | `int()` | 왕복 | 판정 |
+    | --- | --- | --- | --- |
+    | `"0"` | 0 | `"0" == "0"` | 받는다 |
+    | `"01"` | 1 | `"1" != "01"` | 거부 |
+    | `" 0"` | 0 | `"0" != " 0"` | 거부 |
+    | `"+0"` | 0 | `"0" != "+0"` | 거부 |
+    | `"1_0"` | 10 | `"10" != "1_0"` | 거부 |
+    | `"٠"` | 0 | `"0" != "٠"` | 거부 |
+    | `"0.0"` | ValueError | - | 거부 |
+
+    왕복을 빼면 위 표의 거부 다섯(`"0.0"`은 `int()`가 어차피 막는다)이
+    **모델이 낸 적 없는 번호로 접힌다.** id 집합 검사는 접힌 뒤의 값만 보므로
+    그 오매핑을 잡지 못하고, 번역문이 조용히 다른 세그먼트에 붙는다 - 이
+    모듈이 없애려는 바로 그 실패 양식이다.
+
+    실측(왕복을 뺀 사본으로 변이): 경계 테스트 8건 중 5건이 죽었고, 그중
+    `" 0"`·`"+0"`·`"٠"` 셋은 예외조차 없이 0번으로 접혀 통과했다
+    (`DID NOT RAISE`). 나머지 둘은 "여분의 id"로 시끄럽게 걸렸다 - **조용한
+    셋이 이 왕복이 존재하는 이유다.**
+
+    문자열이 **아닌** 값은 손대지 않는다. 실수 `0.0`을 0으로 접으면 `1.5`가
+    정수 자리에 들어올 길이 열리고, 그때 어느 세그먼트인지를 반올림이 정한다.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        parsed = int(value)
+    except ValueError:
+        return value
+    return parsed if str(parsed) == value else value
+
+
 def _check_contract(parsed: Any, expected_ids: Sequence[int]) -> dict[int, str]:
     """후보 하나가 응답 계약을 지키는지 본다 (FR-2.4)."""
     # 두 조건의 **순서가 방어의 전부다.** 뒤집으면 dict가 아닌 최상위값에
@@ -264,7 +313,10 @@ def _check_contract(parsed: Any, expected_ids: Sequence[int]) -> dict[int, str]:
             # 번호 없는 문자열 배열을 위치로 짝지어 주면 안 된다. 순서가
             # 밀린 응답이 개수만 맞으면 통과해 다른 세그먼트에 붙는다.
             raise InvalidResponseError(f"항목이 객체가 아니다: {item!r}")
-        item_id = item.get("id")
+        # 정수로 왕복하는 문자열("0")은 여기서 정수가 된다. 왕복하지 않는
+        # 것은 원본 그대로 내려와 아래 검사에 걸리므로, 오류 메시지에는
+        # 모델이 실제로 보낸 표기가 남는다("01"이 1로 둔갑하지 않는다).
+        item_id = _normalize_id(item.get("id"))
         # bool은 int의 하위 타입이라 isinstance(True, int)가 참이다.
         # 걸러 내지 않으면 {"id": true}가 1번 세그먼트로 접힌다.
         if not isinstance(item_id, int) or isinstance(item_id, bool):

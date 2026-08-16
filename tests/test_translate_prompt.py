@@ -202,6 +202,30 @@ def test_JSON_응답_형식을_지시한다() -> None:
     assert "id" in system and "text" in system
 
 
+def test_id를_따옴표_없는_정수로_쓰라고_지시한다() -> None:
+    """실측 근거: qwen2.5:3b가 `{"id": "0"}`을 낸다 (2026-08-16 live 실행).
+
+    파서는 id에 정수를 요구하는데(`batch.py`의 `_check_contract`) 이 프롬프트는
+    `<번호>`라는 자리표시자만 주고 **타입을 말하지 않았다.** 모델이 문자열을
+    고른 것은 지시 위반이라기보다 명세의 공백이다.
+
+    실측(각 3회, temperature=0): 자리표시자만 있는 현행은 3/3 실패,
+    예시를 정수 리터럴로 바꾸거나 타입 문장을 더하면 3/3 성공.
+
+    타입 문장과 정수 리터럴 예시를 **둘 다** 거는 것은 각각이 단독으로도
+    충분했기 때문이다 - 어느 쪽이 효과를 냈는지 모델마다 다를 수 있어
+    하나만 남기면 다른 모델에서 되돌아갈 여지가 있다.
+
+    파서가 정수로 왕복하는 문자열을 받아 주게 됐어도 이 지시는 남는다.
+    파서 완화는 그물이고, 애초에 정수로 받는 편이 왕복 검사를 거치지 않는다.
+    """
+    system = build_messages([_seg(0, "가")], source_lang="ko", target_lang="en")[0].content
+    # 예시가 정수 리터럴이어야 한다. `"id": "<번호>"`처럼 따옴표가 붙으면
+    # 모델이 그 표기를 그대로 흉내 낸다.
+    assert '{"id": 0,' in system
+    assert "따옴표 없는 정수" in system
+
+
 def test_세그먼트를_합치거나_나누지_말라고_지시한다() -> None:
     # FR-2.4의 첫 방어선이다.
     system = build_messages([_seg(0, "가")], source_lang="ko", target_lang="en")[0].content
