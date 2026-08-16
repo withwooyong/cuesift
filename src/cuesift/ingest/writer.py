@@ -53,6 +53,11 @@ def write_subtitle(
             continue
         raw_index = result.event_index[segment.id]
         event = subs.events[raw_index]
+        # `target_text`에 `{...}`가 들어 있으면(LLM 출력은 우리 통제 밖이라
+        # 올 수 있다) 조용히 사라진다 [실측 2026-08-17] - srt/vtt는 저장 시점에
+        # 이미 지워지고, ass/ssa는 파일엔 남지만 재생 시 오버라이드 블록으로
+        # 해석돼 화면에서 사라진다. ko→en/ja에서는 드물어 이번 범위에서
+        # 고치지 않지만, "조용히 틀리는" 부류라 기록만 남긴다.
         prefix = _LEADING_OVERRIDES.match(event.text).group(0)
         # setter를 먼저 부르는 순서가 중요하다. 이것이 `\n`을 SSA의 `\N`으로
         # 바꿔 주고, 그 다음에 접두를 붙여야 접두가 변환 대상이 되지 않는다.
