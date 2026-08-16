@@ -91,13 +91,17 @@ def test_temperature는_저장_시_float로_정규화된다(tmp_path: Path) -> N
 
 
 def test_matches의_온도_비교는_float로_정규화한다(tmp_path: Path) -> None:
-    # `_matches`가 `float(request.temperature)`로 정규화하지 않으면,
-    # 표준 수치형(int·float·bool)끼리는 파이썬이 자동으로 값으로 비교해
-    # 차이가 드러나지 않는다 - 이 정규화가 실제로 막는 것은
-    # `temperature: float` 타입 힌트가 런타임에 강제되지 않는 틈으로
-    # float가 아닌 수치형이 섞여 들어오는 경우다.
+    # `key`와 `store`는 이미 `float(...)`로 정규화하는데 `_matches`만
+    # 안 하면 **비대칭**이 생긴다 - 예를 들어 한쪽만 걸리면 `0`(int)으로
+    # 저장한 캐시를 `0.0`(float)으로도 못 읽는 형태가 재현된다.
     # 실측: `Decimal("0.1") == 0.1`은 False, `float(Decimal("0.1")) == 0.1`은
-    # True - 정규화가 없으면 재실행 자체가 미스로 떨어진다.
+    # True. 다만 이 경로가 성립하려면 캐시가 **미스**여서는 안 된다 -
+    # `Decimal` 온도는 `openai_compat.py`의 `isinstance(temperature, int | float)`
+    # 가드에 걸려 inner 호출 전에 `FatalProviderError`로 죽으므로, 이
+    # 정규화는 **전 구간이 캐시 히트인 재실행**에서만 관찰된다(현재
+    # `Decimal`을 만드는 호출자도 없다 - 모든 어노테이션이 `float`이고
+    # PyYAML도 `Decimal`을 만들지 않는다). 그래도 `_matches`만 예외로
+    # 두면 비대칭이 코드에 남으므로 정규화 자체는 유지한다.
     stored = CacheRequest(identity="i", temperature=Decimal("0.1"), max_tokens=None, messages=())
     store(tmp_path, stored, _completion())
 

@@ -8,5 +8,6 @@
 from __future__ import annotations
 
 from cuesift.store.cache import CacheRequest, load, store
+from cuesift.store.provider import CachingProvider
 
-__all__ = ["CacheRequest", "load", "store"]
+__all__ = ["CacheRequest", "CachingProvider", "load", "store"]

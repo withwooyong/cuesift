@@ -1,0 +1,106 @@
+"""캐시를 끼운 프로바이더 (NFR-3 · FR-2.7 · 설계 §2.2).
+
+**`Provider` 프로토콜을 구현하므로 엔진 입장에서는 그냥 또 하나의
+프로바이더다.** 그래서 `translate/`를 한 줄도 고치지 않고 재개가 붙는다 -
+재시도·백오프·배치 폴백·예외 분류가 전부 그대로 유효하고, 개별 폴백
+호출도 각각 캐시된다.
+
+**예외를 캐시하지 않는 것은 구조적으로 보장된다.** 안쪽 `complete()`가
+던지면 아래 저장 코드에 도달하지 못한다. 조건문으로 거르는 것이 아니라서
+새 예외 종류가 생겨도 규칙이 깨지지 않는다.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from pathlib import Path
+
+from cuesift.store.cache import CacheRequest, load, store
+from cuesift.translate.provider import ChatMessage, Completion, Provider
+
+
+def _ignore(_message: str) -> None:
+    """기본 경고 싱크. 라이브러리 사용자가 stderr를 강요받지 않게 한다."""
+
+
+class CachingProvider:
+    """`inner` 앞에 캐시를 끼운다."""
+
+    name = "cached"
+
+    def __init__(
+        self,
+        inner: Provider,
+        *,
+        identity: str,
+        cache_dir: Path,
+        warn: Callable[[str], None] = _ignore,
+    ) -> None:
+        """`identity`는 **키워드 필수**다.
+
+        `Provider` 프로토콜에 넣지 않은 이유는 `Protocol`이 런타임 검사를
+        하지 않기 때문이다 - 서드파티 구현이 빠뜨려도 조용히 통과하므로
+        강제한 것이 아니다. 필수 키워드 인자로 두면 **빠뜨릴 때
+        `TypeError`로 즉시 죽는다.** 검사되는 계약이 검사되지 않는 선언보다 낫다.
+
+        빈 문자열을 거부하는 이유는 `Provider.name`이 클래스 상수라
+        (`"openai-compatible"`) 모델을 구분하지 못하기 때문이다. identity가
+        비면 **`qwen2.5:3b`로 채운 캐시가 `gpt-4o` 실행에서 히트한다.**
+
+        구분자로 `|`를 그대로 쓴 이유(`OpenAICompatibleProvider.cache_identity`가
+        조립하는 값을 그대로 받는다)는 이 클래스가 identity를 **불투명한
+        문자열**로만 다루기 때문이다 - 파싱하지 않고 캐시 파일에 그대로
+        적어 사람이 읽는다. 안전한 이유는 세 가지다. (1) `base_url`에 `|`가
+        섞이는 충돌 경로는 `openai_compat._require_http_url`이 이미
+        닫았다. (2) identity는 캐시 파일에 저장되는 진단용 값이라 제어문자로
+        이으면 오히려 읽을 수 없게 된다. (3) 남는 위험은 모델명에 `|`를 쓰는
+        프로바이더인데 알려진 사례가 없다.
+        """
+        if not identity.strip():
+            raise ValueError("identity가 비었다. 캐시 키가 모델을 구분하지 못한다")
+        self._inner = inner
+        self._identity = identity
+        self._cache_dir = cache_dir
+        self._warn = warn
+        self._warned = False
+        self.hits = 0
+        self.misses = 0
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> Completion:
+        """캐시를 보고, 없으면 안쪽을 부르고 저장한다."""
+        request = CacheRequest(
+            identity=self._identity,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=tuple(messages),
+        )
+        cached = load(self._cache_dir, request)
+        if cached is not None:
+            self.hits += 1
+            # **저장된 usage를 그대로 낸다** (설계 §3.5.1). 0으로 만들면
+            # calls가 0이 되어 "호출당 토큰"을 영영 계산할 수 없다.
+            # 실제 네트워크 호출 수는 self.misses가 따로 센다.
+            return cached
+
+        self.misses += 1
+        completion = self._inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        try:
+            store(self._cache_dir, request, completion)
+        except OSError as exc:
+            # 디스크가 차거나 읽기 전용이어도 번역이 실패할 이유는 없다.
+            # **다만 조용히 삼키지는 않는다** - 사용자는 재개가 되는 줄 안다.
+            # 한 번만 내는 것은 수백 번 반복하면 진짜 출력이 묻히기 때문이다.
+            self._warn_once(f"캐시를 쓰지 못했다(재개가 동작하지 않는다): {exc}")
+        return completion
+
+    def _warn_once(self, message: str) -> None:
+        if self._warned:
+            return
+        self._warned = True
+        self._warn(message)

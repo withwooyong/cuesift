@@ -125,6 +125,22 @@ class OpenAICompatibleProvider:
             timeout=DEFAULT_TIMEOUT_S if timeout is None else timeout
         )
 
+    @property
+    def cache_identity(self) -> str:
+        """캐시 키에 넣을 신원 (NFR-3 · WP7b 설계 §3.2).
+
+        **`name`만으로는 안 된다.** 그것은 클래스 상수
+        (`"openai-compatible"`)라 모델을 구분하지 못하고, 그대로 키에 넣으면
+        `qwen2.5:3b`로 채운 캐시가 `gpt-4o` 실행에서 히트한다 - 캐시가
+        조용히 다른 모델의 응답을 돌려주고 NFR-3이 정면으로 깨진다.
+
+        `base_url`이 들어가는 이유는 같은 모델명이 서버마다 다른 것을
+        가리킬 수 있기 때문이다(`llama-3.1-70b`를 서로 다른 양자화로 서빙하는
+        두 엔드포인트). `api_key`는 **넣지 않는다** - 키를 교체해도 같은
+        모델이면 결과가 같고, 넣으면 캐시 파일에 키의 존재가 새어 나간다.
+        """
+        return f"{self.name}|{self._base_url}|{self._model}"
+
     def complete(
         self,
         messages: Sequence[ChatMessage],
