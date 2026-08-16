@@ -32,7 +32,7 @@ import httpx
 import pytest
 
 import cuesift.translate as t
-from conftest import pytest_configure
+from conftest import _check_on_import, pytest_configure
 
 
 def _submodules() -> tuple[ModuleType, ...]:
@@ -201,15 +201,25 @@ def test_설정_오류는_ProviderError로_잡히지_않는다() -> None:
 #
 # **역할 분담이 이 절의 요점이다.**
 #
-# | 무엇을 지키나 | 어디서 | 왜 거기인가 |
-# | --- | --- | --- |
-# | ini 파일·`--strict-markers`·`-m` 개수 | `conftest` 훅 | **deselect될 수 없다** |
-# | 훅이 실제로 거부하는가 | 여기 | 훅을 지워도 죽는 것이 있어야 한다 |
-# | `markers` 등록 · live 파일의 `pytestmark` | 여기 | 훅이 보지 않는 것들 |
+# 방어는 **세 겹**이고, 각 겹이 다른 것에 무력하다.
 #
-# 설정 검사를 테스트로 두면 **자기를 무력화하는 변이에 같이 쓸려 나간다** -
+# | 겹 | 어디 | 무엇에 무력한가 |
+# | --- | --- | --- |
+# | ① 임포트 시점 | `conftest._check_on_import` | `config`가 없어 **어느 ini를 골랐는지** 모른다 |
+# | ② 훅 | `conftest.pytest_configure` | 함수 개명으로 **배선이 끊긴다** |
+# | ③ 테스트 | 이 절 | **deselect되면 안 돈다** |
+#
+# 설정 검사를 테스트에만 두면 자기를 무력화하는 변이에 같이 쓸려 나간다 -
 # `addopts`에 `-m live`를 덧붙이면 감시자 자신이 832개와 함께 deselect되고
-# exit 0이 나온다(훅을 넣기 전 실측). 그래서 그 검사만 훅으로 옮겼다.
+# exit 0이 나온다(훅 이전 실측). 그래서 ②로 옮겼고, ②의 배선마저 끊는
+# 조합(M9) 때문에 ①이 생겼다.
+#
+# **①과 ②는 판정 술어를 공유하지 않는다.** 공유했더니 한 함수 무력화로 둘이
+# 동시에 눈이 멀었다(실측 N9: exit 0, 0건 사망). `test_두_층이_판정_술어를_
+# 공유하지_않는다`가 그 상태로 되돌아가는 것을 막는다.
+#
+# 이 절이 지키는 것은 ①②의 **배선과 로직**, 그리고 둘 다 보지 않는
+# `markers` 등록과 live 파일들의 `pytestmark`다.
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -330,6 +340,80 @@ def test_임포트_시점_검사가_conftest_최상위에서_호출된다() -> N
     assert "_check_on_import" in calls, f"conftest 최상위 호출: {calls}"
 
 
+def _write_pyproject(tmp_path: pathlib.Path, addopts: str) -> pathlib.Path:
+    """`_check_on_import`가 읽을 최소 pyproject를 만든다.
+
+    `addopts`는 **TOML 조각 그대로** 받는다. 문자열 표기와 배열 표기를 둘 다
+    시험해야 하는데, 파이썬 값을 받아 우리가 직렬화하면 그 차이가 사라진다.
+    """
+    path = tmp_path / "pyproject.toml"
+    path.write_text(
+        f"[tool.pytest.ini_options]\naddopts = {addopts}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    ("addopts", "기대"),
+    [
+        # 문자열 표기와 배열 표기 **둘 다** 정상으로 받아야 한다. pytest의
+        # `addopts`는 `args` 타입이라 배열도 유효한데, 초판은 무조건
+        # `shlex.split`해 배열에서 AttributeError로 터졌다(실측).
+        ("'-ra --strict-markers -m \"not live\"'", None),
+        ('["-ra", "--strict-markers", "-m", "not live"]', None),
+        # 이탈 4종.
+        ("'-ra --strict-markers -m \"not live\" -m live'", "하나가 아니다"),
+        ("'-ra --strict-markers'", "하나가 아니다"),
+        ("'-ra -m live'", "not live"),
+        ('["-m", "not live", "-m", "live"]', "하나가 아니다"),
+    ],
+)
+def test_임포트_시점_검사의_로직(tmp_path: pathlib.Path, addopts: str, 기대: str | None) -> None:
+    """**본문에 테스트가 없으면 배선만 지킨 것이다.**
+
+    앞 테스트는 "호출문이 최상위에 있는가"만 본다. 그래서 함수 **본문**을
+    `return` 한 줄로 바꿔도 **0건이 죽었다**(실측: exit 0, 841 passed).
+    훅 쪽은 `_FakeConfig`가 5종 이탈을 검사하는데 이쪽은 0건이라 비대칭이었다.
+
+    `pyproject` 인자가 그 비대칭을 푸는 통로다 - 실제 파일을 읽는 함수라
+    주입 지점이 없으면 로직을 시험할 방법이 없다.
+    """
+    path = _write_pyproject(tmp_path, addopts)
+    if 기대 is None:
+        _check_on_import(path)
+        return
+    with pytest.raises(pytest.UsageError, match=기대):
+        _check_on_import(path)
+
+
+def test_두_층이_판정_술어를_공유하지_않는다() -> None:
+    """**공유하면 한 함수 무력화로 두 층이 동시에 눈이 먼다.**
+
+    실측(N9): 공유 헬퍼 `_markexpr_problems` 첫 줄에 `return []`을 넣으면
+    테스트 3건이 죽지만(N8), 거기에 `-m live` 덧붙이기를 더하면 그 테스트들이
+    deselect되어 **0건이 죽는다**(exit 0, 1 skipped, 841 deselected).
+    세 겹이 하나의 술어에 매달려 있었다.
+
+    그래서 두 층이 판정 조건을 **각자** 갖는다. 이 저장소가 `_REQUIRED`를
+    `__all__`과 일부러 중복해 적는 것과 같은 이유다 - 검사와 검사 대상이
+    같은 출처를 쓰면 그것은 검사가 아니다.
+
+    ast로 본다. 두 함수 본문에 `-m` 판정이 **각각** 있어야 한다.
+    """
+    source = (_REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+    함수별 = {
+        node.name: ast.unparse(node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for 이름 in ("_check_on_import", "pytest_configure"):
+        assert 이름 in 함수별, f"{이름}이 conftest에 없다"
+        본문 = 함수별[이름]
+        assert "count('-m')" in 본문, f"{이름}에 -m 개수 판정이 없다(공유로 되돌아갔나)"
+        assert "'not live'" in 본문, f"{이름}에 기본 제외식 판정이 없다"
+
+
 def test_live_마커가_등록되고_기본_제외된다() -> None:
     """`markers`에 `live`가 정확히 하나 등록돼 있는가.
 
@@ -363,13 +447,22 @@ def test_live_테스트_모듈이_마커를_단다() -> None:
     | `test_translate_live.py` 하나 | 마커 없는 두 번째 live 파일 | `833 passed`. **0건 사망** |
     | `test_*live*.py` 파일명 | 이름을 `test_ollama_roundtrip.py`로 | `840 passed`. **0건 사망** |
 
-    그래서 지금은 **live를 만드는 것**을 본다 - 소스에 엔드포인트 환경변수가
-    있으면 live 파일이다. 이름은 저자가 마음대로 짓지만 환경변수를 읽지
-    않고서는 실 엔드포인트를 칠 수 없다.
+    그래서 지금은 **소스에 엔드포인트 환경변수가 있는가**로 본다. 파일명보다
+    넓지만 **완전하지 않다.**
 
-    **이것은 가정이 아니라 예정된 경로다** - WBS가 다음 순위로 못 박은
-    WP7b가 `cuesift translate` CLI의 live 테스트를 추가하고, 그 파일 이름이
-    `live`를 포함할 보장은 없다.
+    **사각지대: URL을 하드코딩하면 못 잡는다.** 실측 - `url =
+    "http://localhost:11434/v1"`을 박아 넣은 마커 없는 live 파일은 이 검사를
+    그냥 지나간다(`841 passed`, 0건 사망). 그리고 이것은 억지 사례가 아니다 -
+    **로컬 Ollama는 키가 필요 없어 하드코딩이 오히려 자연스럽고, WP7b가 겨누는
+    것이 정확히 Ollama다.**
+
+    **기준을 네 번째로 좁히지 않는다.** "실 엔드포인트를 치는 파일"을 정적으로
+    완전히 판정하는 방법은 없다 - 좁힐수록 다음 우회가 생길 뿐이다. 남은
+    보호는 사람이고, 그래서 한계를 여기 적어 둔다. 적어 두지 않으면 다음
+    사람이 이 검사를 완전한 것으로 믿는다.
+
+    **WP7b가 이 자리를 지난다** - WBS가 다음 순위로 못 박은 그 태스크가
+    `cuesift translate` CLI의 live 테스트를 추가한다.
     """
     # **이 파일 자신은 제외한다.** 아래 리터럴 때문에 스스로가 live 파일로
     # 잡혀 항상 실패한다. 대가는 "이 파일 안에 live 테스트를 넣으면 못
