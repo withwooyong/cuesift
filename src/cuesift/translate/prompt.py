@@ -25,13 +25,35 @@ _SYSTEM_BASE = """\
 규칙:
 - 각 세그먼트를 독립적으로 번역한다. 세그먼트를 합치거나 나누지 마라.
 - 번역 대상으로 주어진 항목만 번역한다.
+- 세그먼트 하나는 반드시 한 줄이다. 자막 안의 줄바꿈은 두 글자 `\\n`으로 표기하고,
+  번역문에도 같은 방식으로 유지한다.
 - 응답은 다른 말 없이 JSON 하나로만 낸다:
   {{"translations": [{{"id": <번호>, "text": "<번역문>"}}]}}
 - 주어진 번호를 그대로 쓰고, 빠뜨리거나 더하지 마라."""
 
 
+def _escape_newlines(text: str) -> str:
+    """자막 안의 줄바꿈을 두 글자 `\\n`으로 바꾼다.
+
+    그대로 두면 여러 줄 자막의 둘째 줄이 **번호가 붙지 않은 줄**로 나가고,
+    "한 줄이 세그먼트 하나"라는 전제가 무너진다. 모델은 그 줄을 앞 세그먼트에
+    붙일지 새 세그먼트로 볼지 추론해야 하는데, 그 경계가 바로 FR-2.4가
+    지키려는 것이다. 위의 "합치거나 나누지 마라"는 이 모호함을 풀지 못한다 -
+    무엇이 한 세그먼트인지가 이미 흐려진 뒤이기 때문이다.
+
+    두 줄 자막은 예외가 아니라 한국어 자막의 기본 형태다. 인제스트가
+    pysubs2의 `plaintext`를 쓰고(`ingest/loader.py`의 `Segment` 생성부),
+    그것이 소프트 줄바꿈(`\\N`)을 진짜 개행으로 푼다.
+
+    f-string 안에서 하지 않는 이유는 CI가 3.11을 돌리기 때문이다. 3.12 전에는
+    f-string 치환부에 역슬래시를 넣을 수 없어 `SyntaxError`가 난다 - 로컬
+    venv(3.14)에서는 통과하고 CI에서만 깨지는 형태다.
+    """
+    return text.replace("\n", "\\n")
+
+
 def _format_lines(segments: Sequence[Segment]) -> str:
-    return "\n".join(f"[{s.index}] {s.source_text}" for s in segments)
+    return "\n".join(f"[{s.index}] {_escape_newlines(s.source_text)}" for s in segments)
 
 
 def _reject_index_collisions(segments: Sequence[Segment]) -> None:
@@ -48,7 +70,11 @@ def _reject_index_collisions(segments: Sequence[Segment]) -> None:
     seen: set[int] = set()
     for segment in segments:
         if segment.index in seen:
-            raise ValueError(f"세그먼트 번호({segment.index})가 맥락과 번역 대상에 중복해 나온다")
+            # 문구가 맥락을 지목하면 안 된다. 배치 안의 중복도 여기서 걸리는데,
+            # 그때는 맥락을 준 적조차 없어 디버깅이 맥락 윈도우를 엉뚱하게 뒤진다.
+            raise ValueError(
+                f"세그먼트 번호({segment.index})가 두 번 나온다 (맥락과 번역 대상을 통틀어)"
+            )
         seen.add(segment.index)
 
 
