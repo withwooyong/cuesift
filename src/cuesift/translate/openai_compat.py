@@ -73,6 +73,22 @@ _ALLOWED_SCHEMES = ("http", "https")
 # 로그와 실패 리포트에 그대로 실린다.
 _ERROR_BODY_CHARS = 200
 
+# 토큰 수의 상한. float64가 정수를 정확히 담는 마지막 값(2**53)이다.
+#
+# **이 상한이 없으면 "크래시 없음"이 "안전"으로 오독된다.** `_token_count`는
+# int에 `math.isfinite`를 걸지 않는데(int는 정의상 유한하다) 그 판단은 그
+# 함수 안에서만 옳다. 값이 클램프 없이 `TokenUsage`에 실려 나가고,
+# **NFR-2의 비용 = 토큰 x 단가는 float 연산이다** - 실측: 310자리 정수에
+# 단가를 곱하면 `OverflowError: int too large to convert to float`가 나고,
+# 그것은 `ArithmeticError`라 **`ProviderError` 밖이다.** 이 모듈이 전체를
+# 걸어 막고 있는 바로 그 부류의 누수이고, 터지는 자리만 engine이 아니라
+# WP7b의 비용 리포트다.
+#
+# 더 크게 잡으면 `float(x)`가 정수 정밀도를 잃어 비용 추정이 **조용히**
+# 틀린다. 더 작게 잡으면 정상 실행이 잘린다 - 실사용은 1e7 토큰 규모라
+# 이 값은 약 1e9배의 여유가 있다.
+_MAX_TOKEN_COUNT = 2**53
+
 
 class OpenAICompatibleProvider:
     """OpenAI 호환 `/chat/completions`를 친다. `Provider` 프로토콜의 구현이다."""
@@ -434,5 +450,5 @@ def _token_count(raw: object, key: str) -> int:
         # 내고 `_to_completion`이 그것을 Fatal로 받는다. **310~4299자리만 샜다.**
         return 0
     # 음수를 그대로 넘기면 TokenUsage가 ValueError를 내는데, 그것이 바로
-    # 이 함수가 막으려는 예외다.
-    return max(0, int(value))
+    # 이 함수가 막으려는 예외다. 상한은 `_MAX_TOKEN_COUNT` 주석 참고.
+    return max(0, min(int(value), _MAX_TOKEN_COUNT))

@@ -35,6 +35,25 @@ def test_chat_message_잘못된_역할은_거부한다() -> None:
         ChatMessage(role="tool", content="x")  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("content", [123, None, ["a"], {"text": "a"}, 1.5, True])
+def test_chat_message_문자열이_아닌_내용을_거부한다(content: object) -> None:
+    """`role`을 막는 것과 **같은 실패 모드**다.
+
+    막지 않으면 그 값이 요청 본문에 그대로 실린다 - 실측:
+    `{"role": "user", "content": 123}`. 서버는 400을 내고 그 400은
+    `FatalProviderError`가 되어 실행 전체를 중단시키는데, 그때 **원인이
+    프롬프트 조립 코드라는 사실은 어디에도 보이지 않는다.**
+
+    `role` 가드가 같은 클래스에서 이미 이 근거를 적어 두고 막는다.
+    한쪽 필드만 막는 것이 비대칭이었다.
+
+    `True`가 목록에 있는 것은 `bool`이 `int`의 하위라서다 - 타입 검사를
+    `isinstance(content, str)`이 아닌 형태로 쓰면 새어 들어올 수 있다.
+    """
+    with pytest.raises(ValueError, match="content"):
+        ChatMessage(role="user", content=content)  # type: ignore[arg-type]
+
+
 def test_token_usage_합산() -> None:
     a = TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1)
     b = TokenUsage(prompt_tokens=3, completion_tokens=2, calls=1)

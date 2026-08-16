@@ -33,7 +33,12 @@ exit 66("파일 내용이 틀림")을 가른 것과 같은 축이다 (설계 §4
 설정 오류는 재시도해도 소용없고 세그먼트 단위로 강등할 대상도 아니다.
 
 따라서 `except ProviderError`만 다는 호출부에서는 `base_url` 오타 하나가
-트레이스백으로 새어 나간다. 다음 **여섯**이 맨 `ValueError`다.
+트레이스백으로 새어 나간다.
+
+**맨 `ValueError`는 생성자에만 있는 것이 아니다.** `translate_segments`
+자신도 던진다 - WP7b가 CLI 종료 코드를 가를 때 생성자만 보면 놓친다.
+
+`OpenAICompatibleProvider.__init__` — **여섯 자리**
 
 | 자리 | 조건 |
 | --- | --- |
@@ -46,6 +51,19 @@ exit 66("파일 내용이 틀림")을 가른 것과 같은 축이다 (설계 §4
 
 첫 행은 `httpx.InvalidURL`을 감싼 것이다. `InvalidURL`은 `ValueError`도
 `ProviderError`도 **아니라서** 그대로 두면 이 표의 계약을 깨뜨린다.
+
+`translate_segments` 호출 경로 — **최소 다섯 자리**
+
+| 자리 | 조건 | 어디서 |
+| --- | --- | --- |
+| `max_retries` | 음수 | `engine.py` |
+| `batch_size` | 1 미만 | `batch.py` (`size`로 전달된다) |
+| `context_window` | 음수 | `batch.py` |
+| 배치 | 비어 있음 | `prompt.py` — 배치 분할의 버그가 여기서 드러난다 |
+| `Segment.index` | 배치·맥락 안에서 **충돌** | `prompt.py` — 모델이 가리킬 번호가 겹친다 |
+| `ChatMessage` | `role`이 허용목록 밖 · `content`가 `str`이 아님 | `provider.py` |
+
+전부 **설정·조립이 틀린 것**이지 호출이 실패한 것이 아니라 같은 축에 있다.
 
 마지막 항은 `timeout`의 기본값이 `None` 센티널이라 성립한다. 센티널이
 없으면 "60.0을 명시했다"와 "안 줬다"를 구분할 수 없어, 주입한 클라이언트가

@@ -86,7 +86,32 @@ class SegmentFailure:
 
 @dataclass(frozen=True, slots=True)
 class TranslationResult:
-    """대상 언어 하나에 대한 번역 결과 (설계 §3.2)."""
+    """대상 언어 하나에 대한 번역 결과 (설계 §3.2).
+
+    ## 계약: `failures`의 세그먼트를 triage에 넣지 마라
+
+    **실패분은 `segments`에 `target_text=None`으로 들어 있다.** 그것을 그대로
+    `collect_all`에 넘기면 `struct.empty`가 **`hard_fail=True`로 판정하고**,
+    hard fail은 검수 예산을 우회해 `select_by_budget`의 quota를 소진한다
+    (FR-6.2). 즉 **프로바이더 장애 하나가 진짜 오류를 검수 큐에서 밀어낸다.**
+
+    실측(200큐 · 진짜 오류 20건 · 요청 예산 10%):
+
+    | 번역 실패 | 실제 검수 비율 | Recall@10% |
+    | --- | --- | --- |
+    | 0건 | 10.0% | 100% |
+    | 10건 | 10.0% | 50% |
+    | 20건 | 10.0% | **0%** (quota 전량 소진) |
+    | 30건 | **15.0%** | 0% (요청 예산까지 넘어 §9.1 배수의 분모가 부푼다) |
+
+    **오염이 오류에서 오지 않고 "번역이 실패했다"는 사실 자체에서 온다** -
+    번역 안 된 자막은 **검수 대상이 아니라 재실행 대상**이다.
+
+    따라서 호출자는 **`failures`에 있는 `segment_id`를 triage 입력에서
+    제외하거나 별도 경로로 보고해야 한다.** 정보는 이미 여기 다 있고,
+    없는 것은 그것을 써야 한다는 말뿐이었다 - `result.segments`를 그대로
+    넘기는 것이 지금 구조에서 **가장 자연스러운(그리고 틀린) 배선**이다.
+    """
 
     target_lang: str
     segments: tuple[Segment, ...]

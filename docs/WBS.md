@@ -1,7 +1,12 @@
 # WBS — cuesift 작업 분해 구조
 
-> 갱신: 2026-08-16 (KST) · 기준 커밋 `5e20d4e`
+> 갱신: 2026-08-16 (KST) · 기준 커밋 `e487c1d`
 > 대상 마일스톤: **v0.1 (MVP)** — [요구사항정의서](요구사항정의서.md) §10
+>
+> **기준 커밋은 구조적으로 한 커밋 뒤처진다.** 자기 해시는 커밋 전에 알 수
+> 없으므로 직전 커밋을 적고, 뒤에 커밋이 더 붙으면 다시 낡는다. 이미 두 번
+> 밟았다(`b2fba1d`가 같은 자리를 고쳤고 그것도 낡았다). **정확한 진척은
+> 아래 본문의 수치와 커밋 해시를 보라** — 이 줄은 "대략 언제 기준인가"만 말한다.
 
 ## 이 문서를 어떻게 읽는가
 
@@ -53,7 +58,7 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 | **4** | 인제스트 | 1.1 · 1.3 · 1.5 | ✅ | S | — | `src/cuesift/ingest/{__init__,loader}.py` · `tests/fixtures/ingest/`(픽스처 12종) · `tests/test_ingest.py` · `tests/test_ingest_fixtures.py` · `tests/test_ingest_contamination.py` (`42a126f`·`bb105b7`·`be51706`·`52acf5b`·`d51cb3c`·`1cbc21a`·`26f7517`·`6ad9366`·`50e62cf`) |
 | **5** | 출력 | 7.1~7.5 | 🟡 | M | 4 | **FR-7.5 완료** — `check`의 CI 종료 코드 5종(0·1·2·66·70)이 실제로 갈린다 (`90c6a7d`·`4899fec`·`59c7b51`·`6b45f95`). 남은 FR-7.1~7.4는 `review.json` · `report.html` · 요약 통계 |
 | **6** | CLI 배선 | 8.1~8.5 | 🟡 | M | 4·5 | **FR-8.2 완료** — `cuesift check <자막파일> --spec <프로파일>`이 동작한다. `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). 남은 FR-8.1·8.3은 WP7b·WP9에, 8.4(`cuesift.yaml` 로더)·8.5(진행 표시·CI 감지)는 미착수. **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 — FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`) |
-| **7a** | 번역 엔진 | 2.1~2.6 · 2.8 | ✅ | L | 4 | **FR 7개 완료** — `src/cuesift/translate/`(`provider`·`batch`·`prompt`·`engine`·`openai_compat`)와 `Glossary.terms_in`. 배치 번역·개별 폴백·재시도·예외 분류가 동작한다. [설계 스펙](superpowers/specs/2026-08-16-translate-engine-design.md) (`10d3b31`) · [구현 계획](superpowers/plans/2026-08-16-translate-engine.md) (`8f0ea4a`) · 구현 (`f6e0ec6`..`1b4ea6e`, 테스트 499→**813**) · 공개 API·`live` 마커와 게이트 방어 3겹 (`9159791`~, 813→**849**). **네트워크를 치지 않는다** — `httpx.MockTransport`로 검증하고 실 API는 `-m live` opt-in |
+| **7a** | 번역 엔진 | 2.1~2.6 · 2.8 | ✅ | L | 4 | **FR 7개 완료** — `src/cuesift/translate/`(`provider`·`batch`·`prompt`·`engine`·`openai_compat`)와 `Glossary.terms_in`. 배치 번역·개별 폴백·재시도·예외 분류가 동작한다. [설계 스펙](superpowers/specs/2026-08-16-translate-engine-design.md) (`10d3b31`) · [구현 계획](superpowers/plans/2026-08-16-translate-engine.md) (`8f0ea4a`) · 구현 (`f6e0ec6`..`1b4ea6e`, 테스트 499→**813**) · 공개 API·`live` 마커와 게이트 방어 3겹 (`9159791`~, 813→**859**). **네트워크를 치지 않는다** — `httpx.MockTransport`로 검증하고 실 API는 `-m live` opt-in |
 | **7b** | 번역 영속화·CLI | 2.7 | ⬜ | M | 7a·5 | 재개(FR-2.7)·캐시(NFR-3) · `--dry-run`. **FR-8.1(`cuesift translate` 배선)도 여기서 닫힌다** — 소속은 WP6이고 WP6 행이 이미 "남은 FR-8.1·8.3은 WP7b·WP9에"라고 적어 둔 그것이다. 완료 개수는 WP6에서 센다 |
 | **8** | Tier 1 신호 | 4.1~4.3 | ⬜ | M | **7a** | 자가일관성 N회 호출 · 역번역 · 적용 상한. **선행은 7a까지다** — 7b(재개·CLI)를 기다리지 않는다 |
 | **9** | STT | 1.2 · 1.4 | ⬜ | M | 4 | Whisper 계열 어댑터 · `원문 검수 필요` 플래그 |
@@ -170,7 +175,7 @@ v0.1 전체를 기다리지 않고 중간 산출물을 낼 수 있는 유일한 
 | ~~1~~ | ~~WP3~~ | ✅ 완료 (2026-07-29). 벤치 컨텍스트가 살아 있을 때 끝냈다 |
 | ~~2~~ | ~~WP4~~ | ✅ 완료 (2026-08-01). 병목이 풀려 WP5·WP7·WP9가 착수 가능해졌다 |
 | ~~3~~ | ~~WP6 부분 (FR-8.2 `check`)~~ | ✅ 완료 (2026-08-13). 최초로 **쓸 수 있는 제품**이 나왔다 (`4899fec`) |
-| ~~4~~ | ~~WP7a (번역 엔진)~~ | ✅ 완료 (2026-08-16). FR 7개를 닫았고 **WP8의 선행이 풀렸다** (`f6e0ec6`..`1b4ea6e` 엔진 499→**813**, `9159791`~ 공개 API·마커 813→**849**) |
+| ~~4~~ | ~~WP7a (번역 엔진)~~ | ✅ 완료 (2026-08-16). FR 7개를 닫았고 **WP8의 선행이 풀렸다** (`f6e0ec6`..`1b4ea6e` 엔진 499→**813**, `9159791`~ 공개 API·마커 813→**859**) |
 | 1 | **WP7b** | `cuesift translate`가 붙어야 번역 계층이 사람 손에 닿는다. 재개(FR-2.7)·캐시는 실사용 첫날부터 필요하다 — LLM 호출은 돈이라 중단된 작업을 처음부터 다시 도는 것이 곧 비용이다. `--dry-run`도 여기서 나온다 |
 | 2 | WP8 | Tier 1은 번역 계층 없이는 만들 수 없었고 이제 가능하다. **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나이며, `negation` Recall이 무작위보다 낮다는 실측이 이 투자의 근거다. **WP7b를 기다리지 않는다** — `translate_segments`와 `build_messages`만 있으면 된다 |
 | 3 | WP5 나머지 (FR-7.1~7.4) | `review.json`·`report.html`·요약 통계. **WP7이 먼저였던 이유**는 리포트에 실을 신호가 번역 계층에서 나오기 때문이다 — 규격 위반 7종만 아는 상태에서 FR-7.2를 확정하면 스키마를 다시 깨야 한다(설계 D4가 `--json`을 미룬 것과 같은 판단) |

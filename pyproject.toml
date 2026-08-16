@@ -61,7 +61,7 @@ packages = ["src/cuesift"]
 testpaths = ["tests"]
 # `--strict-markers`가 켜져 있어 아래 `markers`에 없는 마커는 경고가 아니라
 # **수집 에러**다. 실측(2026-08-16): 미등록 `@pytest.mark.live` 하나가
-# `Interrupted: 1 error during collection`으로 exit 2를 내고 **나머지 848개가
+# `Interrupted: 1 error during collection`으로 exit 2를 내고 **나머지 858개가
 # 아예 실행되지 않는다.** 한 파일이 빨개지는 정도가 아니라 스위트 전체가 선다.
 #
 # `-m "not live"`가 없으면 CI 3잡이 전부 API 키 없이 실패한다. 명령줄에서

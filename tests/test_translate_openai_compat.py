@@ -23,6 +23,7 @@ import httpx
 import pytest
 
 from cuesift.translate.openai_compat import (
+    _MAX_TOKEN_COUNT,
     DEFAULT_TIMEOUT_S,
     OpenAICompatibleProvider,
     _parse_retry_after,
@@ -1013,3 +1014,40 @@ def test_호출은_한_번만_나간다() -> None:
     with pytest.raises(RetryableProviderError):
         _call(_provider(handler))
     assert len(seen) == 1
+
+
+def test_거대_정수_토큰수는_상한에서_잘린다() -> None:
+    """**"크래시 없음"이 "안전"은 아니다** (NFR-2).
+
+    `math.isfinite` 가드를 int에서 건너뛴 것은 이 함수 안에서는 옳다 -
+    int는 정의상 유한하다. 그러나 값이 클램프 없이 `TokenUsage`에 실려
+    나가고, **비용 = 토큰 x 단가는 float 연산이다.**
+
+    실측: `{"prompt_tokens": 10**309}`가 310자리 정수로 그대로 통과하고,
+    그 값에 단가를 곱하면 `OverflowError: int too large to convert to
+    float`가 난다. `OverflowError`는 `ArithmeticError`라 **`ProviderError`
+    밖이다** - 이 모듈이 전체를 걸어 막고 있는 바로 그 부류의 누수이고,
+    터지는 자리만 engine이 아니라 WP7b의 비용 리포트다.
+
+    NFR-2가 "실행마다 소비 토큰과 **추정 비용**을 보고한다"이므로 float 곱은
+    선택이 아니라 필수 경로다.
+    """
+    body = _ok_body()
+    body["usage"] = {"prompt_tokens": 10**309, "completion_tokens": 10**400}
+    provider = _provider(lambda _req: httpx.Response(200, json=body))
+    usage = provider.complete(_MESSAGES, temperature=0.0, max_tokens=None).usage
+
+    assert usage.prompt_tokens == _MAX_TOKEN_COUNT
+    assert usage.completion_tokens == _MAX_TOKEN_COUNT
+    # 이 단언이 이 테스트의 전부다 - 클램프가 없으면 여기서 OverflowError가 난다.
+    assert usage.prompt_tokens * 0.15 / 1_000_000 == pytest.approx(1_351_079_888.2)
+
+
+def test_정상_범위_토큰수는_그대로_통과한다() -> None:
+    """상한이 실사용 값을 건드리면 NFR-2 리포트가 조용히 틀린다."""
+    body = _ok_body()
+    body["usage"] = {"prompt_tokens": 1_234_567, "completion_tokens": 89}
+    provider = _provider(lambda _req: httpx.Response(200, json=body))
+    usage = provider.complete(_MESSAGES, temperature=0.0, max_tokens=None).usage
+
+    assert (usage.prompt_tokens, usage.completion_tokens) == (1_234_567, 89)

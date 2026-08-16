@@ -36,6 +36,15 @@ class ChatMessage:
         # 이 같은 이유로 side를 검사한다.
         if self.role not in self._ROLES:
             raise ValueError(f"role({self.role!r})은 {self._ROLES} 중 하나여야 한다")
+        # **content도 같은 실패 모드다.** 막지 않으면 그 값이 요청 본문에
+        # 그대로 실린다 - 실측: `{"role": "user", "content": 123}`. 서버가 내는
+        # 400은 위와 똑같이 Fatal로 분류되고, 원인이 조립 코드라는 사실은
+        # 역시 보이지 않는다. 한쪽 필드만 막는 것이 비대칭이었다.
+        #
+        # `isinstance(self.content, str)`이어야 한다. `bool`이 `int`의 하위라
+        # 숫자형을 따로 열거하는 형태로 쓰면 True가 새어 들어온다.
+        if not isinstance(self.content, str):
+            raise ValueError(f"content는 str이어야 한다: {type(self.content).__name__}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,4 +159,30 @@ class Provider(Protocol):
         *,
         temperature: float,
         max_tokens: int | None,
-    ) -> Completion: ...
+    ) -> Completion:
+        """한 번 호출하고 결과를 돌려준다. **아래 셋은 계약이다** (NFR-5).
+
+        NFR-5는 "코드 수정 없이 프로바이더를 추가한다"인데, 계약이 시그니처만
+        말하면 서드파티 구현이 **engine의 폴백을 통째로 우회하는 방식으로**
+        시그니처를 만족시킬 수 있다. 아래는 전부 실측한 실패다.
+
+        | 어긴 구현 | 실제 결과 |
+        | --- | --- |
+        | 맨 `ProviderError`를 던진다 | **밖으로 샌다.** 호출 1회, 재시도 0회, 실행 사망 |
+        | `Completion(text=None)` | `AttributeError` - `ProviderError` 밖이다 |
+
+        1. **실패는 `RetryableProviderError` 또는 `FatalProviderError`로
+           던진다.** 기반 클래스 `ProviderError`를 직접 던지면 안 된다 -
+           engine의 `_call_with_retry`는 두 자손만 잡으므로 기반 클래스는
+           재시도도 폴백도 없이 호출 스택을 그대로 빠져나간다. `ProviderError`가
+           "호출부가 전부를 한 번에 잡을 수 있게 한다"는 것은 **호출부가
+           그것을 잡을 때** 성립하는 말이고, 주 호출부인 engine은 잡지 않는다.
+        2. **`Completion.text`는 반드시 `str`이다.** `None`은 파싱 경로에서
+           `AttributeError`가 되는데 그것은 `ProviderError` 밖이라 폴백이
+           받지 못한다. 내용이 없으면 빈 문자열을 돌려준다.
+        3. **재시도하지 않는다.** engine이 한다. 양쪽이 다 하면 총 호출이
+           곱해지고 백오프 대기가 이중으로 쌓인다.
+
+        `openai_compat.py`가 이 셋을 지키는 참조 구현이다.
+        """
+        ...

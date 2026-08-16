@@ -39,6 +39,7 @@ CLI 배선도 영속화도 하지 않는다 — 이 설계가 끝나면 `transla
 
 | 항목 | 어디로 |
 | --- | --- |
+| **비연속 부분집합을 번역하려면** | **불가** — `iter_batches`는 `segments`가 트랙의 **연속 구간**임을 전제한다(맥락을 인접 슬라이스로 잡는다). WP7b 재개와 WP8 Tier 1은 전체 트랙을 넘긴 뒤 결과를 거르거나 `build_messages`를 직접 부른다. 어기면 예외 없이 **맥락이 조용히 틀린다** |
 | 번역 결과를 어디에 저장하는가 | WP7b. 이 계층은 메모리에 담아 반환만 한다 |
 | 같은 입력을 두 번 부르면 캐시가 먹는가 | WP7b(NFR-3). 이 계층은 **매번 호출한다** |
 | 중단된 작업 재개 | WP7b(FR-2.7) |
@@ -85,7 +86,7 @@ flowchart TB
 | `prompt.py` | 세그먼트와 맥락을 메시지로 조립한다 | `glossary`, `segment` |
 | `batch.py` | 배치를 자르고 응답을 검증한다 | `segment` |
 | `engine.py` | 흐름을 지휘한다 — 폴백과 재시도 | `Provider` 프로토콜만 |
-| `__init__.py` | 공개 API 두 개를 노출한다 | 위 전부 |
+| `__init__.py` | 공개 API **21개**를 노출한다(하위 모듈의 밑줄 없는 이름 전부) | 위 전부 |
 
 `prompt.py`와 `batch.py`가 순수한 것이 이 설계의 핵심이다.
 FR-2.2·2.3·2.4는 전부 **"무엇을 보냈나 / 받은 걸 어떻게 검증하나"** 이지 네트워크가 아니다.
@@ -145,6 +146,36 @@ class TranslationResult:
 
 `failures`가 비었는지로 "완전 성공"을 판정한다. `segments` 안의 `None`을 세는 것과
 같은 정보지만, 실패 **사유**는 `failures`에만 있다.
+
+### 3.2.1 계약 — `failures`의 세그먼트를 triage에 넣지 마라
+
+**이 절이 "실패분은 None"을 데이터 사실로만 적어 두어 다음 계층의 귀결을
+빠뜨렸다.** 실패분을 그대로 `collect_all`에 넘기면 `struct.empty`가
+`hard_fail=True`로 판정하고, hard fail은 검수 예산을 **우회**해
+`select_by_budget`의 quota를 소진한다(FR-6.2).
+
+**프로바이더 장애 하나가 진짜 오류를 검수 큐에서 밀어낸다.**
+실측(200큐 · 진짜 오류 20건 · 요청 예산 10%):
+
+| 번역 실패 | 실제 검수 비율 | Recall@10% |
+| --- | --- | --- |
+| 0건 | 10.0% | 100% |
+| 5건 | 10.0% | 75% |
+| 10건 | 10.0% | 50% |
+| 20건 | 10.0% | **0%** (quota 전량 소진) |
+| 30건 | **15.0%** | 0% (요청 예산 초과 — §9.1 배수의 **분모**가 부푼다) |
+
+오염이 오류에서 오지 않고 **"번역이 실패했다"는 사실 자체**에서 온다.
+**번역 안 된 자막은 검수 대상이 아니라 재실행 대상이다.**
+
+**호출자는 `failures`의 `segment_id`를 triage 입력에서 제외하거나 별도
+경로로 보고해야 한다.** 코드 변경은 필요 없다 - 정보는 이미 `failures`에
+다 있고 없는 것은 그것을 써야 한다는 말뿐이었다. 지금 구조에서
+`result.segments`를 그대로 넘기는 것이 **가장 자연스러운(그리고 틀린) 배선**이라
+이 경고가 계약으로 있어야 한다.
+
+§1.3이 "번역 품질 평가는 벤치마크의 일"이라며 이 방향을 닫아 둔 것이
+누락의 원인이었다 - 그 문장은 **품질**에 관한 것이고 이것은 **실패 처리**다.
 
 ## 4. 프로바이더 계층
 
@@ -314,7 +345,7 @@ flowchart TD
     RETRYABLE -->|"예 (429·5xx·타임아웃)"| BACKOFF{"재시도 잔여?"}
     BACKOFF -->|있음| WAIT["지수 백오프 후 재호출"] --> CALL
     BACKOFF -->|소진| FAILALL["배치 전원<br/>SegmentFailure(provider_error)"]
-    RETRYABLE -->|아니오| VALIDATE["batch.parse_and_validate()"]
+    RETRYABLE -->|아니오| VALIDATE["batch.parse_translations()"]
     VALIDATE --> OK{"검증 통과?"}
     OK -->|예| DONE["결과 반영"]
     OK -->|아니오| FALLBACK["개별 폴백<br/>세그먼트를 1개씩 재호출"]
@@ -446,7 +477,7 @@ CI 3잡(`test 3.11`·`test 3.12`·`docs`)에는 API 키가 없다.
 
 | # | 변이 | 실측 결과 | 측정 시점 | 죽는가 |
 | --- | --- | --- | --- | --- |
-| M1 | 마커 미등록 | `Failed: 'live' not found in markers` → `Interrupted: 1 error during collection`, exit 2. **나머지 848개가 실행조차 안 된다** | **현재** (재현됨) | 요란하게 |
+| M1 | 마커 미등록 | `Failed: 'live' not found in markers` → `Interrupted: 1 error during collection`, exit 2. **나머지 858개가 실행조차 안 된다** | **현재** (재현됨) | 요란하게 |
 | M2 | `-m "not live"` 삭제 | 키 없는 환경에서 `deselected`가 `skipped`로 바뀔 뿐. CI는 그대로 초록 | 방어 이전 | **조용히** |
 | M3 | live 모듈의 `pytestmark` 삭제 | 위와 동일 | 방어 이전 | **조용히** |
 | M4 | `pytest.ini` 추가 | pytest가 pyproject보다 그쪽을 **우선**해 우리 설정이 통째로 무시된다 | 훅 이전 | **조용히** |
@@ -591,7 +622,7 @@ M8+M4·하드코딩 URL과 **같은 범주**다. 층을 더 쌓아도 이 성질
 | --- | --- | --- |
 | `ruff check .` | `All checks passed!` | ✅ `All checks passed!` |
 | `ruff format --check .` | 파일 개수 확인 | ✅ **73 files** (착수 시 58) |
-| `pytest --cov=cuesift` | **수집 개수 증가분을 기록한다.** `translate/` 커버리지 확인 | ✅ **848 passed, 1 deselected** (착수 시 499 → Task 6까지 813). `translate/` 6개 모듈 **전부 100%**, 전체 99% |
+| `pytest --cov=cuesift` | **수집 개수 증가분을 기록한다.** `translate/` 커버리지 확인 | ✅ **858 passed, 1 deselected** (착수 시 499 → Task 6까지 813). `translate/` 6개 모듈 **전부 100%**, 전체 99% |
 | 폴백 발동 테스트 | 개수 불일치·파싱 실패 **각각** 폴백을 타는 것을 단언 | ✅ `test_개수_불일치는_개별_폴백을_탄다` · `test_파싱_실패도_개별_폴백을_탄다` |
 | Fatal 즉시 중단 테스트 | 401에서 재시도 횟수가 **0**임을 단언 (호출 횟수로) | ✅ `test_치명적_실패는_즉시_전파된다`가 `len(provider.calls) == 1`을 단언 |
 | `scripts/check_links.py` | 마크다운·상대 링크 개수 확인 (**새 문서는 `git add` 후에야 검사된다**) | ✅ 마크다운 **21개** · 상대 링크 **86개** · 깨진 링크 0 |
@@ -607,7 +638,7 @@ M8+M4·하드코딩 URL과 **같은 범주**다. 층을 더 쌓아도 이 성질
 **`pytest`의 마지막 줄이 `N passed, M deselected` 형태로 바뀌었다** — §9.2가
 넣은 `-m "not live"` 때문이다. `passed`만 읽으면 live 테스트가 통째로 사라진
 것을 눈치채지 못하므로 **두 수를 같이 읽는다.** `-m live`로 덮으면
-`1/849 tests collected (848 deselected)`가 되어 live 쪽이 실재함을 확인할 수 있다.
+`1/859 tests collected (858 deselected)`가 되어 live 쪽이 실재함을 확인할 수 있다.
 
 ## 12. 미검증 사항
 

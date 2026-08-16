@@ -12,8 +12,10 @@ from cuesift.glossary import Glossary, GlossaryEntry
 from cuesift.segment.models import Segment
 from cuesift.translate.engine import _MAX_BACKOFF_S, translate_segments
 from cuesift.translate.provider import (
+    Completion,
     FatalProviderError,
     Provider,
+    ProviderError,
     RetryableProviderError,
     TokenUsage,
 )
@@ -938,3 +940,66 @@ def test_가짜_프로바이더가_Provider_시그니처를_지킨다(fake: type
     """
     assert inspect.signature(fake.complete) == inspect.signature(Provider.complete)
     assert isinstance(getattr(fake, "name", None), str)
+
+
+# --------------------------------------------------------------------------
+# Provider 계약 위반 — 독스트링의 표를 검증 가능하게 만든다
+#
+# `Provider.complete`의 독스트링이 "이렇게 구현하면 이렇게 깨진다"를 표로
+# 적었다. **선언에 테스트가 없으면 그것은 계약이 아니라 주석이다.**
+# 아래 둘은 현재 동작을 고정하는 특성 테스트다 - 누군가 engine에 방어를
+# 넣으면 여기가 죽어 독스트링을 함께 고치게 만든다.
+# --------------------------------------------------------------------------
+
+
+def test_기반_ProviderError는_재시도도_폴백도_없이_샌다() -> None:
+    """서드파티가 `ProviderError`를 직접 던지면 engine이 받지 못한다.
+
+    `_call_with_retry`가 `RetryableProviderError`·`FatalProviderError` 두
+    자손만 잡기 때문이다. `ProviderError`가 "호출부가 전부를 한 번에 잡을 수
+    있게 한다"는 것은 **호출부가 그것을 잡을 때** 성립하는 말인데, 주 호출부인
+    engine은 잡지 않는다.
+    """
+
+    class 기반예외프로바이더:
+        name = "bare"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, messages, *, temperature, max_tokens):  # noqa: ANN001, ANN202
+            self.calls += 1
+            raise ProviderError("기반 클래스를 직접 던진다")
+
+    provider = 기반예외프로바이더()
+    with pytest.raises(ProviderError):
+        translate_segments(
+            _segs(3),
+            provider=provider,
+            source_lang="ko",
+            target_lang="en",
+            sleep=lambda _s: None,
+        )
+    # 재시도도 폴백도 하지 않았다. 실패 1회가 곧 실행 전체의 죽음이다.
+    assert provider.calls == 1
+
+
+def test_Completion_text가_None이면_ProviderError_밖에서_죽는다() -> None:
+    """`text`는 반드시 `str`이라는 계약이 지켜지지 않으면 폴백이 받지 못한다."""
+
+    class None텍스트프로바이더:
+        name = "none"
+
+        def complete(self, messages, *, temperature, max_tokens):  # noqa: ANN001, ANN202
+            return Completion(text=None, usage=TokenUsage(calls=1))  # type: ignore[arg-type]
+
+    with pytest.raises(AttributeError) as exc:
+        translate_segments(
+            _segs(3),
+            provider=None텍스트프로바이더(),
+            source_lang="ko",
+            target_lang="en",
+            sleep=lambda _s: None,
+        )
+    # ProviderError 밖이라는 것이 요점이다 - engine의 폴백 두 절이 못 받는다.
+    assert not isinstance(exc.value, ProviderError)
