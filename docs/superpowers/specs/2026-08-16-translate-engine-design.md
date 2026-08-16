@@ -414,8 +414,25 @@ B의 실패 모드(성공한 9개를 버리고 10개를 다시 부름)는 비용
 ### 9.2 실 API는 opt-in
 
 CI 3잡(`test 3.11`·`test 3.12`·`docs`)에는 API 키가 없다.
-`pytest.ini` 마커로 등록하고 기본 `-m "not live"`로 제외한다.
-**등록하지 않으면 `PytestUnknownMarkWarning`이 나고, 제외하지 않으면 CI 3잡이 전부 실패한다.**
+`pyproject.toml`의 `[tool.pytest.ini_options]`에 마커를 등록하고
+기본 `-m "not live"`로 제외한다.
+
+**등록하지 않으면 경고가 아니라 에러다.** 초판은 여기에
+`PytestUnknownMarkWarning`이 난다고 적었는데 거짓이었다 — `addopts`에
+**`--strict-markers`가 켜져 있어** 미등록 마커는 수집 단계에서 실패한다.
+실측(2026-08-16, Task 7)한 결과는 경고보다 훨씬 나쁘다.
+
+| 변이 | 실측 결과 | 죽는가 |
+| --- | --- | --- |
+| 마커 미등록 | `Failed: 'live' not found in markers` → `Interrupted: 1 error during collection`, exit 2. **나머지 813개가 실행조차 안 된다** | 요란하게 |
+| `-m "not live"` 삭제 | 키 없는 환경에서 `deselected`가 `skipped`로 바뀔 뿐. CI는 그대로 초록 | **조용히 — 안 죽는다** |
+| live 모듈의 `pytestmark` 삭제 | 위와 동일 | **조용히 — 안 죽는다** |
+
+아래 두 줄이 이 표의 요점이다. **막아야 할 것은 요란한 쪽이 아니라 조용한
+쪽이다** — 키가 설정된 개발자 머신에서 평범한 `pytest` 한 줄이 유료
+엔드포인트를 치기 시작하고, CI는 끝까지 초록이라 아무도 모른다. 그래서
+`tests/test_translate_api.py`가 실행 결과가 아니라 **설정 그 자체**
+(`addopts`의 `-m` 인자와 live 모듈의 `pytestmark`)를 단언한다.
 
 ### 9.3 폴백을 실제로 발동시키는 것
 
@@ -448,18 +465,27 @@ CI 3잡(`test 3.11`·`test 3.12`·`docs`)에는 API 키가 없다.
 
 `check` 배선 때와 같은 형식으로, **수치를 읽는다.**
 
-| 게이트 | 판정 |
-| --- | --- |
-| `ruff check .` | `All checks passed!` |
-| `ruff format --check .` | 파일 개수 확인 |
-| `pytest --cov=cuesift` | **수집 개수 증가분을 기록한다.** `translate/` 커버리지 확인 |
-| 폴백 발동 테스트 | 개수 불일치·파싱 실패 **각각** 폴백을 타는 것을 단언 |
-| Fatal 즉시 중단 테스트 | 401에서 재시도 횟수가 **0**임을 단언 (호출 횟수로) |
-| `scripts/check_links.py` | 마크다운·상대 링크 개수 확인 (**새 문서는 `git add` 후에야 검사된다**) |
-| `markdownlint-cli2` | `Linting: N files` 개수를 링크 체커와 **대조** |
-| CI | PR 생성 후 3잡 통과 — 로컬은 3.14, CI는 3.11/3.12 |
+| 게이트 | 판정 | 실측 (2026-08-16, WP7a 완료 시점) |
+| --- | --- | --- |
+| `ruff check .` | `All checks passed!` | ✅ `All checks passed!` |
+| `ruff format --check .` | 파일 개수 확인 | ✅ **73 files** (착수 시 58) |
+| `pytest --cov=cuesift` | **수집 개수 증가분을 기록한다.** `translate/` 커버리지 확인 | ✅ **832 passed, 1 deselected** (착수 시 499). `translate/` 6개 모듈 **전부 100%**, 전체 99% |
+| 폴백 발동 테스트 | 개수 불일치·파싱 실패 **각각** 폴백을 타는 것을 단언 | ✅ `test_개수_불일치는_개별_폴백을_탄다` · `test_파싱_실패도_개별_폴백을_탄다` |
+| Fatal 즉시 중단 테스트 | 401에서 재시도 횟수가 **0**임을 단언 (호출 횟수로) | ✅ `test_치명적_실패는_즉시_전파된다`가 `len(provider.calls) == 1`을 단언 |
+| `scripts/check_links.py` | 마크다운·상대 링크 개수 확인 (**새 문서는 `git add` 후에야 검사된다**) | ✅ 마크다운 **21개** · 상대 링크 **84개** · 깨진 링크 0 |
+| `markdownlint-cli2` | `Linting: N files` 개수를 링크 체커와 **대조** | ✅ `Linting: 21 files` · `0 issues` — 링크 체커의 21과 **일치** |
+| CI | PR 생성 후 3잡 통과 — 로컬은 3.14, CI는 3.11/3.12 | ⬜ 미실행 (푸시 전) |
 
 **0개 수집은 통과가 아니라 설정 오류다.**
+
+마지막 두 행의 `21`이 서로 맞는 것이 요점이다. 두 수가 갈라지면 추적되지 않는
+문서가 있다는 뜻이고, 이 저장소는 실제로 그 방식으로 누락을 잡은 적이 있다
+(링크 체커가 19개를 셌는데 기대값은 21이었고 원인은 README 뱃지의 중첩 대괄호).
+
+**`pytest`의 마지막 줄이 `N passed, M deselected` 형태로 바뀌었다** — §9.2가
+넣은 `-m "not live"` 때문이다. `passed`만 읽으면 live 테스트가 통째로 사라진
+것을 눈치채지 못하므로 **두 수를 같이 읽는다.** `-m live`로 덮으면
+`1/833 tests collected (832 deselected)`가 되어 live 쪽이 실재함을 확인할 수 있다.
 
 ## 12. 미검증 사항
 
