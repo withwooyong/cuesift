@@ -175,3 +175,20 @@ def test_terms_in과_violations가_같은_판정을_쓴다() -> None:
     # 양쪽이 다 비어도 등식은 성립한다. 공허한 통과를 먼저 막는다.
     assert matched == ["기후변화"]
     assert matched == [e.source for e in g.violations(source, target)]
+
+
+def test_terms_in_반환_순서는_용어집_등재_순이다() -> None:
+    # 등재 순과 원문 등장 순을 일부러 **반대로** 짠다. 매치 위치 순으로 구현하면
+    # ['기후변화', '탄소중립']이 나와 이 단언이 깨진다.
+    #
+    # 위치 순이면 같은 용어 집합이라도 배치 내용에 따라 용어 블록이 다르게
+    # 직렬화되어, 프롬프트 프리픽스 캐시가 무효화되고 재현성(NFR-3)이 깨진다.
+    # 나중에 중복 제거가 들어올 때 set/dict로 순서가 조용히 바뀌는 것도 여기서 잡힌다.
+    g = Glossary(
+        entries=(
+            GlossaryEntry(source="탄소중립", targets=("carbon neutrality",)),
+            GlossaryEntry(source="기후변화", targets=("climate change",)),
+        )
+    )
+    found = g.terms_in("기후변화 대응은 탄소중립으로 간다")
+    assert [e.source for e in found] == ["탄소중립", "기후변화"]
