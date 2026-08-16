@@ -37,19 +37,25 @@ _SEP = "\x1f"
 # 필드에서 "필드 자체가 빠짐"과 "None으로 채워짐"이 같은 결과로 뭉개진다.
 _MISSING = object()
 
-# 캐시 자신의 읽기·쓰기가 낼 수 있는 예외 셋. `OSError`(디스크 I/O)만으로는
-# 부족하다 - 실측(WP7b Task 2 리뷰 라운드 2): 자막에 U+D800(짝 없는
-# 서러게이트) 같은, 파이썬 문자열로는 유효하지만 UTF-8로 인코딩할 수 없는
-# 문자가 들어오면 `store()`의 `json.dumps`는 통과하고
-# `Path.write_text(encoding="utf-8")`가 `UnicodeEncodeError`(`ValueError`의
-# 하위)를 낸다. `CacheRequest.key`가 비수치형 `temperature`에서
-# `float(...)`를 계산하다 내는 `TypeError`도 같은 부류라 함께 잡는다.
+# `CachingProvider`(store/provider.py)가 캐시 자신의 잘못으로 흡수해도 되는
+# 예외 셋. `OSError`(디스크 I/O)만으로는 부족하다 - 실측(WP7b Task 2 리뷰
+# 라운드 2): 자막에 U+D800(짝 없는 서러게이트) 같은, 파이썬 문자열로는
+# 유효하지만 UTF-8로 인코딩할 수 없는 문자가 들어오면 `store()`의
+# `json.dumps`는 통과하고 `Path.write_text(encoding="utf-8")`가
+# `UnicodeEncodeError`(`ValueError`의 하위)를 낸다. `CacheRequest.key`가
+# 비수치형 `temperature`에서 `float(...)`를 계산하다 내는 `TypeError`도
+# 같은 부류라 함께 잡는다.
 #
-# **`store/provider.py`의 `CachingProvider`도 이 상수를 그대로 임포트해
-# 쓴다.** 두 곳이 갈라지면 "정리는 되는데 캐시 계층이 흡수를 못 함" 또는
-# "흡수는 되는데 tmp가 안 지워짐"의 틈이 생긴다 - 한쪽만 넓히는 수정은
-# 반드시 다른 쪽도 같이 넓혀야 한다.
-_CACHE_IO_ERRORS = (OSError, ValueError, TypeError)
+# **밑줄 없이 둔다.** `CachingProvider`가 이 값을 그대로 임포트해 쓰는 순간
+# 모듈 밖 심볼이고, 밑줄은 그 사실을 가린다. 다만 `store/__init__.py`의
+# `__all__`에는 넣지 않는다 - 패키지 **외부**에 공개할 표면이 아니라
+# `store/` 안의 두 모듈(`cache.py`·`provider.py`)이 나눠 쓰는 내부 계약이다.
+#
+# **`store()`의 tmp 정리에는 이 상수를 쓰지 않는다** (아래 `store()` 참고) -
+# 정리가 막아야 할 범위(어떤 중단이든)와 `CachingProvider`가 흡수해도 되는
+# 범위(캐시 자신의 잘못만)가 서로 다르기 때문이다(실측, 라운드 3). 이 값이
+# 정의하는 것은 어디까지나 **흡수** 쪽 계약이다.
+CACHE_IO_ERRORS = (OSError, ValueError, TypeError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +155,7 @@ def load(cache_dir: Path, request: CacheRequest) -> Completion | None:
 
 
 def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> None:
-    """캐시에 쓴다. **`_CACHE_IO_ERRORS`를 삼키지 않는다** - 호출자가 경고를 낸다.
+    """캐시에 쓴다. **어떤 실패든 삼키지 않는다** - 호출자가 경고를 낸다.
 
     임시 파일에 쓰고 `os.replace`로 옮기는 이유는 중간에 죽어도 반쪽짜리
     JSON이 남지 않게 하기 위해서다. `os.replace`는 Windows에서도 원자적이다.
@@ -158,19 +164,23 @@ def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> Non
     서로의 임시 파일을 덮지 않게 하기 위해서다. 최종 파일에 대한 경쟁은
     마지막 쓰기가 이기고, 온도 0.0에서는 내용이 같으므로 무해하다.
 
-    **`_CACHE_IO_ERRORS`가 나면 임시 파일을 지우고 나서 다시 던진다.**
-    처음에는 `OSError`만 잡았는데(디스크가 차거나 권한이 없어 `os.replace`가
-    실패하는 경우), 그것만으로는 부족하다는 것이 리뷰에서 드러났다 - 실측:
-    자막에 U+D800(짝 없는 서러게이트)이 섞이면 `write_text(encoding="utf-8")`가
-    `UnicodeEncodeError`(`ValueError`의 하위)를 내는데 `except OSError`는
-    이것을 못 잡아 tmp가 그대로 남았다. 지우지 않으면 이런 실패가 반복될
-    때마다 `<key>.json.<pid>.tmp`가 쌓인다 - pid가 매 실행 달라지므로
-    잔해가 실행마다 누적돼 캐시 디렉터리가 쓰레기로 찬다(실측: 재현됨).
-    `except`로만 잡고 `finally`를 쓰지 않는 이유는, 성공 경로에서는
-    `os.replace`가 이미 tmp를 최종 경로로 옮겨 그 자리에 파일이 없으므로
-    지울 것이 없어서다 - `finally`에 넣으면 성공 뒤에도 `unlink`를
-    호출하게 되어 `missing_ok=True`로 무해화해야 하는 불필요한 분기가
-    생긴다.
+    **임시 파일 정리는 `finally`다 - `except`로 좁히지 않는다.** 이 자리의
+    "옳은 예외 집합"은 `CachingProvider`가 흡수하는 집합(`CACHE_IO_ERRORS`)과
+    **다르다.** `write_text`~`os.replace` 사이에서 무엇이 중단시키든(디스크
+    오류든, `KeyboardInterrupt`든, `MemoryError`든) tmp는 지워져야 한다 -
+    정리는 **최대**여야 하는 반면 흡수는 캐시 자신의 잘못으로 **한정**돼야
+    한다(리뷰 실측, WP7b Task 2 라운드 3). `KeyboardInterrupt`가 대표
+    사례다 - 긴 번역 도중 Ctrl+C가 그 경로이고(FR-2.7 재개의 전형적
+    트리거), 그 예외는 삼키지 않고 그대로 전파돼야 한다(삼키면 Ctrl+C가
+    안 먹힌다). `finally`는 정리만 하고 예외는 그대로 다시 새어 나가게
+    두므로 이 둘(넓은 정리 vs 좁은 흡수)을 동시에 만족한다.
+
+    지우지 않으면 실패가 반복될 때마다 `<key>.json.<pid>.tmp`가 쌓인다 -
+    pid가 매 실행 달라지므로 잔해가 실행마다 누적돼 캐시 디렉터리가
+    쓰레기로 찬다(실측: 재현됨). 성공 경로에서는 `os.replace`가 이미 tmp를
+    최종 경로로 옮겨 그 자리에 파일이 없으므로 `unlink(missing_ok=True)`가
+    조용한 무연산이다 - `missing_ok=True`가 이미 그 분기를 흡수하므로
+    `finally`를 피할 이유가 없다.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -190,9 +200,8 @@ def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> Non
     try:
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, cache_dir / f"{request.key}.json")
-    except _CACHE_IO_ERRORS:
+    finally:
         tmp.unlink(missing_ok=True)
-        raise
 
 
 def _matches(raw: object, request: CacheRequest) -> bool:

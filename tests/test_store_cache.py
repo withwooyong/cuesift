@@ -327,3 +327,26 @@ def test_OSError가_아닌_저장_실패도_임시_파일을_남기지_않는다
         store(tmp_path, request, completion)
 
     assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_KeyboardInterrupt에도_임시_파일을_남기지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # WP7b Task 2 리뷰 라운드 3 실측: `CACHE_IO_ERRORS`(OSError·ValueError·
+    # TypeError)는 `CachingProvider`가 "캐시 자신의 잘못만" 흡수하는 데는
+    # 맞는 범위이지만, `store()`의 tmp 정리는 그보다 **넓어야** 한다 -
+    # write_text~os.replace 사이의 어떤 중단이든 tmp를 남기면 안 된다.
+    # KeyboardInterrupt(BaseException, Exception도 CACHE_IO_ERRORS도 아님)가
+    # 대표 사례다 - 긴 번역 도중 Ctrl+C가 그 경로다(FR-2.7 재개의 전형적
+    # 트리거). **이 예외는 전파돼야 한다** - CachingProvider가 삼키면 Ctrl+C가
+    # 안 먹힌다. `store()`가 `finally`로 tmp만 지우고 예외는 그대로 새어
+    # 나가게 두는지를 함께 본다.
+    def boom(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("cuesift.store.cache.os.replace", boom)
+
+    with pytest.raises(KeyboardInterrupt):
+        store(tmp_path, _request(), _completion())
+
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
