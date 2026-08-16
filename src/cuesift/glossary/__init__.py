@@ -53,6 +53,27 @@ class Glossary:
         """
         return not self.entries
 
+    def terms_in(self, source_text: str) -> list[GlossaryEntry]:
+        """원문에 등장하는 용어들. 프롬프트 주입용 (FR-2.3).
+
+        `violations()`와 **같은 판정 규칙**(`_contains_term`)을 쓰는 것이
+        요점이다. 규칙이 갈리면 프롬프트에 넣은 용어와 위반으로 잡는 용어가
+        어긋나, 주입하지 않은 용어를 안 썼다고 위반 처리하게 된다.
+
+        전체 용어집을 매번 프롬프트에 넣지 않기 위해 있다. 용어집이 500개인데
+        배치에 3개만 나오면 나머지 497개는 매 호출 낭비다.
+
+        반환 순서는 **용어집 등재 순**이다(매치 위치 순이 아니다). 위치 순으로
+        바꾸면 같은 용어 집합이라도 배치 내용에 따라 용어 블록이 다르게
+        직렬화되어, 프롬프트 프리픽스 캐시가 무효화되고 "동일 입력에 동일
+        결과"라는 재현성(NFR-3)이 깨진다. 등재 순은 어떤 배치에서도 상대
+        순서가 같다.
+        """
+        lowered_source = source_text.lower()
+        return [
+            entry for entry in self.entries if _contains_term(lowered_source, entry.source.lower())
+        ]
+
     def violations(self, source_text: str, target_text: str) -> list[GlossaryEntry]:
         """원문에 등장하는 용어 중 번역문에 대응어가 없는 것들."""
         lowered_target = target_text.lower()

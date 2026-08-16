@@ -59,7 +59,24 @@ packages = ["src/cuesift"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+# `--strict-markers`가 켜져 있어 아래 `markers`에 없는 마커는 경고가 아니라
+# **수집 에러**다. 실측(2026-08-16): 미등록 `@pytest.mark.live` 하나가
+# `Interrupted: 1 error during collection`으로 exit 2를 내고 **나머지 858개가
+# 아예 실행되지 않는다.** 한 파일이 빨개지는 정도가 아니라 스위트 전체가 선다.
+#
+# `-m "not live"`가 없으면 CI 3잡이 전부 API 키 없이 실패한다. 명령줄에서
+# `-m live`를 주면 이 기본값을 덮는다(뒤에 온 `-m`이 이긴다).
+#
+# 이 줄을 넣은 뒤로 `pytest -q`의 마지막 줄은 `N passed, M deselected` 형태다.
+# **수집 개수를 읽는 법이 바뀌었다** - `passed`만 보면 live가 통째로 사라진
+# 것을 눈치채지 못하므로 두 수를 같이 읽는다.
+addopts = '-ra --strict-markers -m "not live"'
+markers = [
+    "live: 실제 LLM 엔드포인트를 친다. 기본 제외이며 CUESIFT_LIVE_BASE_URL과 CUESIFT_LIVE_MODEL이 필요하다",
+]
+# 이 설정이 어긋나면 `tests/conftest.py`의 `pytest_configure`가 수집 전에
+# 실행을 멈춘다. 테스트로 두지 않은 이유는 `-m live`를 덧붙이는 변이가
+# **감시자 자신까지 deselect**해 exit 0으로 초록을 내기 때문이다 (실측).
 # bench/ 와 scripts/ 는 휠에 들어가지 않으므로 설치 경로로 임포트되지 않는다.
 # 리포 루트를 sys.path에 넣지 않으면 tests/test_bench_*.py가 전부 수집 오류가 된다.
 pythonpath = ["."]
