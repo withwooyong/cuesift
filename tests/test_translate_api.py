@@ -343,8 +343,24 @@ def test_임포트_시점_검사가_인자_없이_최상위에서_호출된다()
     호출은 그대로 있고 이름도 맞는데 **다른 파일을 검사한다.** 그래서 이름이
     아니라 **호출 노드**를 보고 인자가 비었는지까지 단언한다.
 
-    **한 라운드의 수정이 다른 라운드의 보호를 깎은 사례다** - 검사를
-    테스트 가능하게 만드는 변경이 그 검사의 배선을 무르게 했다.
+    ## 래퍼 본문도 본다
+
+    **인자 0개는 "몇 개를 받는가"만 강제하고 "무엇을 넘기는가"는 강제하지
+    못한다.** 파이썬에 리터럴을 고정하는 문법이 없어서, seam이 호출 지점에서
+    **래퍼 본문 한 줄로 내려갔을 뿐이다.** 실측:
+
+    | 변이 | 결과 |
+    | --- | --- |
+    | 래퍼 본문의 경로를 decoy로 | `848 passed`, exit 0. **0건 사망** |
+    | 래퍼 본문을 `return` 한 줄로 | `848 passed`, exit 0. **decoy 파일조차 필요 없다** |
+
+    둘째 행이 **직전 커밋 대비 역행**이다. 분할 전에는 본문이 로직이라
+    무력화하면 로직 테스트가 죽었는데, 분할 후 본문이 위임 한 줄이 되면서
+    **아무도 그 줄을 보지 않게 됐다.**
+
+    **한 라운드의 수정이 다른 라운드의 보호를 깎은 사례가 이 태스크에서 두 번
+    나왔다** - 검사를 테스트 가능하게 만드는 변경이 그 검사의 배선을 무르게
+    하고, 그 배선을 문법으로 굳히는 변경이 다시 본문을 무방비로 남겼다.
     """
     source = (_REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
     calls = [
@@ -359,6 +375,15 @@ def test_임포트_시점_검사가_인자_없이_최상위에서_호출된다()
     # 인자를 주면 실제 pyproject가 아닌 파일을 검사하게 되어 ①이 조용히 죽는다.
     붙은_인자 = [ast.unparse(call) for call in calls if call.args or call.keywords]
     assert 붙은_인자 == [], f"최상위 호출에 인자가 붙었다: {붙은_인자}"
+
+    # 래퍼 본문이 **실제 pyproject를** 넘기는지 본다. `ast.unparse`는 문자열
+    # 리터럴을 홑따옴표로 정규화하므로 기대값도 그 형태로 적는다.
+    래퍼 = next(
+        ast.unparse(node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_check_on_import"
+    )
+    assert "_check_addopts(_REPO_ROOT / 'pyproject.toml')" in 래퍼, f"래퍼 본문: {래퍼}"
 
 
 def _write_pyproject(tmp_path: pathlib.Path, addopts: str) -> pathlib.Path:
