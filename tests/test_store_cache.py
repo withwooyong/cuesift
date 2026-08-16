@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -64,6 +66,45 @@ def test_키는_재실행에서_같다() -> None:
     assert _request().key == _request().key
 
 
+def test_temperature가_int로_저장돼도_float_요청이_히트한다(tmp_path: Path) -> None:
+    # `key`의 `float(...)` 정규화가 없으면 repr(0)="0"과 repr(0.0)="0.0"이
+    # 달라 `0`(int)으로 부른 caller의 캐시를 `0.0`(float)으로 부른 재실행이
+    # 못 읽는다 - 호출부의 타입 차이 하나로 캐시가 전량 미스가 된다.
+    stored = CacheRequest(identity="i", temperature=0, max_tokens=None, messages=())
+    reloaded = CacheRequest(identity="i", temperature=0.0, max_tokens=None, messages=())
+    store(tmp_path, stored, _completion())
+
+    assert load(tmp_path, reloaded) is not None
+
+
+def test_temperature는_저장_시_float로_정규화된다(tmp_path: Path) -> None:
+    # `store`가 페이로드를 만들 때 `float(...)`를 빼면 `int`가 그대로
+    # JSON에 실린다 - 값 비교(`==`)는 int/float를 자동으로 값으로
+    # 비교해 겉으로는 안 드러나지만, 재현성(NFR-3)의 근거는 "디스크에
+    # 실제로 적힌 재료가 항상 같은 타입"이라는 계약이므로 타입까지 본다.
+    request = CacheRequest(identity="i", temperature=0, max_tokens=None, messages=())
+
+    store(tmp_path, request, _completion())
+
+    raw = json.loads((tmp_path / f"{request.key}.json").read_text(encoding="utf-8"))
+    assert isinstance(raw["temperature"], float)
+
+
+def test_matches의_온도_비교는_float로_정규화한다(tmp_path: Path) -> None:
+    # `_matches`가 `float(request.temperature)`로 정규화하지 않으면,
+    # 표준 수치형(int·float·bool)끼리는 파이썬이 자동으로 값으로 비교해
+    # 차이가 드러나지 않는다 - 이 정규화가 실제로 막는 것은
+    # `temperature: float` 타입 힌트가 런타임에 강제되지 않는 틈으로
+    # float가 아닌 수치형이 섞여 들어오는 경우다.
+    # 실측: `Decimal("0.1") == 0.1`은 False, `float(Decimal("0.1")) == 0.1`은
+    # True - 정규화가 없으면 재실행 자체가 미스로 떨어진다.
+    stored = CacheRequest(identity="i", temperature=Decimal("0.1"), max_tokens=None, messages=())
+    store(tmp_path, stored, _completion())
+
+    reloaded = CacheRequest(identity="i", temperature=Decimal("0.1"), max_tokens=None, messages=())
+    assert load(tmp_path, reloaded) is not None
+
+
 def test_역할과_내용의_경계가_모호하지_않다() -> None:
     # "system"+"지시" 와 "system지시"+"" 가 같은 키를 내면 안 된다.
     a = CacheRequest(
@@ -80,6 +121,30 @@ def test_역할과_내용의_경계가_모호하지_않다() -> None:
     )
 
     assert a.key != b.key
+
+
+def test_content_안의_구분자_문자가_메시지_경계를_흐리지_않는다() -> None:
+    # 리뷰 실측: content에 U+001F(내부 구분자와 같은 문자)가 그대로 들어가면
+    # 메시지 한 개짜리 [("system", "a\x1fuser\x1fb")]와 메시지 두 개짜리
+    # [("system","a"),("user","b")]가 같은 키를 냈다. 단사적 직렬화라면
+    # 두 시퀀스는 구조가 다르므로 같은 키를 낼 수 없어야 한다.
+    merged = CacheRequest(
+        identity="i",
+        temperature=0.0,
+        max_tokens=None,
+        messages=(ChatMessage(role="system", content="a\x1fuser\x1fb"),),
+    )
+    split = CacheRequest(
+        identity="i",
+        temperature=0.0,
+        max_tokens=None,
+        messages=(
+            ChatMessage(role="system", content="a"),
+            ChatMessage(role="user", content="b"),
+        ),
+    )
+
+    assert merged.key != split.key
 
 
 def test_손상된_파일은_예외가_아니라_미스다(tmp_path: Path) -> None:
@@ -127,6 +192,62 @@ def test_음수_토큰은_미스다(tmp_path: Path) -> None:
     assert load(tmp_path, request) is None
 
 
+def test_text가_문자열이_아니면_미스다(tmp_path: Path) -> None:
+    # 리뷰 실측: `text`를 12345로 손상시키면 load가 None이 아니라
+    # `Completion(text=12345, ...)`를 돌려준다. 그 값이 하류 파서에 가면
+    # `TypeError`가 나는데, `TypeError`는 `ProviderError` 계열이 아니라
+    # 번역 루프 밖으로 샌다 - 모듈 독스트링이 막겠다고 선언한 실패 모드다.
+    request = _request()
+    store(tmp_path, request, _completion())
+    path = tmp_path / f"{request.key}.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["text"] = 12345
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    assert load(tmp_path, request) is None
+
+
+def test_prompt_tokens가_정수가_아니면_미스다(tmp_path: Path) -> None:
+    # 리뷰 실측: `prompt_tokens: 7.5`도 통과했다. TokenUsage는 값이 음수인지만
+    # 보고 타입은 안 본다 - NFR-2 비용 리포트가 실수로 오염된다.
+    request = _request()
+    store(tmp_path, request, _completion())
+    path = tmp_path / f"{request.key}.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["usage"]["prompt_tokens"] = 7.5
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    assert load(tmp_path, request) is None
+
+
+def test_calls가_bool이면_미스다(tmp_path: Path) -> None:
+    # 리뷰 실측: `calls: true`도 통과했다. `bool`은 `int`의 하위형이라
+    # `isinstance(x, int)`만으로는 못 막는다 - `isinstance(x, int) and not
+    # isinstance(x, bool)`이 필요하다.
+    request = _request()
+    store(tmp_path, request, _completion())
+    path = tmp_path / f"{request.key}.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["usage"]["calls"] = True
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    assert load(tmp_path, request) is None
+
+
+def test_max_tokens_필드가_없으면_미스다(tmp_path: Path) -> None:
+    # 리뷰 실측: `_matches`가 `raw.get("max_tokens")`를 쓰므로 필드가
+    # 통째로 없어도 `.get()`의 기본값 None이 request.max_tokens(None)과
+    # 우연히 일치해 통과했다 - "필드 없음"과 "값이 None"이 구별되지 않는다.
+    request = _request()
+    store(tmp_path, request, _completion())
+    path = tmp_path / f"{request.key}.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["max_tokens"]
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    assert load(tmp_path, request) is None
+
+
 def test_디렉터리가_없어도_저장이_만든다(tmp_path: Path) -> None:
     target = tmp_path / "없는" / "깊은" / "경로"
     request = _request()
@@ -136,9 +257,44 @@ def test_디렉터리가_없어도_저장이_만든다(tmp_path: Path) -> None:
     assert load(target, request) is not None
 
 
-def test_임시_파일을_남기지_않는다(tmp_path: Path) -> None:
-    # os.replace가 안 돌면 .tmp가 남는다. 남으면 캐시 디렉터리가 쓰레기로 찬다.
-    store(tmp_path, _request(), _completion())
+def test_임시_파일을_남기지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 리뷰 실측: "tmp 파일이 없다"만 보면, 애초에 tmp를 거치지 않고 최종
+    # 파일에 직접 쓰는 구현도 이 단언을 통과한다(임시 파일을 안 만드니
+    # "안 남았다"가 동어반복이 된다) - `os.replace`가 실제로 호출되는지까지
+    # 봐야 "임시 파일 경유 → 원자적 교체"라는 설계 자체를 잰다.
+    calls: list[tuple[Path, Path]] = []
+    original_replace = os.replace
+
+    def spy(src: object, dst: object) -> None:
+        calls.append((Path(src), Path(dst)))
+        original_replace(src, dst)
+
+    monkeypatch.setattr("cuesift.store.cache.os.replace", spy)
+
+    request = _request()
+    store(tmp_path, request, _completion())
+
+    assert len(calls) == 1
+    src, dst = calls[0]
+    assert src.suffix == ".tmp"
+    assert dst == tmp_path / f"{request.key}.json"
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_저장_실패_시_임시_파일이_남지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 리뷰 실측: `os.replace`가 실패하면 `<key>.json.<pid>.tmp`가 실제로
+    # 남는다(디스크 여유·권한 문제가 대표 사례) - pid가 매 실행 달라지므로
+    # 잔해가 실행마다 쌓인다. `store`가 `OSError`를 그대로 재던지는 성질은
+    # 유지해야 하므로(호출자가 경고를 내야 한다), 정리만 얹는다.
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("디스크 없음")
+
+    monkeypatch.setattr("cuesift.store.cache.os.replace", boom)
+
+    with pytest.raises(OSError):
+        store(tmp_path, _request(), _completion())
 
     assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
 
