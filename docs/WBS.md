@@ -1,6 +1,6 @@
 # WBS — cuesift 작업 분해 구조
 
-> 갱신: 2026-08-13 (KST) · 기준 커밋 `5f9bf76`
+> 갱신: 2026-08-16 (KST) · 기준 커밋 `b0a76ec`
 > 대상 마일스톤: **v0.1 (MVP)** — [요구사항정의서](요구사항정의서.md) §10
 
 ## 이 문서를 어떻게 읽는가
@@ -52,7 +52,7 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 | **3** | 융합·검출 정정 | 6.1 · 3.4 | ✅ | S | 1·2 | `risk/fuse.py` noisy-or · `signals/structural.py` NFKC · `bench/results/` 재측정 (`2314fc6`·`78921d4`·`57bbded`) |
 | **4** | 인제스트 | 1.1 · 1.3 · 1.5 | ✅ | S | — | `src/cuesift/ingest/{__init__,loader}.py` · `tests/fixtures/ingest/`(픽스처 12종) · `tests/test_ingest.py` · `tests/test_ingest_fixtures.py` · `tests/test_ingest_contamination.py` (`42a126f`·`bb105b7`·`be51706`·`52acf5b`·`d51cb3c`·`1cbc21a`·`26f7517`·`6ad9366`·`50e62cf`) |
 | **5** | 출력 | 7.1~7.5 | 🟡 | M | 4 | **FR-7.5 완료** — `check`의 CI 종료 코드 5종(0·1·2·66·70)이 실제로 갈린다 (`90c6a7d`·`4899fec`·`59c7b51`·`6b45f95`). 남은 FR-7.1~7.4는 `review.json` · `report.html` · 요약 통계 |
-| **6** | CLI 배선 | 8.1~8.5 | 🟡 | M | 4·5 | **FR-8.2 완료** — `cuesift check <자막파일> --spec <프로파일>`이 동작한다. `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). 남은 FR-8.1·8.3은 WP7·WP9에, 8.4(`cuesift.yaml` 로더)·8.5(진행 표시·CI 감지)는 미착수 |
+| **6** | CLI 배선 | 8.1~8.5 | 🟡 | M | 4·5 | **FR-8.2 완료** — `cuesift check <자막파일> --spec <프로파일>`이 동작한다. `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). 남은 FR-8.1·8.3은 WP7·WP9에, 8.4(`cuesift.yaml` 로더)·8.5(진행 표시·CI 감지)는 미착수. **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 — FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`) |
 | **7** | 번역 계층 | 2.1~2.8 | ⬜ | L | 4 | `src/cuesift/translate/` — LLM 어댑터·컨텍스트 윈도우·재개 |
 | **8** | Tier 1 신호 | 4.1~4.3 | ⬜ | M | 7 | 자가일관성 N회 호출 · 역번역 · 적용 상한 |
 | **9** | STT | 1.2 · 1.4 | ⬜ | M | 4 | Whisper 계열 어댑터 · `원문 검수 필요` 플래그 |

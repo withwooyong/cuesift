@@ -165,18 +165,29 @@ def test_format_timecode_is_fixed_regardless_of_input_format():
     assert _format_timecode(3_661_007) == "01:01:01.007"
 
 
-def test_format_timecode_clamps_a_negative_to_zero():
-    """`max(ms, 0)`을 값으로 고정한다 — **이 줄이 유일하게 살아남은 변이였다.**
+def test_format_timecode_preserves_the_sign_of_a_negative():
+    """음수의 **부호를 값으로 고정한다** — 이 줄이 유일하게 살아남은 변이였다.
 
     브랜치 최종 리뷰가 변이 13종을 심었는데 `max(ms, 0)` -> `ms` 하나만 아무 테스트도
-    울리지 않았다. 클램프는 절충이므로(독스트링 참조) **어느 쪽이든 값으로 못 박아야**
-    다음 사람이 무심코 바꿀 때 드러난다. 지금은 클램프가 계약이다.
+    울리지 않았다. **어느 쪽이든 값으로 못 박아야** 다음 사람이 무심코 바꿀 때 드러난다.
 
-    클램프를 빼면 `divmod(-3000, 1000)`이 파이썬의 바닥 나눗셈 때문에 `(-3, 0)`이 되어
-    `-1:59:57.000`이 나온다 — 이 단언이 그 변이에서 실제로 실패하는 것을 확인했다.
+    **클램프에서 부호 보존으로 뒤집혔다.** 이전 판의 `max(ms, 0)`은 `-3000`을
+    `00:00:00.000`으로 만들었는데 그것은 **그럴듯한 거짓**이라, 검수자가 그 자리를
+    믿고 찾아가면 아무것도 없다. `loader.py`가 못 박은 "조용히 틀린 답은 크래시보다
+    나쁘다"의 반대편이었다.
+
+    이전 독스트링이 클램프를 남긴 근거로 "음수는 상류가 이미 막는다"를 들었는데
+    **그 전제가 거짓이었다** — `Segment.__post_init__`도 인제스트 경계도 역전만 봤다.
+    지금은 `_require_non_negative_timecodes`가 실제로 막아 이 경로가 도달 불가지만,
+    거짓말하는 기본값을 남겨 둘 이유는 없다.
+
+    `divmod`에 음수를 그대로 흘리면 바닥 나눗셈 때문에 `-1:59:57.000`이 된다.
+    그래서 `abs`로 자릿수를 만들고 부호를 따로 붙인다.
     """
-    assert _format_timecode(-3000) == "00:00:00.000"
-    assert _format_timecode(-1) == "00:00:00.000"
+    assert _format_timecode(-3000) == "-00:00:03.000"
+    assert _format_timecode(-1) == "-00:00:00.001"
+    # 0은 음수가 아니다. `ms <= 0`으로 잘못 쓰면 정상 첫 프레임에 `-`가 붙는다.
+    assert _format_timecode(0) == "00:00:00.000"
 
 
 def test_format_report_uses_the_original_cue_number_not_the_filtered_index():
@@ -247,7 +258,109 @@ def test_format_report_states_what_it_checked_when_clean():
         event_index={},
     )
     # em dash가 아니라 ASCII 하이픈이다. 전역 제약 "출력 문자열에 em dash 금지" 참조.
+    # **위반 0건은 한 줄이므로 요약이 중복되지 않는다** — 이 `==` 단언이 그것도 함께 고정한다.
     assert lines == ["clean.ko.srt (srt · 검사 큐 120개 · 프로파일 ko) - 위반 없음"]
+
+
+def _ten_violations() -> tuple[list[TrackViolation], dict[str, int]]:
+    """위반 10건 · 10큐. 절단과 요약 배치를 재는 공용 입력이다."""
+    violations = [
+        TrackViolation(f"{i:05d}", i * 1000, SpecViolation("cps", 18.2, 12.0)) for i in range(10)
+    ]
+    return violations, {f"{i:05d}": i for i in range(10)}
+
+
+def test_format_report_repeats_the_summary_under_the_header():
+    """**요약을 머리와 끝 양쪽에 낸다** — 절단 방향과 무관하게 살아남아야 한다.
+
+    이전 판은 요약이 **맨 아래 한 줄**이었다. 위반 682건이면 686줄이 나가고,
+    26화 × 3언어 매트릭스에서 프로파일을 잘못 물리면 약 5만 줄이 쌓인다. 로그를
+    앞에서 남기고 뒤를 자르는 CI에서는 **가장 중요한 한 줄이 가장 먼저** 사라진다.
+
+    중복 2줄은 1204줄 출력의 0.17%다. 이 저장소가 반복해서 지불한 교훈에 비하면 싸다.
+    """
+    violations, event_index = _ten_violations()
+
+    lines = _format_report(
+        source_name="x.srt",
+        fmt="srt",
+        profile_label="ko",
+        cue_total=10,
+        violations=violations,
+        event_index=event_index,
+    )
+
+    summary = "위반 10건 · 위반 큐 10/10개 (100.0%)"
+    assert lines[1] == summary, f"헤더 바로 아래에 요약이 없다: {lines[:3]}"
+    assert lines[-1] == summary, f"맨 끝에 요약이 없다: {lines[-3:]}"
+
+
+def test_format_report_truncates_the_list_but_keeps_the_summary():
+    """`--limit N`은 **목록만** 자른다.
+
+    절단을 이 함수 **밖에서** `lines[:N]`으로 하면 요약 줄까지 함께 잘려
+    목적이 정확히 무너진다. 그래서 "무엇을 자르고 무엇을 남길지"를 함수가 안다.
+    """
+    violations, event_index = _ten_violations()
+
+    lines = _format_report(
+        source_name="x.srt",
+        fmt="srt",
+        profile_label="ko",
+        cue_total=10,
+        violations=violations,
+        event_index=event_index,
+        limit=3,
+    )
+    body = "\n".join(lines)
+
+    assert body.count("cps") == 3, f"3건만 남아야 한다: {body}"
+    # 잘렸다는 사실을 숨기지 않는다. 조용한 절단은 이 저장소가 1급 결함으로 취급한다.
+    assert "7건 생략" in body, body
+    assert lines[-1] == "위반 10건 · 위반 큐 10/10개 (100.0%)", "요약이 절단에 휩쓸렸다"
+
+
+def test_format_report_limit_zero_means_unlimited():
+    """기본값 `0`은 무제한이다 — **기존 동작을 보존한다.**
+
+    상한을 기본으로 켜면 전체 목록을 파이프로 받아 grep하던 쓰임이 조용히 잘린다.
+    """
+    violations, event_index = _ten_violations()
+
+    body = "\n".join(
+        _format_report(
+            source_name="x.srt",
+            fmt="srt",
+            profile_label="ko",
+            cue_total=10,
+            violations=violations,
+            event_index=event_index,
+            limit=0,
+        )
+    )
+
+    assert body.count("cps") == 10
+    assert "생략" not in body
+
+
+def test_format_report_omits_the_notice_when_the_limit_exceeds_the_count():
+    """상한이 위반 수보다 크면 생략 줄이 없다 — 있으면 `0건 생략`이라는 거짓말이 된다."""
+    violations, event_index = _ten_violations()
+
+    body = "\n".join(
+        _format_report(
+            source_name="x.srt",
+            fmt="srt",
+            profile_label="ko",
+            cue_total=10,
+            violations=violations,
+            event_index=event_index,
+            limit=100,
+        )
+    )
+
+    assert body.count("cps") == 10
+    assert "생략" not in body
 
 
 def test_format_report_keeps_columns_aligned_across_cue_number_widths():
@@ -415,6 +528,44 @@ def test_check_now_catches_the_empty_cue_that_nothing_caught_before():
     assert "#2" in result.stdout
 
 
+def test_limit_does_not_change_the_exit_code():
+    """**종료 코드는 출력 옵션에 좌우되지 않는다.**
+
+    여기가 흔들리면 CI 게이트가 `--limit`에 좌우된다 — 3건만 보여준다고 위반이
+    3건인 것은 아니다. FR-7.5의 종료 코드는 **판정의 결과이지 출력의 결과가 아니다.**
+
+    `check_violations.ass`는 위반 4건이다(실측). `--limit 1`이 실제로 자르는 것을
+    "생략"으로 확인하는 이유는, 픽스처가 1건짜리로 바뀌면 이 테스트가 **아무것도
+    재지 않으면서 통과**하기 때문이다.
+    """
+    args = ["check", str(FIXTURES / "check_violations.ass"), "--spec", "ko"]
+    full = runner.invoke(app, args)
+    limited = runner.invoke(app, [*args, "--limit", "1"])
+
+    assert full.exit_code == 1, f"픽스처가 위반을 내지 않는다: exit {full.exit_code}"
+    # **`CliRunner`는 미처리 예외도 exit 1로 만든다** — `typer.Exit(1)`과 종료 코드로
+    # 구별되지 않는다(리뷰 실측: `KeyError`도 `SystemExit`도 똑같이 `exit_code=1`).
+    # 종료 코드만 단언하면 **전체 출력만 크래시하는 회귀**가 그대로 통과한다.
+    # `limited` 쪽은 아래 "생략" 단언이 우연히 막고 있었고 이쪽만 열려 있었다.
+    assert "위반 4건" in full.stdout, f"exit 1이지만 정상 산출물이 아니다: {full.stdout}"
+    assert limited.exit_code == 1, "출력을 자르니 종료 코드가 바뀌었다"
+    assert "생략" in limited.stdout, (
+        f"절단이 일어나지 않아 이 테스트가 무의미하다: {limited.stdout}"
+    )
+
+
+def test_negative_limit_is_a_usage_error():
+    """음수 상한은 **명령줄이 틀린 것**이라 2다.
+
+    66(파일이 틀림)이나 1(규격 위반)로 새면 CI가 자기 설정 오류를 자막 결함으로 읽는다.
+    """
+    result = runner.invoke(
+        app, ["check", str(FIXTURES / "minimal.srt"), "--spec", "ko", "--limit", "-1"]
+    )
+
+    assert result.exit_code == 2, f"exit {result.exit_code}"
+
+
 @pytest.mark.parametrize(
     "fixture",
     ["not_subtitle.txt", "cp949.srt", "reversed.srt", "all_comments.ass"],
@@ -427,6 +578,60 @@ def test_bad_file_content_exits_66_not_2(fixture: str):
     """
     result = runner.invoke(app, ["check", str(FIXTURES / fixture), "--spec", "ko"])
     assert result.exit_code == 66
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("규격 위반 없음", "짧은 줄"),
+        ("규격 위반 있음", "열여섯 자를 확실히 넘기는 아주 긴 줄입니다 정말로"),
+    ],
+)
+def test_negative_timecodes_exit_66_regardless_of_spec_violations(tmp_path, label: str, text: str):
+    """**첫 행이 exit 0으로 샜다**(고치기 전 실측).
+
+    | 입력 | 고치기 전 | 지금 |
+    | --- | --- | --- |
+    | 음수 + 규격 위반 **없음** | **exit 0 · "위반 없음"** | 66 |
+    | 음수 + 규격 위반 있음 | exit 1 · 좌표가 `00:00:00.000` | 66 |
+
+    첫 행이 더 나쁘다 — 재생할 수 없는 파일이 **깨끗하다는 보고와 함께** CI를 통과한다.
+    두 행을 함께 두는 이유는 판정 결과와 무관하게 66이어야 하기 때문이다. 위반 있는
+    케이스만 두면 "1이 아니다"만 확인해 exit 0 누수를 못 잡는다.
+
+    여기서 json을 쓰는 것은 **부호를 한 줄로 주입하기 쉬워서지 진입로가 하나여서가
+    아니다.** pysubs2는 ASS·SAMI·MPL2에서도 음수를 파싱한다 — 평문 포맷 쪽은
+    `test_negative_timecodes_are_rejected_in_ass_not_only_json`이 픽스처로 덮는다.
+    (SRT·VTT는 부호 자리가 없어 앞의 `-`를 조용히 무시하므로 여기서 못 쓴다.)
+    """
+    payload = {
+        "info": {},
+        "styles": {"Default": {}},
+        "events": [
+            {
+                "type": "Dialogue",
+                "layer": 0,
+                "start": -5000,
+                "end": -1000,
+                "style": "Default",
+                "name": "",
+                "marginl": 0,
+                "marginr": 0,
+                "marginv": 0,
+                "effect": "",
+                "text": text,
+            }
+        ],
+    }
+    target = tmp_path / "negative.json"
+    target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(target), "--spec", "ko"])
+
+    assert result.exit_code == 66, (
+        f"exit {result.exit_code} — 0이면 재생 불가능한 파일이 깨끗하다고 보고되고, "
+        "1이면 검수자가 고칠 수 없는 것을 규격 위반으로 읽는다"
+    )
 
 
 def test_missing_file_exits_2_not_66():

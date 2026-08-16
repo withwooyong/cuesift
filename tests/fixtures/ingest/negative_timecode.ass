@@ -1,0 +1,11 @@
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, Bold, Italic, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,20,&H00FFFFFF,0,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,-0:00:03.00,0:00:05.00,Default,,0,0,0,,싱크를 앞으로 당겨 음수가 된 큐
+Dialogue: 0,0:00:06.00,0:00:08.00,Default,,0,0,0,,정상 큐

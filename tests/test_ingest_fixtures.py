@@ -27,6 +27,14 @@ EXPECTED = (
     "basic.ssa",
     "comment_then_reversed.ass",
     "check_violations.ass",
+    # `0`을 쓰는 픽스처가 하나도 없었다(리뷰 실측). 그래서 `< 0` -> `<= 0` 변이가
+    # 전체 스위트를 통과했고, `00:00:00,000`으로 시작하는 흔한 자막이 exit 66이
+    # 되는 회귀를 아무도 못 잡았다.
+    "starts_at_zero.srt",
+    # **음수 타임코드의 진입로는 json 하나가 아니다.** pysubs2가 ASS에서 음수를
+    # 의도적으로 파싱한다(`substation.py`의 `# handle negative timestamps`).
+    # json 픽스처만 두면 다음 사람이 "json만 조심하면 된다"는 틀린 지도를 받는다.
+    "negative_timecode.ass",
 )
 
 

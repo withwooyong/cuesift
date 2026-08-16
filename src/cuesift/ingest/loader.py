@@ -254,6 +254,54 @@ def _require_int_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) 
             )
 
 
+def _require_non_negative_timecodes(event: pysubs2.SSAEvent, raw_index: int, path: Path) -> None:
+    """타임코드가 **음수가 아님을 보증한다** (FR-1.1).
+
+    **타입 검사도 역전 검사도 이것을 잡지 못한다**(실측). `(-5000, -1000)`은 둘 다
+    int이고 `end >= start`도 만족한다. 그대로 통과하면 `_format_timecode`가 부호를
+    살려 `-00:00:01.000`을 찍는데, 그 앞 판정이 **규격 위반을 하나도 못 찾으면
+    `check`가 exit 0 · "위반 없음"을 낸다** — 재생 불가능한 파일이 CI를 통과한다.
+
+    | 입력 | 이 검사가 없으면 |
+    | --- | --- |
+    | `(-5000, -1000)` | **exit 0 · "위반 없음"** (규격 위반이 없는 트랙일 때) |
+    | `(-3000, 1000)` | exit 1은 나지만 목록의 좌표가 실제 위치와 다르다 |
+
+    **`< 0`이지 `<= 0`이 아니다.** `0`은 영상 첫 프레임을 가리키는 정상 값이고
+    `00:00:00,000`으로 시작하는 자막은 흔하다 — 여기서 `0`을 막으면 그 자막이 전부 죽는다.
+    바로 옆 `profile.py`의 `_require_positive`가 `<= 0`을 쓰므로 그 오독은 그럴듯하고,
+    실제로 **`<= 0` 변이가 497건 전체 스위트를 통과했다**(리뷰 실측). 지금은
+    `starts_at_zero.srt` 픽스처와 `test_a_cue_starting_at_zero_loads_normally`가 막는다 —
+    그 픽스처를 **새로 만들어야 했다.** 기존 13종 중 `0`을 지나가는 것이 하나도 없었다.
+
+    **진입로는 json 하나가 아니다.** pysubs2가 ASS·SAMI(`.smi`)·MPL2에서 음수를
+    **의도적으로** 파싱한다(`substation.py`의 `# handle negative timestamps`,
+    `mpl2.py` 정규식의 부호, `sami.py`의 `int()`). SRT·VTT·MicroDVD·TMP는 부호 자리가
+    없어 앞의 `-`를 조용히 무시한다. **쓰기 경로는 pysubs2가 전부 클램프하므로**
+    "우리 도구로 왕복시켜 보니 괜찮더라"는 검증은 이 위험을 통째로 비켜 간다 —
+    출처는 **외부 도구가 만든 파일**이다.
+
+    **대가를 적어 둔다.** 한 큐가 걸리면 파일 전체가 66이라 나머지 큐의 규격 위반이
+    통째로 가려진다(실측: 800큐 ASS에서 `-10ms` 하나가 위반 17건을 덮었다). 그럼에도
+    이 판정을 고른 것은 대안이 전부 더 나쁘기 때문이다 — 허용 임계값은 출처가 없어
+    §11 R8("출처 없는 수치를 기본값으로 넣지 않음")에 걸리고, 해당 큐만 빼는 것은
+    `검사 큐 N개` 헤더를 거짓으로 만든다. **0으로 클램프하는 것은 특히 안 된다** —
+    `_format_timecode`에서 방금 폐기한 "그럴듯한 거짓"과 같은 것이 된다.
+
+    규격 위반(exit 1)이 아니라 `IngestError`(exit 66)인 것은 고칠 대상이 다르기
+    때문이다. CPS·줄길이는 검수자가 그 큐의 텍스트를 고치면 되지만 음수 좌표는
+    싱크·변환 파이프라인의 사고다. 섞으면 CI가 두 사고에 같은 대응을 한다.
+    """
+    for field in ("start", "end"):
+        value = getattr(event, field)
+        if value < 0:
+            raise IngestError(
+                "negative_timecode",
+                f"{path}: {raw_index + 1}번째 큐의 {field} 타임코드가 음수다 "
+                f"(받은 값: {value}ms). 타임코드는 0 이상이어야 한다.",
+            )
+
+
 def _to_segments(
     events: list[tuple[int, pysubs2.SSAEvent]], path: Path
 ) -> tuple[list[Segment], dict[str, int]]:
@@ -263,9 +311,10 @@ def _to_segments(
     정렬이 혼란스러워진다. 원본 위치는 `event_index`가 보존하므로
     라운드트립에 필요한 정보는 잃지 않는다.
 
-    타임코드의 **타입과 역전**을 둘 다 여기서 잡는다. `Segment`에 맡기면 `ValueError`가
+    타임코드의 **타입·부호·역전**을 셋 다 여기서 잡는다. `Segment`에 맡기면 `ValueError`가
     나는데 몇 번째 큐인지가 메시지에 없고, 무엇보다 이 함수가 `try` 밖에서 불리므로
     그 예외는 `IngestError`를 우회한다(위 `_require_int_timecodes` 참조).
+    **부호는 `Segment`도 안 본다** — `__post_init__`은 역전만 검사한다.
     """
     segments: list[Segment] = []
     event_index: dict[str, int] = {}
@@ -279,6 +328,11 @@ def _to_segments(
         # 뒤집어도 아무것도 드러나지 않는다 — 순서를 지키는 게이트는 반드시
         # **혼합 타입** 입력이어야 한다(`test_mixed_type_timecodes_...`).
         _require_int_timecodes(event, raw_index, path)
+        # **부호 검사가 역전 검사보다 먼저여야 한다.** `(1000, -3000)`은 둘 다 해당하는데
+        # 역전 메시지는 `start=1000ms > end=-3000ms`만 말하고 음수를 숨긴다 — 사용자는
+        # 역전만 고치고 여전히 재생 불가능한 파일을 얻는다(`test_negative_check_runs_
+        # before_the_reversal_test`가 고정한다).
+        _require_non_negative_timecodes(event, raw_index, path)
         if event.end < event.start:
             raise IngestError(
                 "bad_timecode",
