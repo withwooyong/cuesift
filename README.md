@@ -302,6 +302,32 @@ ruff check .
 > 필요할 때만 `pip install -e ".[dev,stt,qe]"` 로 설치하세요.
 > 개발은 Python **3.11 / 3.12** 를 권장합니다 — CI가 검증하는 범위이며, 그 이상은 torch 휠이 없을 수 있습니다.
 
+### 실제 LLM 엔드포인트 테스트 (`-m live`)
+
+번역 테스트는 기본적으로 **가짜 프로바이더** 위에서 돕니다. 실제 엔드포인트를 치는 테스트는
+`pyproject.toml`의 `-m "not live"`로 제외되어 있으므로, 돌리려면 명령줄에서 `-m live`로 덮습니다.
+
+| 환경변수 | 필수 | 설명 |
+|---|---|---|
+| `CUESIFT_LIVE_BASE_URL` | ✅ | OpenAI 호환 엔드포인트. 예: `http://localhost:11434/v1` |
+| `CUESIFT_LIVE_MODEL` | ✅ | 모델 이름. 예: `qwen2.5:3b` |
+| `CUESIFT_LIVE_API_KEY` | — | 없으면 `Authorization` 헤더를 붙이지 않습니다. 로컬 Ollama는 불필요 |
+
+앞의 둘 중 하나라도 없으면 **실패가 아니라 skip**입니다 — `-m live`는 "돌릴 의사가 있다"이지
+"엔드포인트가 있다"가 아니고, 상시 빨간 게이트는 무시되는 게이트가 됩니다.
+
+```powershell
+winget install --id Ollama.Ollama -e     # 설치 후 새 터미널
+ollama pull qwen2.5:3b
+
+$env:CUESIFT_LIVE_BASE_URL = "http://localhost:11434/v1"
+$env:CUESIFT_LIVE_MODEL    = "qwen2.5:3b"
+.venv/Scripts/python.exe -m pytest tests/test_translate_live.py -m live -v -s
+```
+
+`-s`는 장식이 아닙니다. 이 테스트의 목적이 `[live] calls=N`을 눈으로 읽는 것인데,
+`-s`가 없으면 pytest가 stdout을 삼켜 **통과한 실행에서는 그 줄이 아예 보이지 않습니다.**
+
 ## 문서
 
 | 문서 | 내용 |
