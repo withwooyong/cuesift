@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -181,6 +182,21 @@ def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> Non
     최종 경로로 옮겨 그 자리에 파일이 없으므로 `unlink(missing_ok=True)`가
     조용한 무연산이다 - `missing_ok=True`가 이미 그 분기를 흡수하므로
     `finally`를 피할 이유가 없다.
+
+    **정리 자신의 실패는 `OSError`만 삼킨다 - 원래 예외를 가리면 안
+    된다.** 실측(WP7b Task 2 리뷰 라운드 4): `os.replace`가
+    `KeyboardInterrupt`를 던지는 **동시에** `unlink`가 `PermissionError`
+    (파일이 잠긴 경우 등)를 던지면, 파이썬은 `finally` 블록이 새로 던진
+    예외로 진행 중이던 예외를 **대체**한다 - 전파되는 것이
+    `KeyboardInterrupt`가 아니라 `PermissionError`가 됐고, 그 값은
+    `CachingProvider`의 `CACHE_IO_ERRORS`에 걸려 흡수된다 - Ctrl+C가
+    조용히 사라진다. `contextlib.suppress(OSError)`로 `unlink`만 감싸
+    정리 실패를 원래 예외보다 부차적으로 만든다. `OSError`로 좁힌 이유는
+    `unlink`가 낼 수 있는 실패가 파일시스템 계열
+    (`PermissionError`·`IsADirectoryError` 등, 전부 `OSError`의 하위)뿐이기
+    때문이다 - `missing_ok=True`가 이미 "없어서 못 지움"
+    (`FileNotFoundError`)을 흡수하므로 여기 남는 것은 "있는데 못 지움"류의
+    나머지 `OSError`뿐이다.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -201,7 +217,8 @@ def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> Non
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, cache_dir / f"{request.key}.json")
     finally:
-        tmp.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def _matches(raw: object, request: CacheRequest) -> bool:

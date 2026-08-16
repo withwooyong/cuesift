@@ -153,6 +153,25 @@ def test_저장_실패는_번역을_죽이지_않는다(tmp_path: Path, monkeypa
     assert len(warnings) == 1
 
 
+def test_store가_KeyboardInterrupt를_던지면_그대로_전파된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # WP7b Task 2 리뷰 라운드 4 실측: `_store_or_warn`의
+    # `except CACHE_IO_ERRORS`를 `except BaseException`으로 넓혀도 죽는
+    # 테스트가 0개였다 - "정리는 최대, 흡수는 한정"(cache.py `store()` 참고)
+    # 중 흡수 쪽에는 게이트가 없었다는 뜻이다. 이 테스트가 그 짝이다.
+    # 긴 번역 도중 Ctrl+C(FR-2.7 재개의 전형적 트리거)가 캐시 계층에서
+    # 조용히 삼켜지면 안 된다 - 삼키면 Ctrl+C가 안 먹힌다.
+    def boom(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("cuesift.store.provider.store", boom)
+    provider = CachingProvider(ScriptedProvider(["응답1"]), identity="i|u|m", cache_dir=tmp_path)
+
+    with pytest.raises(KeyboardInterrupt):
+        provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+
+
 def test_저장이_새는_예외를_내도_inner_결과가_그대로_나간다(tmp_path: Path) -> None:
     # 리뷰 실측: content에 짝 없는 서러게이트(U+D800)가 섞이면 store()의
     # json.dumps는 통과하지만 tmp.write_text(encoding="utf-8")가

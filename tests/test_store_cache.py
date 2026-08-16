@@ -350,3 +350,30 @@ def test_KeyboardInterrupt에도_임시_파일을_남기지_않는다(
         store(tmp_path, _request(), _completion())
 
     assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_정리_실패가_원래_예외를_가리지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # WP7b Task 2 리뷰 라운드 4 실측: `os.replace`가 KeyboardInterrupt를
+    # 던지는 **동시에** `tmp.unlink`가 PermissionError(파일이 잠긴 경우 등)를
+    # 던지면, `finally` 블록이 새 예외로 원래 예외를 **대체**한다는 파이썬의
+    # 규칙 때문에 전파되는 것은 PermissionError였다. 그 값은 CACHE_IO_ERRORS에
+    # 걸려 CachingProvider가 흡수한다 - Ctrl+C가 조용히 사라진다. 정리
+    # 자체의 실패는 원래 예외보다 부차적이어야 한다.
+    #
+    # tmp가 남는지는 여기서 보지 않는다 - `unlink` 자체를 항상 실패하도록
+    # 몽키패치했으므로 이 테스트에서는 지워질 수가 없다. 이 테스트가 재는
+    # 것은 "무엇이 전파되는가"뿐이고, "tmp가 지워지는가"는
+    # `test_KeyboardInterrupt에도_임시_파일을_남기지_않는다`의 몫이다.
+    def replace_boom(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    def unlink_boom(self: Path, *args: object, **kwargs: object) -> None:
+        raise PermissionError("잠김")
+
+    monkeypatch.setattr("cuesift.store.cache.os.replace", replace_boom)
+    monkeypatch.setattr(Path, "unlink", unlink_boom)
+
+    with pytest.raises(KeyboardInterrupt):
+        store(tmp_path, _request(), _completion())
