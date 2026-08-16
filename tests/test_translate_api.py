@@ -22,8 +22,9 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import pathlib
-import shlex
+import pkgutil
 import tomllib
 from types import ModuleType
 
@@ -31,12 +32,27 @@ import httpx
 import pytest
 
 import cuesift.translate as t
-from cuesift.translate import batch, engine, openai_compat, prompt, provider
+from conftest import pytest_configure
 
-# 재수출 대상 하위 모듈. **새 모듈이 늘면 여기에 더해야 한다** - 빠뜨리면 그
-# 모듈의 공개 심볼만 검사 없이 지나간다. 이 저장소가 반복해서 물린 자리가
-# 정확히 이것이다(복제된 구조의 두 번째 사본이 검사에서 빠진다).
-_MODULES: tuple[ModuleType, ...] = (provider, batch, prompt, engine, openai_compat)
+
+def _submodules() -> tuple[ModuleType, ...]:
+    """`cuesift.translate`의 하위 모듈을 **전부** 찾는다.
+
+    **손으로 적은 목록을 쓰면 안 된다.** 새 모듈이 생기고 여기 추가하지
+    않으면 그 모듈의 공개 심볼만 검사 없이 지나가는데, 그것이 이 저장소가
+    반복해서 물린 "복제된 구조의 두 번째 사본이 검사에서 빠진다" 자리다.
+    실측으로 확인했다 - 손 관리 시절에는 새 모듈을 추가해도 **0건이 죽었다.**
+
+    `pkgutil`은 표준 라이브러리라 의존성 고정 규율(런타임 4개·dev 3개)에
+    걸리지 않는다.
+    """
+    return tuple(
+        importlib.import_module(f"{t.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(t.__path__)
+    )
+
+
+_MODULES: tuple[ModuleType, ...] = _submodules()
 
 # 호출자가 이름으로 부르는 것들. `__all__`과 **일부러 중복해서** 적는다 -
 # `__all__`을 훑어서 검사하면 `__all__`에서 지운 이름은 검사 대상에서도 같이
@@ -129,6 +145,10 @@ def test_하위_모듈의_공개_심볼이_빠짐없이_재수출된다() -> Non
     이 정책이 없으면 새 공개 심볼이 재수출 없이 조용히 늘어나고, 호출자는
     하위 모듈 경로를 직접 파고들어 결국 파사드가 무의미해진다.
     """
+    # 0개 순회는 통과가 아니라 설정 오류다. `pkgutil`이 빈 목록을 주면
+    # 아래 루프가 한 번도 돌지 않은 채 초록이 된다.
+    assert len(_MODULES) >= 5, f"하위 모듈을 못 찾았다: {[m.__name__ for m in _MODULES]}"
+
     for module in _MODULES:
         unexported = sorted(_public_toplevel_names(module) - set(t.__all__))
         assert unexported == [], f"{module.__name__}의 공개 심볼이 재수출되지 않았다: {unexported}"
@@ -154,6 +174,9 @@ def test_설정_오류는_ProviderError로_잡히지_않는다() -> None:
     깨지고 기존 `pytest.raises(ValueError)` 테스트는 전부 통과한다.
     """
     bad_configs = (
+        # `httpx.InvalidURL`을 감싼 자리. 감싸지 않으면 `InvalidURL`은
+        # `ValueError`도 `ProviderError`도 아니라 이 계약이 통째로 깨진다.
+        {"base_url": "http://[::1", "model": "m"},  # URL로 읽히지 않음
         {"base_url": "localhost:11434/v1", "model": "m"},  # 스킴 없음
         {"base_url": "https:///v1", "model": "m"},  # 호스트 없음
         {"base_url": "https://h/v1?k=1", "model": "m"},  # 쿼리 포함
@@ -176,24 +199,97 @@ def test_설정_오류는_ProviderError로_잡히지_않는다() -> None:
 # ---------------------------------------------------------------------------
 # `live` 마커 게이트 (설계 §9.2)
 #
-# **아래 둘은 변이 실측으로 뚫린 구멍을 막는 것이다.** `-m "not live"`를
-# addopts에서 지우거나 live 모듈의 `pytestmark`를 지워도, 환경변수가 없는
-# 환경(=CI)에서는 `deselected`가 `skipped`로 바뀔 뿐 **아무 테스트도 죽지
-# 않는다.** 게이트가 조용히 보호력을 잃고 CI는 그대로 초록이다.
+# **역할 분담이 이 절의 요점이다.**
 #
-# 피해는 환경변수가 설정된 개발자 머신에서 드러난다 - 평범한 `pytest` 한 줄이
-# 유료 엔드포인트를 치기 시작하고, 붙는 것은 요금과 네트워크 불안정성이다.
-# 그래서 "실행 결과"가 아니라 **설정 그 자체**를 단언한다.
+# | 무엇을 지키나 | 어디서 | 왜 거기인가 |
+# | --- | --- | --- |
+# | ini 파일·`--strict-markers`·`-m` 개수 | `conftest` 훅 | **deselect될 수 없다** |
+# | 훅이 실제로 거부하는가 | 여기 | 훅을 지워도 죽는 것이 있어야 한다 |
+# | `markers` 등록 · live 파일의 `pytestmark` | 여기 | 훅이 보지 않는 것들 |
+#
+# 설정 검사를 테스트로 두면 **자기를 무력화하는 변이에 같이 쓸려 나간다** -
+# `addopts`에 `-m live`를 덧붙이면 감시자 자신이 832개와 함께 deselect되고
+# exit 0이 나온다(훅을 넣기 전 실측). 그래서 그 검사만 훅으로 옮겼다.
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def test_live_마커가_등록되고_기본_제외된다() -> None:
-    """`markers` 등록과 `-m "not live"` 기본값을 둘 다 본다.
+class _FakeConfig:
+    """훅이 읽는 것만 흉내 낸다 - `inipath`·`getoption`·`getini` 셋뿐이다.
 
-    등록이 빠지면 수집이 **에러**로 중단되므로(`--strict-markers`) 그쪽은
-    어차피 요란하게 죽는다. 조용히 죽는 것은 `-m "not live"` 쪽이다.
+    **가짜가 진짜와 다른 모양이면 훅 테스트가 통째로 무의미해진다.** 그래서
+    `test_가짜_Config가_진짜와_같은_모양이다`가 진짜 `Config`로 세 접근자의
+    타입을 확인한다. 이 저장소는 "가짜가 진짜가 하는 일을 아예 안 함"에
+    이미 물린 적이 있다.
+    """
+
+    def __init__(self, *, inipath: pathlib.Path, strict: bool, addopts: list[str]) -> None:
+        self.inipath = inipath
+        self._strict = strict
+        self._addopts = addopts
+
+    def getoption(self, name: str) -> bool:
+        assert name == "strict_markers", name
+        return self._strict
+
+    def getini(self, name: str) -> list[str]:
+        assert name == "addopts", name
+        return self._addopts
+
+
+_GOOD = {
+    "inipath": _REPO_ROOT / "pyproject.toml",
+    "strict": True,
+    "addopts": ["-ra", "--strict-markers", "-m", "not live"],
+}
+
+
+def test_가짜_Config가_진짜와_같은_모양이다(pytestconfig: pytest.Config) -> None:
+    """`_FakeConfig`가 흉내 내는 세 접근자가 진짜에서도 같은 타입을 낸다."""
+    assert isinstance(pytestconfig.inipath, pathlib.Path)
+    assert isinstance(pytestconfig.getoption("strict_markers"), bool)
+    assert isinstance(pytestconfig.getini("addopts"), list)
+
+
+def test_게이트_훅이_정상_설정을_통과시킨다(pytestconfig: pytest.Config) -> None:
+    """진짜 `Config`로 훅을 직접 불러 **오작동하지 않는 것**을 고정한다.
+
+    초판이 `getini("addopts")`를 다시 `shlex.split`해 `"not live"`를 두
+    토큰으로 쪼갰고, 그 결과 **정상 설정에서도 훅이 전체 실행을 막았다**(실측).
+    이 테스트가 그 회귀를 잡는다.
+    """
+    pytest_configure(pytestconfig)
+    pytest_configure(_FakeConfig(**_GOOD))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("변경", "기대"),
+    [
+        ({"inipath": _REPO_ROOT / "pytest.ini"}, "우리 pyproject가 아니다"),
+        ({"strict": False}, "strict-markers"),
+        ({"addopts": ["-m", "not live", "-m", "live"]}, "하나가 아니다"),
+        ({"addopts": ["-ra", "--strict-markers"]}, "하나가 아니다"),
+        ({"addopts": ["-m", "live"]}, "not live"),
+    ],
+)
+def test_게이트_훅이_설정_이탈을_실제로_거부한다(변경: dict, 기대: str) -> None:
+    """**훅을 지우거나 무르게 만들면 여기가 죽는다.**
+
+    훅이 없으면 네 가지 우회가 전부 되살아나는데, 그 우회들은 하나같이
+    **조용하다**(exit 0에 초록). 훅의 존재 자체를 지키는 것이 이 테스트다.
+    """
+    with pytest.raises(pytest.UsageError, match=기대):
+        pytest_configure(_FakeConfig(**{**_GOOD, **변경}))  # type: ignore[arg-type]
+
+
+def test_live_마커가_등록되고_기본_제외된다() -> None:
+    """`markers`에 `live`가 정확히 하나 등록돼 있는가.
+
+    **이것은 훅이 보지 않는다.** 훅은 `--strict-markers`가 켜졌는지만 보고,
+    등록 자체가 빠지면 수집이 에러로 중단되므로 요란하게 죽는다. 그러나
+    등록이 **둘**이 되는 것(오타 섞인 중복 등록)은 어느 쪽도 잡지 않아
+    여기서 본다.
     """
     config = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     ini = config["tool"]["pytest"]["ini_options"]
@@ -201,12 +297,9 @@ def test_live_마커가_등록되고_기본_제외된다() -> None:
     registered = [m for m in ini["markers"] if m.split(":")[0].strip() == "live"]
     assert len(registered) == 1, f"live 마커 등록이 정확히 하나여야 한다: {ini['markers']}"
 
-    # pytest가 addopts를 shlex로 쪼개므로 같은 방식으로 읽는다. 문자열
-    # 부분일치로 검사하면 `-m "not live"`가 주석이나 다른 마커식의 일부로
-    # 들어가 있어도 통과한다.
-    args = shlex.split(ini["addopts"])
-    assert "-m" in args, f"addopts에 -m이 없다: {ini['addopts']}"
-    assert args[args.index("-m") + 1] == "not live", f"기본 제외식이 아니다: {args}"
+    # `addopts`의 `-m`은 **여기서 보지 않는다.** 훅이 수집 전에 보고 거부하므로
+    # 여기 같은 단언을 두면 절대 실패할 수 없는 죽은 코드가 된다 - 검사하지
+    # 않으면서 검사하는 척하는 것은 없는 게이트보다 나쁘다.
 
 
 def test_live_테스트_모듈이_마커를_단다() -> None:
@@ -214,12 +307,26 @@ def test_live_테스트_모듈이_마커를_단다() -> None:
 
     설정과 표식은 **둘 다 있어야** 동작하는 한 쌍이라, 한쪽만 검사하면
     나머지 한쪽을 지우는 변이가 그대로 통과한다.
+
+    **파일명 하나에 못 박으면 안 된다.** 초판은 `test_translate_live.py`만
+    봤고, 마커 없는 두 번째 live 파일을 넣으니 **0건이 죽은 채 그 파일이
+    기본 수집에 들어와 그대로 실행됐다**(이 검사를 고치기 전 실측:
+    `833 passed, 1 deselected` — 새 파일이 833번째로 조용히 늘었다).
+    게이트가 막으려던 피해가 정확히 그 형태로 재현된다.
+
+    **이것은 가정이 아니라 예정된 경로다** - WBS가 다음 순위로 못 박은
+    WP7b가 `cuesift translate` CLI의 live 테스트를 추가한다.
     """
-    source = (_REPO_ROOT / "tests" / "test_translate_live.py").read_text(encoding="utf-8")
-    marks = [
-        ast.unparse(node.value)
-        for node in ast.parse(source).body
-        if isinstance(node, ast.Assign)
-        and any(tgt.id == "pytestmark" for tgt in node.targets if isinstance(tgt, ast.Name))
-    ]
-    assert marks == ["pytest.mark.live"], f"live 모듈의 pytestmark가 어긋났다: {marks}"
+    live_files = sorted(_REPO_ROOT.glob("tests/test_*live*.py"))
+    # **빈 목록을 실패로 못 박는다.** 없으면 파일명 규칙이 바뀌는 날 이
+    # 테스트가 0개를 검사하며 초록이 된다 - 0개 수집은 통과가 아니다.
+    assert live_files, "live 테스트 파일을 하나도 못 찾았다"
+
+    for path in live_files:
+        marks = [
+            ast.unparse(node.value)
+            for node in ast.parse(path.read_text(encoding="utf-8")).body
+            if isinstance(node, ast.Assign)
+            and any(tgt.id == "pytestmark" for tgt in node.targets if isinstance(tgt, ast.Name))
+        ]
+        assert marks == ["pytest.mark.live"], f"{path.name}의 pytestmark가 어긋났다: {marks}"

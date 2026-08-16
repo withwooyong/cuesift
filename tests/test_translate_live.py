@@ -9,16 +9,20 @@
     CUESIFT_LIVE_BASE_URL=https://api.openai.com/v1 \\
     CUESIFT_LIVE_MODEL=gpt-4o-mini \\
     CUESIFT_LIVE_API_KEY=sk-... \\
-    .venv/Scripts/python.exe -m pytest tests/test_translate_live.py -m live -v
+    .venv/Scripts/python.exe -m pytest tests/test_translate_live.py -m live -v -s
 
 로컬 Ollama (키 없음):
 
     CUESIFT_LIVE_BASE_URL=http://localhost:11434/v1 \\
     CUESIFT_LIVE_MODEL=qwen2.5:3b \\
-    .venv/Scripts/python.exe -m pytest tests/test_translate_live.py -m live -v
+    .venv/Scripts/python.exe -m pytest tests/test_translate_live.py -m live -v -s
 
 **Ollama 쪽이 이 파일의 진짜 목적이다** (요구사항정의서 §12 Q3: 로컬 LLM은
 OpenAI 호환 엔드포인트로 일원화하되 능력은 균일하지 않다).
+
+**두 명령의 `-s`는 장식이 아니다.** 이 파일이 존재하는 이유가 "약한 모델에서
+`calls > 1`을 눈으로 읽는 것"인데, `-s`가 없으면 pytest가 stdout을 삼켜
+**통과한 실행에서는 그 줄이 아예 안 보인다.**
 
 ## 이 테스트가 검증하지 **못하는** 것
 
@@ -37,10 +41,15 @@ OpenAI 호환 엔드포인트로 일원화하되 능력은 균일하지 않다).
 `usage.calls == 1`(배치 한 번에 성공)로 못 박으면 **약한 모델에서 이 파일이
 빨개진다** - 폴백이 발동해 호출이 4회가 되기 때문이다. 그런데 그 발동이야말로
 여기서 보고 싶은 현상이라, 단정하면 목적과 정반대로 동작한다. 그래서
-`calls >= 1`만 걸고 실제 값은 `-v -s`의 출력으로 읽는다.
+하한을 풀고 실제 값은 `-v -s`의 출력으로 읽는다.
 
 - `calls == 1`: 배치 경로가 그대로 성공했다 (프론티어 모델의 통상)
 - `calls > 1`: **폴백이 실물에서 발동했다** (약한 모델. 이것이 관찰 목표다)
+
+**대신 상한을 건다.** `calls >= 1`은 `failures == ()`가 이미 함의하므로
+그것만으로는 공허하다. 상한 `(1 + 세그먼트 수) x (max_retries + 1)`은
+"배치 1회 + 세그먼트별 폴백, 각각 최대 재시도"라는 구조가 낼 수 있는 최대치다.
+넘으면 재시도 루프가 폭주했다는 뜻이고, 그것은 폴백 관찰과 무관하게 결함이다.
 """
 
 from __future__ import annotations
@@ -50,7 +59,11 @@ import os
 import pytest
 
 from cuesift.segment.models import Segment
-from cuesift.translate import OpenAICompatibleProvider, translate_segments
+from cuesift.translate import (
+    DEFAULT_MAX_RETRIES,
+    OpenAICompatibleProvider,
+    translate_segments,
+)
 
 pytestmark = pytest.mark.live
 
@@ -109,8 +122,12 @@ def test_실제_엔드포인트로_한_배치를_왕복한다() -> None:
     ]
 
     # NFR-2 비용 투명성. 사용량을 세지 않으면 리포트가 0원을 보고한다.
-    assert result.usage.calls >= 1
     assert result.usage.prompt_tokens > 0
+    # 상한만 건다. 하한(`>= 1`)은 위의 `failures == ()`가 이미 함의해 공허하다.
+    # 이 값은 "배치 1회 + 세그먼트별 폴백"에 각각 재시도가 다 붙은 최대치이고,
+    # 넘으면 폴백이 아니라 재시도 루프가 폭주한 것이다.
+    최대_호출 = (1 + len(segments)) * (DEFAULT_MAX_RETRIES + 1)
+    assert result.usage.calls <= 최대_호출, f"호출 {result.usage.calls}회 > 상한 {최대_호출}회"
     # 폴백 발동 여부를 눈으로 읽는 자리다. 위 독스트링 "호출 횟수를 단정하지
     # 않는 이유"를 참고할 것.
     print(f"\n[live] calls={result.usage.calls} usage={result.usage}")

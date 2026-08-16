@@ -33,15 +33,19 @@ exit 66("파일 내용이 틀림")을 가른 것과 같은 축이다 (설계 §4
 설정 오류는 재시도해도 소용없고 세그먼트 단위로 강등할 대상도 아니다.
 
 따라서 `except ProviderError`만 다는 호출부에서는 `base_url` 오타 하나가
-트레이스백으로 새어 나간다. 다음 다섯이 맨 `ValueError`다.
+트레이스백으로 새어 나간다. 다음 **여섯**이 맨 `ValueError`다.
 
 | 자리 | 조건 |
 | --- | --- |
+| `base_url` | `httpx`가 URL로 읽지 못함 (`http://[::1` 같은 깨진 포트·괄호) |
 | `base_url` | 스킴이 http/https가 아니거나 없음 |
 | `base_url` | 호스트가 없음 |
 | `base_url` | 쿼리(`?`)나 프래그먼트(`#`)를 포함 |
 | `api_key` | 비-ASCII 문자를 포함 |
 | `timeout`+`client` | 둘을 동시에 지정 |
+
+첫 행은 `httpx.InvalidURL`을 감싼 것이다. `InvalidURL`은 `ValueError`도
+`ProviderError`도 **아니라서** 그대로 두면 이 표의 계약을 깨뜨린다.
 
 마지막 항은 `timeout`의 기본값이 `None` 센티널이라 성립한다. 센티널이
 없으면 "60.0을 명시했다"와 "안 줬다"를 구분할 수 없어, 주입한 클라이언트가

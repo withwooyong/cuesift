@@ -25,7 +25,54 @@ CI에서는 정확히 반대였다.
 
 from __future__ import annotations
 
+import pathlib
 import re
+
+import pytest
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """게이트 설정이 바뀌었으면 **수집 전에** 실행을 멈춘다 (설계 §9.2).
+
+    이 검사가 `tests/test_translate_api.py`가 아니라 여기 있는 이유는 하나다 -
+    **테스트로 두면 자기를 무력화하는 변이에 같이 쓸려 나간다.** 실측:
+    `addopts` 끝에 `-m live`를 덧붙이면 뒤의 `-m`이 이겨 `1 skipped,
+    832 deselected`가 되는데(훅을 넣기 전 실측), 그 832개에 **감시자 자신이
+    들어 있다.** exit 0이라 CI는 초록이고 832개가 한 번도 돌지 않은 것은
+    아무도 모른다.
+
+    이 저장소가 CI 5회 연속 실패를 못 본 것이 정확히 이 형태다 -
+    "통과했나"는 초록인데 **"무엇을 대상으로 통과했나"가 통째로 바뀌었다.**
+
+    `pytest_configure`는 마커 필터링보다 **먼저** 돌고 deselect의 대상이
+    아니라서 이 자리만이 안전하다. 명령줄의 `-m live`는 여기 걸리지 않는다 -
+    보는 것은 `addopts`(기본값)이지 이번 실행의 마커식이 아니다.
+    """
+    problems: list[str] = []
+
+    # pytest.ini·tox.ini가 생기면 pyproject보다 그쪽이 이긴다. 우리 설정이
+    # 통째로 무시된 채 초록이 나는 경로다.
+    if config.inipath != _REPO_ROOT / "pyproject.toml":
+        problems.append(f"pytest가 읽은 설정이 우리 pyproject가 아니다: {config.inipath}")
+
+    # 미등록 마커를 에러로 만드는 플래그. 꺼지면 설계 §9.2의 전제가 무너진다.
+    if not config.getoption("strict_markers"):
+        problems.append("--strict-markers가 꺼졌다")
+
+    # **다시 shlex로 쪼개면 안 된다.** `getini("addopts")`는 pytest가 이미
+    # 분리해 둔 리스트라, 합쳤다 다시 나누면 `"not live"`가 `"not"`과
+    # `"live"` 두 토큰이 되어 아래 비교가 정상 설정에서도 실패한다(실측).
+    addopts = list(config.getini("addopts"))
+    if addopts.count("-m") != 1:
+        problems.append(f"addopts의 -m이 하나가 아니다(뒤가 이긴다): {addopts}")
+    elif addopts[addopts.index("-m") + 1] != "not live":
+        problems.append(f"addopts의 기본 제외식이 'not live'가 아니다: {addopts}")
+
+    if problems:
+        raise pytest.UsageError("게이트 설정이 어긋났다: " + " / ".join(problems))
+
 
 # 유니코드 Box Drawing 블록. `rich`의 패널 테두리가 전부 여기 있다.
 _BOX_DRAWING = re.compile(r"[─-╿]")
