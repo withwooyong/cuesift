@@ -6,7 +6,10 @@ from cuesift.signals.base import (
     BatchCollector,
     SegmentCollector,
     SignalContext,
+    Tier1Collector,
+    Tier1Context,
     collect_all,
+    collect_tier1,
     register,
     registry,
 )
@@ -15,7 +18,10 @@ __all__ = [
     "BatchCollector",
     "SegmentCollector",
     "SignalContext",
+    "Tier1Collector",
+    "Tier1Context",
     "collect_all",
+    "collect_tier1",
     "register",
     "registry",
 ]
