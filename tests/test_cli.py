@@ -60,7 +60,7 @@ def test_translate_accepts_documented_flags(
             "translate",
             str(source),
             "--to",
-            "en,ja",
+            "en,ja,th,vi",
             "--review-budget",
             "10%",
             "--base-url",

@@ -4,14 +4,15 @@
 `check`·`translate`는 배선이 끝나 실제로 동작한다. `transcribe`는 아직
 인자 스키마만 확정한 골격이라 EXIT_NOT_IMPLEMENTED로 종료한다.
 
-**종료 코드 다섯이 서로 겹치지 않는 것이 이 파일의 계약이다.**
+**종료 코드 여섯이 서로 겹치지 않는 것이 이 파일의 계약이다.**
 
 | 코드 | 언제 | 근거 |
 | --- | --- | --- |
 | 0 | 위반 없음, 또는 `--fail-on none` | |
-| 1 | 규격 위반 발견 | FR-7.5 |
-| 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패) | typer 관행 |
-| 66 | 파일 내용이 틀림 (자막 아님·utf-8 아님·읽을 수 없음) | `sysexits.h` EX_NOINPUT |
+| 1 | 규격 위반 발견, 또는 번역 일부 세그먼트 실패(원문 유지) | FR-7.5, FR-2.6 |
+| 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패·출력 경로 충돌) | typer 관행 |
+| 66 | 파일 내용이 틀림 (자막·용어집 파싱 실패, utf-8 아님, 읽지 못함) | `sysexits.h` EX_NOINPUT |
+| 69 | 외부 서비스(LLM 프로바이더)가 요청을 거부함 | `sysexits.h` EX_UNAVAILABLE |
 | 70 | 미구현 | |
 
 **1을 진단 실패에 쓰지 않는 것이 핵심이다.** 1은 "규격 위반 발견"이므로
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
@@ -48,6 +50,7 @@ from cuesift.translate import (
     FatalProviderError,
     OpenAICompatibleProvider,
     Provider,
+    ProviderError,
     TranslationResult,
     translate_segments,
 )
@@ -68,6 +71,18 @@ EXIT_UNAVAILABLE = 69
 # 기본 캐시 위치. 프로젝트 디렉터리 안에 두는 것은 `.gitignore`에 한 줄로
 # 넣을 수 있고 작업물과 함께 옮겨지기 때문이다.
 DEFAULT_CACHE_DIR = Path(".cuesift/cache")
+
+# BCP 47의 실용적 부분집합. `--to` 값은 검증 없이 `_output_path`를 거쳐
+# 그대로 파일 시스템 경로 조각이 된다 - 실측(WP7b Task 4 리뷰 라운드 1):
+# `--to 'e:n'`은 Windows NTFS 대체 데이터 스트림으로 해석돼 디렉터리엔
+# `minimal.e`(0바이트)만 보이고 내용은 숨은 `:n.srt` 스트림에 실리는데
+# 도구는 "성공"을 보고한다. `--to '../pwned'`는 `--out` 밖에 쓰거나
+# `FileNotFoundError`가 새어 exit 1로 오보된다. 완전한 BCP 47 파서 대신
+# "영문자로 시작하고 경로 구분자·콜론을 포함하지 않는다"는 최소 계약만
+# 강제한다 - Q2가 초기 언어쌍을 ko→en/ja로 정했지만 §8.1 예시 호출 형태는
+# en,ja,th,vi이고 `zh-Hans` 같은 서브태그도 받아야 하므로 2~3자 1개로
+# 좁히지 않는다.
+_LANG_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]+)*$")
 
 app = typer.Typer(
     name="cuesift",
@@ -378,10 +393,18 @@ def _output_path(
     stem이 `.{source_lang}`으로 끝나면 **치환**하고 아니면 **덧붙인다.**
     치환하지 않으면 `ep01.ko.srt`가 `ep01.ko.en.srt`가 되어 언어 태그가
     둘이 된다.
+
+    **판정만 `casefold()`하고 원본 stem은 그대로 쓴다.** Windows는 파일명
+    대소문자를 구분하지 않아 `ep01.KO.srt`가 정상인 파일명이고 이 프로젝트의
+    개발 플랫폼이 Windows인데, `endswith`는 대소문자를 구분해 `ep01.KO.srt
+    --source-lang ko`가 치환되지 않고 `ep01.KO.en.srt`라는 이중 태그를
+    낸다(실측: WP7b Task 4 리뷰 라운드 1) - 이 함수가 막겠다고 선언한 바로
+    그 사고다. `_resolve_profile`이 `--spec`의 확장자를 가를 때 같은 이유로
+    같은 처리를 한다.
     """
     stem = input_path.stem
     suffix = f".{source_lang}"
-    if stem.endswith(suffix):
+    if stem.casefold().endswith(suffix.casefold()):
         stem = stem[: -len(suffix)]
     directory = out_dir if out_dir is not None else input_path.parent
     return directory / f"{stem}.{target_lang}{input_path.suffix}"
@@ -398,7 +421,13 @@ def translate(
     to: Annotated[str, typer.Option("--to", help="대상 언어 (쉼표 구분, 예: en,ja)")],
     out: Annotated[
         Path | None,
-        typer.Option("--out", help="출력 디렉터리. 기본은 입력 파일과 같은 곳"),
+        # `file_okay=False`는 `--out`이 이미 존재하는 **파일**을 가리키는 흔한
+        # 사고(디렉터리 자리에 파일 경로를 잘못 줌)를 본문 전에 exit 2로 거른다
+        # (실측: WP7b Task 4 리뷰 라운드 1 - 이전에는 `write_subtitle`의
+        # `mkdir(parents=True, exist_ok=True)`가 `FileExistsError`를 그대로
+        # 흘려 exit 1로 오보됐다). `exists=True`는 걸지 않는다 - `--out`은
+        # 보통 아직 없는 디렉터리이고, 없으면 `write_subtitle`이 만든다.
+        typer.Option("--out", file_okay=False, help="출력 디렉터리. 기본은 입력 파일과 같은 곳"),
     ] = None,
     source_lang: Annotated[str, typer.Option("--source-lang", help="원문 언어")] = "ko",
     base_url: Annotated[
@@ -428,7 +457,17 @@ def translate(
         typer.Option("--review-budget", help="사람이 검수할 상위 비율. 아직 구현되지 않았다"),
     ] = None,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="실행하지 않고 호출 수만 추정합니다.")
+        bool,
+        # 현재형으로 약속하지 않는다(`--config` 선례). 이전 판은 "실행하지
+        # 않고 호출 수만 추정합니다"라고 적었는데 거짓이었다 - 본문이 `dry_run`을
+        # 한 번도 읽지 않아 프로바이더를 그대로 호출하고 파일을 그대로 쓴다
+        # (실측: WP7b Task 4 리뷰 라운드 1). `--review-budget`보다 나쁘다 -
+        # "안 해 준다"가 아니라 "하지 않겠다"를 어겨 전액 청구된 실행과
+        # 덮어쓴 파일을 사용자가 원하지 않은 채로 받는다.
+        typer.Option(
+            "--dry-run",
+            help="아직 구현되지 않아 지정해도 무시되고 실제로 실행됩니다 (Task 6).",
+        ),
     ] = False,
 ) -> None:
     """FR-8.1: 자막을 번역해 언어별 파일로 냅니다."""
@@ -443,11 +482,26 @@ def translate(
             f"지정한 '{review_budget}'는 무시됩니다.",
             err=True,
         )
+    if dry_run:
+        # 위 dry_run 파라미터 주석 참고 - 조용히 무시하면 사용자는 견적만
+        # 뽑았다고 믿는데 실제로는 과금과 파일 덮어쓰기가 일어난다. 진짜
+        # 구현(Task 6) 전까지는 최소한 "안 됐다"를 큰 소리로 말한다.
+        _echo(
+            "경고: --dry-run은 아직 구현되지 않았습니다 (Task 6). "
+            "실제로 프로바이더를 호출하고 파일을 씁니다.",
+            err=True,
+        )
 
     resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
     if not targets:
         _echo("--to에 대상 언어가 없다", err=True)
+        raise typer.Exit(2)
+    invalid = [t for t in targets if not _LANG_TAG_RE.match(t)]
+    if invalid:
+        # `_LANG_TAG_RE` 주석 참고 - 여기서 막지 않으면 `_output_path`가
+        # 검증되지 않은 문자열을 파일 경로 조각으로 그대로 쓴다.
+        _echo(f"--to에 유효하지 않은 언어 태그가 있다: {', '.join(invalid)}", err=True)
         raise typer.Exit(2)
 
     try:
@@ -520,7 +574,23 @@ def _translate_one(
     if glossary_path is not None:
         try:
             glossary = load_glossary(glossary_path, target_lang)
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
+            # **`Exception`까지 넓힌다.** `load_glossary`는 자기 실패를
+            # 정규화하지 않는다 - `yaml.safe_load`의 `yaml.YAMLError`
+            # (`ValueError`도 `OSError`도 아니다. 미종료 스칼라·탭 들여쓰기가
+            # 여기로 온다)와 형식이 어긋난 YAML의 `TypeError`(`entries: 5` →
+            # `enumerate(5)`)·`AttributeError`(`targets: "Hello"` → 문자열에
+            # `.get`)가 전부 `(OSError, ValueError)`를 지나쳐 그대로 샜다
+            # (실측: WP7b Task 4 리뷰 라운드 1, 넷 다 exit 1). 용어집은
+            # 사용자가 준 파일이고 어떤 실패든 "파일 내용이 틀림"(66)이지
+            # 이 프로세스가 잘못 짜인 것(1, traceback)이 아니다.
+            #
+            # **`glossary/` 자체는 고치지 않는다** - 이번 태스크 범위 밖이고,
+            # `ingest.load_subtitle`처럼 자기 실패를 `GlossaryError`로 모으게
+            # 바꾸면 이 태스크가 모르는 다른 호출부(WP5)의 계약이 바뀐다.
+            # 이 사실을 여기 남겨 두는 것은, 나중에 `glossary/`가 정규화를
+            # 갖추면 "CLI가 이미 넓게 잡고 있으니 좁혀도 안전하다"는 근거가
+            # 되게 하기 위해서다.
             _echo(f"{glossary_path}: 용어집을 읽지 못했다 - {exc}", err=True)
             return EXIT_BAD_INPUT
 
@@ -555,13 +625,39 @@ def _translate_one(
     except FatalProviderError as exc:
         _echo(f"프로바이더가 요청을 거부했다: {exc}", err=True)
         return EXIT_UNAVAILABLE
+    except ProviderError as exc:
+        # **마지막 그물이다.** 오늘은 도달 불가하다 - `openai_compat.py`는
+        # `FatalProviderError`·`RetryableProviderError` 둘 중 하나만 던지고
+        # engine의 재시도 루프도 그 둘만 잡는다(실측: WP7b Task 4 리뷰
+        # 라운드 1). 그래도 §12 Q3가 "로컬 LLM 백엔드 능력이 균일하지 않다"를
+        # 전제하고 NFR-5가 "코드 수정 없이 프로바이더 추가"를 요구하므로,
+        # 계약(`Provider.complete`의 "맨 `ProviderError`를 던지면 안 된다")을
+        # 어기는 서드파티 구현이 traceback으로 파이프라인을 죽이는 것보다는
+        # 69로 막고 원인을 알리는 편이 낫다. `FatalProviderError` 절보다
+        # **뒤에** 와야 한다 - 그 절이 자손을 먼저 잡지 않으면 이 절이
+        # 죽은 코드가 된다.
+        _echo(f"프로바이더가 요청을 거부했다: {exc}", err=True)
+        return EXIT_UNAVAILABLE
     except ValueError as exc:
         # 배치·맥락 조립이 틀린 것이므로 명령줄 오류다.
         _echo(str(exc), err=True)
         return 2
 
     out_path = _output_path(input_path, out_dir, source_lang, target_lang)
-    write_subtitle(result, translated.segments, out_path)
+    try:
+        write_subtitle(result, translated.segments, out_path)
+    except OSError as exc:
+        # `write_subtitle`의 `mkdir(parents=True, exist_ok=True)`와
+        # `subs.save(...)`는 자기 방어가 없다(Task 3 리뷰가 넘긴 경고) - 출력
+        # 경로 자리에 이미 파일이 있으면 `FileExistsError`, 이미 디렉터리가
+        # 있으면 `PermissionError`가 그대로 샌다(실측: WP7b Task 4 리뷰
+        # 라운드 1, 둘 다 exit 1). 디스크 상태의 문제이지 명령줄이 틀린 게
+        # 아니므로 66이다. `--out`에 `file_okay=False`를 걸어 `--out` 자체가
+        # 파일인 흔한 사고는 typer가 먼저 exit 2로 거르지만, 언어별 파일
+        # 이름(`_output_path`가 만든 것)이 우연히 기존 디렉터리와 겹치는
+        # 경우까지는 명령줄 시점에 알 수 없어 이 try가 마지막 방어선이다.
+        _echo(f"{out_path}: 출력 파일을 쓰지 못했다 - {exc}", err=True)
+        return EXIT_BAD_INPUT
 
     # `cache_dir`이 `None`이면(--no-cache 또는 신원 없음 경고) provider는
     # CachingProvider로 감싸이지 않아 hits·misses 속성 자체가 없다. 그때
