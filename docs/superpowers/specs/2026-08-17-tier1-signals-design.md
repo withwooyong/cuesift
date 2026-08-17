@@ -216,11 +216,16 @@ def select_tier1_candidates(
     """
 ```
 
-| 제외 대상 | 이유 |
-| --- | --- |
-| `hard_fail=True` | `risk_score=1.0` 고정. 신호를 더해도 순위 불변 |
-| `selected=True` | 이미 검수 큐행. 예산을 여기 쓰면 그만큼 회색지대를 못 본다 |
-| `target_text is None` | 번역 실패분. 재번역할 대상이 없다 |
+| 제외 대상 | 이유 | 누가 |
+| --- | --- | --- |
+| `hard_fail=True` | `risk_score=1.0` 고정. 신호를 더해도 순위 불변 | `select_tier1_candidates` |
+| `selected=True` | 이미 검수 큐행. 예산을 여기 쓰면 그만큼 회색지대를 못 본다 | `select_tier1_candidates` |
+| `target_text is None` | 번역 실패분. 재번역할 대상이 없다 | **`tier1.py`** |
+
+**세 번째만 오케스트레이션이 거른다.** `SegmentRisk`는 `segment_id`만 갖고
+텍스트를 갖지 않으므로 `select_tier1_candidates(risks, max_ratio)`가 판정할 수
+없다. 위험도 계산에 세그먼트 본문을 끌어들이면 `triage/`가 `segment/`에
+결합되고, `policy.py`가 지켜 온 "순수 함수 · 입력 불변" 계약이 흐려진다.
 
 남은 것에서 위험도 내림차순 상위 `ceil(len(risks) * max_ratio)`개를 고르되,
 **회색지대가 그보다 작으면 있는 만큼만 고른다**(상한이지 할당량이 아니다).
