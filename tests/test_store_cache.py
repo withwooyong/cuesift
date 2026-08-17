@@ -383,7 +383,7 @@ def test_KeyboardInterrupt에도_임시_파일을_남기지_않는다(
     assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
 
 
-def test_attempt_0은_키를_바꾸지_않는다():
+def test_attempt_0은_키를_바꾸지_않는다() -> None:
     """**하위 호환 회귀 테스트다** (설계 §8).
 
     키에 attempt를 무조건 넣으면 기존에 쌓인 번역 캐시가 전량 미스가 되고,
@@ -397,7 +397,20 @@ def test_attempt_0은_키를_바꾸지_않는다():
     assert without.key == explicit_zero.key
 
 
-def test_attempt가_다르면_키가_갈린다():
+def test_attempt_0은_옛_키_문자열을_보존한다() -> None:
+    """a433cbe 이전 코드가 낸 키를 그대로 못 박는다.
+
+    두 CacheRequest를 비교하면 키 포맷이 통째로 바뀌어도 양쪽이 같이 바뀌어
+    통과한다 - 리뷰 실측: attempt를 무조건 append하는 변이에서 기존 테스트들이
+    전부 통과했다. 따라서 골든 값(옛 코드의 실제 출력)과 비교해야 한다.
+    """
+    messages = (ChatMessage(role="user", content="안녕"),)
+    req = CacheRequest(identity="m|v1", temperature=0.0, max_tokens=None, messages=messages)
+    # 옛 코드(a433cbe~1)에서 직접 계산한 값
+    assert req.key == "a3c77974e62114792c675cee1aedabc79debfd62a4d7bc99533bc7fa0f47873f"
+
+
+def test_attempt가_다르면_키가_갈린다() -> None:
     """자가일관성은 같은 입력을 N회 부른다 - 키가 같으면 2회차부터 캐시
     히트가 나서 **분산이 항상 0**으로 나온다 (FR-4.1)."""
     messages = (ChatMessage(role="user", content="안녕"),)
@@ -414,7 +427,7 @@ def test_attempt가_다르면_키가_갈린다():
     assert len(keys) == 3
 
 
-def test_온도가_다르면_키가_갈린다():
+def test_온도가_다르면_키가_갈린다() -> None:
     """설계 §8 - Tier 1(temperature>0)이 기존 번역(0.0)의 캐시를 건드리지
     않는 것은 이 성질 덕이다."""
     messages = (ChatMessage(role="user", content="안녕"),)
@@ -423,7 +436,7 @@ def test_온도가_다르면_키가_갈린다():
     assert cold.key != hot.key
 
 
-def test_CachingProvider가_attempt를_고정한다(tmp_path):
+def test_CachingProvider가_attempt를_고정한다(tmp_path: Path) -> None:
     inner = ScriptedProvider(["첫째", "둘째"])
     a = CachingProvider(inner, identity="m|v1", cache_dir=tmp_path, attempt=0)
     b = CachingProvider(inner, identity="m|v1", cache_dir=tmp_path, attempt=1)
@@ -435,6 +448,8 @@ def test_CachingProvider가_attempt를_고정한다(tmp_path):
     # attempt가 다르므로 캐시가 갈리고 안쪽이 두 번 불린다.
     assert len(inner.calls) == 2
     assert first.text != second.text
+    # 파일도 실제로 둘로 갈렸는지 확인
+    assert len(list(tmp_path.iterdir())) == 2
 
     # 같은 attempt를 다시 부르면 캐시가 맞는다.
     again = a.complete(messages, temperature=1.0, max_tokens=None)
