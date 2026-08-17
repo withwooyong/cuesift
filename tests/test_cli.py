@@ -8,6 +8,7 @@ import inspect
 from pathlib import Path
 
 import pytest
+from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import strip_rich_decoration
@@ -34,14 +35,44 @@ def test_no_args_shows_help():
     assert "transcribe" in result.output
 
 
-def test_translate_accepts_documented_flags():
-    """요구사항정의서 §8.1 S1의 호출 형태가 파싱되는지 확인한다."""
+def test_translate_accepts_documented_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """요구사항정의서 §8.1 S1의 호출 형태가 파싱되는지 확인한다.
+
+    **Task 4에서 `translate`가 골격을 벗어난 뒤로는 EXIT_NOT_IMPLEMENTED를
+    기대할 수 없다.** 이전 판은 `episode01.ko.srt`가 존재하지 않아도 골격이
+    입력을 열어 보지 않아 항상 70으로 끝났는데, 지금은 `check`와 같은 이유로
+    `exists=True`가 본문 전에 존재를 확인한다(그렇지 않으면
+    `test_없는_파일은_exit_2다`가 요구하는 계약이 깨진다). 그래서 이 테스트도
+    실재하는 파일과 네트워크를 타지 않는 가짜 프로바이더로 옮겨, "문서화된
+    호출 형태가 실제로 실행까지 간다"는 더 강한 확인으로 바꾼다 - `check`가
+    골격을 벗어났을 때 `test_fail_on_accepts_the_documented_values`가 같은
+    방식으로 갱신된 선례를 따른다.
+    """
+    source = tmp_path / "episode01.ko.srt"
+    source.write_bytes((FIXTURES / "minimal.srt").read_bytes())
+    monkeypatch.setattr("cuesift.cli._build_provider", lambda **_: EchoProvider())
+
     result = runner.invoke(
         app,
-        ["translate", "episode01.ko.srt", "--to", "en,ja,th,vi", "--review-budget", "10%"],
+        [
+            "translate",
+            str(source),
+            "--to",
+            "en,ja",
+            "--review-budget",
+            "10%",
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
     )
-    # 파싱 실패(2)가 아니라 미구현(70)으로 끝나야 한다.
-    assert result.exit_code == EXIT_NOT_IMPLEMENTED
+
+    assert result.exit_code == 0, result.output
 
 
 def test_check_accepts_documented_flags():

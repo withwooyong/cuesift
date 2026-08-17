@@ -1,7 +1,7 @@
 """cuesift CLI 진입점.
 
 요구사항정의서 §8.1(FR-8.1~8.5)의 커맨드 표면을 정의한다.
-`check`는 배선이 끝나 실제로 동작한다. `translate`·`transcribe`는 아직
+`check`·`translate`는 배선이 끝나 실제로 동작한다. `transcribe`는 아직
 인자 스키마만 확정한 골격이라 EXIT_NOT_IMPLEMENTED로 종료한다.
 
 **종료 코드 다섯이 서로 겹치지 않는 것이 이 파일의 계약이다.**
@@ -32,7 +32,8 @@ from typing import IO, Annotated
 import typer
 
 from cuesift import __version__
-from cuesift.ingest import IngestError, load_subtitle
+from cuesift.glossary import load_glossary
+from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
 from cuesift.spec import (
     SpecProfile,
     SpecViolation,
@@ -41,14 +42,32 @@ from cuesift.spec import (
     load_builtin,
     load_profile,
 )
+from cuesift.store import CachingProvider
+from cuesift.translate import (
+    DEFAULT_CONTEXT_WINDOW,
+    FatalProviderError,
+    OpenAICompatibleProvider,
+    Provider,
+    TranslationResult,
+    translate_segments,
+)
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
-# `check`는 이제 1을 쓰므로(FR-7.5) 70은 남은 두 골격 커맨드의 표식이다.
+# `translate`가 배선된 뒤로 70은 `transcribe` 하나의 표식이다.
 EXIT_NOT_IMPLEMENTED = 70
 
 # sysexits.h EX_NOINPUT — 파일 내용이 틀렸다는 뜻이다. 명령줄이 틀린 2와 구분한다.
 # CI가 둘을 구분하지 못하면 "경로 오타"와 "자막이 깨졌다"에 같은 대응을 하게 된다.
 EXIT_BAD_INPUT = 66
+
+# sysexits.h EX_UNAVAILABLE — 외부 서비스가 요청을 거부했다는 뜻이다.
+# 70("미구현·내부 오류")과 나누는 이유는 CI가 "아직 안 만든 기능"과
+# "LLM 서버가 401을 냈다"에 같은 대응을 하면 안 되기 때문이다.
+EXIT_UNAVAILABLE = 69
+
+# 기본 캐시 위치. 프로젝트 디렉터리 안에 두는 것은 `.gitignore`에 한 줄로
+# 넣을 수 있고 작업물과 함께 옮겨지기 때문이다.
+DEFAULT_CACHE_DIR = Path(".cuesift/cache")
 
 app = typer.Typer(
     name="cuesift",
@@ -307,21 +326,315 @@ def main(
         )
 
 
+def _resolve_llm(base_url: str | None, model: str | None) -> tuple[str, str, str | None]:
+    """LLM 접속 설정을 해결한다 (설계 §6.3).
+
+    우선순위는 **CLI 옵션 > 환경변수**다. FR-8.4(`cuesift.yaml`)가 오면
+    환경변수 아래에 한 칸이 더 낀다.
+
+    **기본값을 넣지 않는다.** `localhost:11434`를 기본으로 두면 Ollama가
+    없는 사람이 연결 실패를 받는데, 그것은 "설정을 안 했다"보다 진단이
+    훨씬 어렵다.
+
+    `api_key`를 명령줄로 받지 않는 이유는 셸 히스토리와 `ps` 출력에
+    남기 때문이다.
+
+    환경변수 이름에 `CUESIFT_LIVE_` 접두사를 쓰지 않는 것이 중요하다 —
+    그것은 테스트 전용으로 예약돼 있고 `tests/test_translate_api.py`의
+    게이트가 그 문자열로 live 마커 누락을 판정한다.
+    """
+    resolved_base = base_url or os.environ.get("CUESIFT_BASE_URL")
+    resolved_model = model or os.environ.get("CUESIFT_MODEL")
+    missing = [
+        name
+        for name, value in (("--base-url", resolved_base), ("--model", resolved_model))
+        if not value
+    ]
+    if missing:
+        _echo(
+            f"{', '.join(missing)}가 없다. 옵션으로 주거나 "
+            f"CUESIFT_BASE_URL·CUESIFT_MODEL 환경변수를 설정한다.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return resolved_base, resolved_model, os.environ.get("CUESIFT_API_KEY")
+
+
+def _build_provider(*, base_url: str, model: str, api_key: str | None) -> Provider:
+    """프로바이더를 만든다. **테스트가 monkeypatch하는 지점이다.**
+
+    본문에서 `OpenAICompatibleProvider(...)`를 직접 만들면 CLI 테스트가
+    네트워크를 타거나 `httpx` 내부를 패치해야 한다. 함수 하나로 빼면
+    가짜를 꽂는 것이 한 줄이 된다.
+    """
+    return OpenAICompatibleProvider(base_url=base_url, model=model, api_key=api_key)
+
+
+def _output_path(
+    input_path: Path, out_dir: Path | None, source_lang: str, target_lang: str
+) -> Path:
+    """출력 경로를 정한다 (FR-7.1 · 설계 §5.1).
+
+    stem이 `.{source_lang}`으로 끝나면 **치환**하고 아니면 **덧붙인다.**
+    치환하지 않으면 `ep01.ko.srt`가 `ep01.ko.en.srt`가 되어 언어 태그가
+    둘이 된다.
+    """
+    stem = input_path.stem
+    suffix = f".{source_lang}"
+    if stem.endswith(suffix):
+        stem = stem[: -len(suffix)]
+    directory = out_dir if out_dir is not None else input_path.parent
+    return directory / f"{stem}.{target_lang}{input_path.suffix}"
+
+
 @app.command()
 def translate(
-    input: Annotated[Path, typer.Argument(help="자막 파일(.srt/.vtt/...) 또는 영상 파일")],
-    to: Annotated[str, typer.Option("--to", help="대상 언어 (쉼표 구분, 예: en,ja,th,vi)")],
-    source_lang: Annotated[str | None, typer.Option("--source-lang", help="원문 언어")] = None,
+    input: Annotated[
+        Path,
+        # `readable=False`는 `check`와 같은 이유다 — 읽기 가능 판정을
+        # 인제스트 한 곳으로 모아 플랫폼마다 다른 코드가 나오지 않게 한다.
+        typer.Argument(exists=True, dir_okay=False, readable=False, help="번역할 자막 파일"),
+    ],
+    to: Annotated[str, typer.Option("--to", help="대상 언어 (쉼표 구분, 예: en,ja)")],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="출력 디렉터리. 기본은 입력 파일과 같은 곳"),
+    ] = None,
+    source_lang: Annotated[str, typer.Option("--source-lang", help="원문 언어")] = "ko",
+    base_url: Annotated[
+        str | None,
+        typer.Option("--base-url", help="OpenAI 호환 엔드포인트. 없으면 CUESIFT_BASE_URL"),
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="모델 이름. 없으면 CUESIFT_MODEL")
+    ] = None,
+    glossary: Annotated[
+        Path | None, typer.Option("--glossary", help="용어집 YAML (FR-2.3)")
+    ] = None,
+    work_context: Annotated[
+        str | None, typer.Option("--work-context", help="작품 맥락 (FR-2.8)")
+    ] = None,
+    context_window: Annotated[
+        int, typer.Option("--context-window", min=0, help="앞뒤 맥락 세그먼트 수")
+    ] = DEFAULT_CONTEXT_WINDOW,
+    cache_dir: Annotated[
+        Path | None, typer.Option("--cache-dir", help="캐시 디렉터리. 기본 .cuesift/cache")
+    ] = None,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="캐시를 읽지도 쓰지도 않는다")
+    ] = False,
     review_budget: Annotated[
         str | None,
-        typer.Option("--review-budget", help="사람이 검수할 상위 비율 (예: 10%)"),
+        typer.Option("--review-budget", help="사람이 검수할 상위 비율. 아직 구현되지 않았다"),
     ] = None,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="실행하지 않고 비용만 추정합니다.")
+        bool, typer.Option("--dry-run", help="실행하지 않고 호출 수만 추정합니다.")
     ] = False,
 ) -> None:
-    """FR-8.1: 번역·검수 전 파이프라인을 실행합니다."""
-    _not_implemented("translate")
+    """FR-8.1: 자막을 번역해 언어별 파일로 냅니다."""
+    if no_cache and cache_dir is not None:
+        _echo("--no-cache와 --cache-dir을 함께 줄 수 없다", err=True)
+        raise typer.Exit(2)
+    if review_budget is not None:
+        # 설계 D12와 같은 판단 — 조용한 무시는 사용자가 트리아지가 됐다고
+        # 믿게 만든다. `--config`가 이미 같은 방식이다.
+        _echo(
+            f"경고: --review-budget은 아직 구현되지 않았습니다 (WP5). "
+            f"지정한 '{review_budget}'는 무시됩니다.",
+            err=True,
+        )
+
+    resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
+    targets = [lang.strip() for lang in to.split(",") if lang.strip()]
+    if not targets:
+        _echo("--to에 대상 언어가 없다", err=True)
+        raise typer.Exit(2)
+
+    try:
+        result = load_subtitle(input, source_lang=source_lang)
+    except IngestError as exc:
+        _echo(str(exc), err=True)
+        raise typer.Exit(EXIT_BAD_INPUT) from exc
+
+    for target in targets:
+        out_path = _output_path(input, out, source_lang, target)
+        if out_path.resolve() == input.resolve():
+            # 이것이 없으면 원본이 번역문으로 덮여 되돌릴 수 없다.
+            _echo(f"출력 경로가 입력과 같다: {out_path}", err=True)
+            raise typer.Exit(2)
+
+    try:
+        provider = _build_provider(base_url=resolved_base, model=resolved_model, api_key=api_key)
+    except ValueError as exc:
+        # 생성자의 ValueError는 ProviderError가 **아니다** — 설정 오류이지
+        # 호출 실패가 아니다. 명령줄이 틀린 것이므로 2다.
+        _echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    worst = 0
+    for target in targets:
+        worst = max(
+            worst,
+            _translate_one(
+                result=result,
+                input_path=input,
+                out_dir=out,
+                source_lang=source_lang,
+                target_lang=target,
+                provider=provider,
+                glossary_path=glossary,
+                work_context=work_context,
+                context_window=context_window,
+                cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+            ),
+        )
+    if worst:
+        raise typer.Exit(worst)
+
+
+def _translate_one(
+    *,
+    result: IngestResult,
+    input_path: Path,
+    out_dir: Path | None,
+    source_lang: str,
+    target_lang: str,
+    provider: Provider,
+    glossary_path: Path | None,
+    work_context: str | None,
+    context_window: int,
+    cache_dir: Path | None,
+) -> int:
+    """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
+
+    **예외를 여기서 잡아 코드로 바꾼다.** 새어 나가면 미처리 traceback이
+    되어 exit 1("부분 실패")로 오보된다 (설계 §8).
+
+    **`result.segments`를 사본 없이 그대로 넘긴다.** `engine.py`가
+    `replace(s, target_text=...)`로 **새 튜플**을 만들어 돌려주므로 원본은
+    변형되지 않는다 - 여러 언어를 돌아도 앞 언어의 번역문이 남지 않는다.
+    방어적 사본을 넣으면 그 사실이 코드에서 사라져 나중에 엔진 쪽 계약이
+    깨져도 드러나지 않는다.
+    """
+    glossary = None
+    if glossary_path is not None:
+        try:
+            glossary = load_glossary(glossary_path, target_lang)
+        except (OSError, ValueError) as exc:
+            _echo(f"{glossary_path}: 용어집을 읽지 못했다 - {exc}", err=True)
+            return EXIT_BAD_INPUT
+
+    if cache_dir is not None:
+        identity = _cache_identity(provider)
+        if identity is None:
+            # 신원을 모르는 프로바이더에 캐시를 걸면 다른 모델의 응답이
+            # 히트한다. 끄는 쪽이 안전하고, **조용히 끄지는 않는다** —
+            # 사용자는 재개가 되는 줄 안다.
+            _echo(
+                f"경고: {provider.name}이 cache_identity를 제공하지 않아 캐시를 끈다",
+                err=True,
+            )
+        else:
+            provider = CachingProvider(
+                provider,
+                identity=identity,
+                cache_dir=cache_dir,
+                warn=lambda message: _echo(message, err=True),
+            )
+
+    try:
+        translated = translate_segments(
+            result.segments,
+            provider=provider,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            glossary=glossary,
+            work_context=work_context,
+            context_window=context_window,
+        )
+    except FatalProviderError as exc:
+        _echo(f"프로바이더가 요청을 거부했다: {exc}", err=True)
+        return EXIT_UNAVAILABLE
+    except ValueError as exc:
+        # 배치·맥락 조립이 틀린 것이므로 명령줄 오류다.
+        _echo(str(exc), err=True)
+        return 2
+
+    out_path = _output_path(input_path, out_dir, source_lang, target_lang)
+    write_subtitle(result, translated.segments, out_path)
+
+    # `cache_dir`이 `None`이면(--no-cache 또는 신원 없음 경고) provider는
+    # CachingProvider로 감싸이지 않아 hits·misses 속성 자체가 없다. 그때
+    # `getattr(..., 0)`으로 읽으면 "0개"가 되는데, `_format_translate_summary`가
+    # 요구 정정 3에 따라 그것을 "0개 호출"과 구별해야 하므로 캐시가 실제로
+    # 붙었는지 여부를 별도 플래그로 넘긴다.
+    cached = isinstance(provider, CachingProvider)
+    hits = provider.hits if cached else 0
+    misses = provider.misses if cached else 0
+    for line in _format_translate_summary(
+        target_lang=target_lang,
+        out_path=out_path,
+        result=translated,
+        cache_enabled=cached,
+        hits=hits,
+        misses=misses,
+    ):
+        _echo(line)
+
+    return 1 if translated.failures else 0
+
+
+def _cache_identity(provider: Provider) -> str | None:
+    """프로바이더가 자기 신원을 말하게 한다 (설계 §3.2). 없으면 `None`.
+
+    `getattr`로 읽는 이유는 `Provider` 프로토콜에 이 속성이 **없기**
+    때문이다 — 표면을 최소로 두는 [번역 엔진 설계] §4.1의 결정을 유지한다.
+
+    **예외를 던지지 않고 `None`을 돌려주는 것이 요점이다.** 캐시를 못 켜는
+    것은 실행이 불가능한 상태가 아니다 — 호출자가 경고하고 캐시 없이 돈다.
+    """
+    identity = getattr(provider, "cache_identity", None)
+    return str(identity) if identity else None
+
+
+def _format_translate_summary(
+    *,
+    target_lang: str,
+    out_path: Path,
+    result: TranslationResult,
+    cache_enabled: bool,
+    hits: int,
+    misses: int,
+) -> list[str]:
+    """언어 하나의 결과를 요약한다 (설계 §4.3·§5.3).
+
+    **캐시 히트를 항상 낸다.** 캐시가 곧 재개이므로 이 숫자가 "재개됐다"의
+    유일한 증거다. 없으면 사용자는 네트워크를 탔는지 알 수 없다.
+
+    **"0개"와 "꺼져 있음"을 구별한다.** `--no-cache`이거나 프로바이더가
+    `cache_identity`를 제공하지 않으면 `CachingProvider`가 끼지 않아
+    hits·misses를 셀 수단 자체가 없다. 그것을 "실제 호출 0개"로 찍으면
+    네트워크를 여러 번 타고도 화면은 "안 탔다"고 거짓말한다 — 설계 §4.3이
+    캐시 히트 수를 재개의 유일한 증거로 선언한 바로 그 줄이 거짓을 말하게
+    되는 것이다.
+
+    **실패는 개수만이 아니라 ID를 나열한다.** 원문이 남은 자막은 겉보기에
+    정상인 파일이라, 개수만 보고 넘기면 미번역 자막이 그대로 배포된다.
+    """
+    total = len(result.segments)
+    failed = len(result.failures)
+    cache_line = f"  캐시 히트 {hits}개 · 실제 호출 {misses}개" if cache_enabled else "  캐시 꺼짐"
+    lines = [
+        f"[{target_lang}] {out_path}",
+        f"  세그먼트 {total}개 · 성공 {total - failed}개 · 실패 {failed}개",
+        cache_line,
+        f"  토큰 prompt {result.usage.prompt_tokens} · completion "
+        f"{result.usage.completion_tokens} · calls {result.usage.calls}",
+    ]
+    if result.failures:
+        ids = ", ".join(f.segment_id for f in result.failures)
+        lines.append(f"  실패 세그먼트(원문 유지): {ids}")
+    return lines
 
 
 def _resolve_profile(spec: str) -> tuple[SpecProfile, str]:
