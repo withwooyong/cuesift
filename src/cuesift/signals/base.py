@@ -19,8 +19,17 @@ from cuesift.spec import SpecProfile
 
 if TYPE_CHECKING:
     # 런타임 import를 피한다. `from __future__ import annotations`가 있어
-    # 애노테이션이 문자열이므로 실행에 필요 없고, signals -> translate 방향
-    # 의존을 실제로 만들지 않는다.
+    # 애노테이션이 문자열이므로 실행에 필요 없고, **이 모듈 자신은**
+    # signals -> translate 방향 런타임 의존을 만들지 않는다.
+    #
+    # 패키지 수준에서는 다르다 - `llm.py`(Task 5)가 `from cuesift.translate
+    # import translate_segments`를 실행 시점에 하고, 어떤 `cuesift.signals.*`
+    # 서브모듈을 임포트하든 파이썬이 먼저 `cuesift/signals/__init__.py`를
+    # 실행하며 그 파일이 `llm`을 끌어온다(실측: `import cuesift.signals.base`
+    # 단독으로도 `cuesift.translate`·`cuesift.translate.openai_compat`까지
+    # 딸려 들어온다, ~62ms → ~137ms). **따라서 반대 방향
+    # `cuesift.translate`가 `cuesift.signals`를 임포트하면 순환이 된다** -
+    # 이 파일이 막는 것이 아니라 앞으로 그 방향을 만들지 않는 것이 계약이다.
     from cuesift.translate.provider import Provider
 
 

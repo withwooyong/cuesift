@@ -89,9 +89,14 @@ def test_negative_weight_is_rejected():
         fuse("s1", [_sig("a", 0.5)], weights={"a": -1.0})
 
 
-def test_default_weights_cover_all_ten_signals():
+def test_default_weights_cover_every_registered_signal():
     """등록된 신호가 기본 가중치 표에서 빠지면 조용히 1.0이 되는데,
-    그 자체는 문제가 아니지만 '튜닝하지 않았다'는 기록이 사라진다."""
+    그 자체는 문제가 아니지만 '튜닝하지 않았다'는 기록이 사라진다.
+
+    이름에 개수를 실어 나르지 않는다 - 단언(`set(...) == set(...)`)이
+    개수와 무관한데 이름만 개수(nine → ten)를 담아 두 번 개명이
+    발생했다. 다음 신호가 등록돼도 이 이름은 다시 고칠 필요가 없다.
+    """
     from cuesift.signals import registry
 
     assert set(DEFAULT_WEIGHTS) == set(registry())

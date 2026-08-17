@@ -80,18 +80,32 @@ def spy_registered():
     이 스파이만이 아니라 그것까지 함께 돌리게 됐다 - 이 파일의 세그먼트가
     실제 `target_text`를 갖고 있어 `_retranslate`까지 들어가 버려,
     `ScriptedProvider`의 짧은 대본이 소진되거나 `result`에 이름이
-    섞여 단언이 깨진다. tier 0은 남긴다 - `collect_all`을 부르는 테스트와
-    `struct.untranslated` 같은 실제 tier 0 이름을 쓰는 테스트가 있다.
+    섞여 단언이 깨진다.
+
+    **tier 0은 남긴다.** `registry().clear()`로 전부 비우면 안 된다 -
+    이 fixture를 쓰는 테스트들(`test_collect_all은_tier1을_부르지_않는다`
+    등)이 `collect_all`을 불러 실제 tier 0 수집기가 도는 상태를 전제하고,
+    그 편이 운영 배선에 더 가깝다. 제거 범위를 tier 1로만 좁힐수록
+    fixture가 손상됐을 때(아래 `finally`가 없다면) 다른 파일까지 번지는
+    폭발 반경도 작아진다.
     """
     saved = dict(registry())
-    for name, existing in list(registry().items()):
-        if existing.tier == 1:
-            del registry()[name]
-    collector = _SpyTier1()
-    register(collector)
-    yield collector
-    registry().clear()
-    registry().update(saved)
+    try:
+        for name, existing in list(registry().items()):
+            if existing.tier == 1:
+                del registry()[name]
+        collector = _SpyTier1()
+        register(collector)
+        yield collector
+    finally:
+        # yield 이전(위 등록 절차)에서 예외가 나면 레지스트리가 절반만
+        # 바뀐 채로 남는다 - try 없이 `yield` 뒤에만 복원하면 그 상태가
+        # 영구화돼 **이 파일이 아닌 다른 파일**이 원인 불명으로 깨진다.
+        # 강제 재현(등록을 일부러 두 번 불러 예외를 냄): 7개 지정 파일
+        # 기준 `1 failed, 117 passed, 5 errors` - `test_risk_fuse.py`까지
+        # 번졌다.
+        registry().clear()
+        registry().update(saved)
 
 
 @pytest.fixture
@@ -105,17 +119,20 @@ def tier2_spy_registered():
     `spy_registered`와 같은 이유로 등록 전에 기존 tier 1 수집기를
     걷어낸다 - `test_collect_all과_collect_tier1_모두_tier2를_부르지_않는다`가
     `collect_tier1(enabled=None)`을 불러 `llm.self_consistency`까지
-    함께 돌 뻔했다.
+    함께 돌 뻔했다. tier 0을 남기는 이유·`try/finally`가 필요한 이유는
+    `spy_registered`와 같다.
     """
     saved = dict(registry())
-    for name, existing in list(registry().items()):
-        if existing.tier == 1:
-            del registry()[name]
-    collector = _SpyTier2()
-    register(collector)
-    yield collector
-    registry().clear()
-    registry().update(saved)
+    try:
+        for name, existing in list(registry().items()):
+            if existing.tier == 1:
+                del registry()[name]
+        collector = _SpyTier2()
+        register(collector)
+        yield collector
+    finally:
+        registry().clear()
+        registry().update(saved)
 
 
 @pytest.fixture
