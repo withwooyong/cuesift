@@ -463,7 +463,23 @@ def translate(
     ] = False,
     review_budget: Annotated[
         str | None,
-        typer.Option("--review-budget", help="사람이 검수할 상위 비율. 아직 구현되지 않았다"),
+        typer.Option(
+            "--review-budget",
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="사람이 검수할 상위 비율 (예: 10% 또는 0.1). --review-threshold와 함께 쓸 수 없다",
+        ),
+    ] = None,
+    review_threshold: Annotated[
+        float | None,
+        typer.Option(
+            "--review-threshold",
+            min=0.0,
+            max=1.0,
+            # 라이브러리(`policy.py`)도 범위를 검사하지만 여기서 막으면 오류
+            # 메시지가 옵션 이름을 말한다 - `--context-window`·`--limit`이
+            # 이미 같은 패턴이다.
+            help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). --review-budget과 함께 쓸 수 없다",
+        ),
     ] = None,
     dry_run: Annotated[
         bool,
@@ -482,14 +498,32 @@ def translate(
     if no_cache and cache_dir is not None:
         _echo("--no-cache와 --cache-dir을 함께 줄 수 없다", err=True)
         raise typer.Exit(2)
+    if review_budget is not None and review_threshold is not None:
+        # FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
+        # 합성하면 어느 쪽이 이겼는지가 출력에서 사라진다(설계 D4).
+        _echo("--review-budget과 --review-threshold는 함께 쓸 수 없다", err=True)
+        raise typer.Exit(2)
+
+    # `budget_ratio`·`policy_label`은 **이 태스크에서는 읽는 곳이 없다** -
+    # 트리아지 실행과 요약 출력이 WP8b Task 3이라 소비자가 아직 없다. 값을
+    # 버리고 Task 3에서 다시 파싱하게 두지 않는 이유는 파싱 실패가 여기서
+    # exit 2로 끝나야 하기 때문이다(LLM을 호출하기 전이다). `noqa`를 지우는
+    # 것이 Task 3의 배선이 실제로 이 값들을 썼다는 표식이 된다.
+    budget_ratio: float | None = None  # noqa: F841
     if review_budget is not None:
-        # 설계 D12와 같은 판단 — 조용한 무시는 사용자가 트리아지가 됐다고
-        # 믿게 만든다. `--config`가 이미 같은 방식이다.
-        _echo(
-            f"경고: --review-budget은 아직 구현되지 않았습니다 (WP5). "
-            f"지정한 '{review_budget}'는 무시됩니다.",
-            err=True,
-        )
+        try:
+            budget_ratio = _parse_review_budget(review_budget)  # noqa: F841
+        except ValueError as exc:
+            _echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+
+    # 사용자가 준 원문을 라벨에 쓴다 - 파싱 결과(`0.1`)를 찍으면 `10%`라고
+    # 쓴 사람이 자기 입력을 화면에서 못 찾는다. 이해가 맞았는지는 별도로
+    # 출력되는 "실제 N%"가 말한다.
+    policy_label = (  # noqa: F841
+        f"예산 {review_budget}" if review_budget is not None else f"임계값 {review_threshold}"
+    )
+
     resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
     if not targets:
@@ -501,6 +535,49 @@ def translate(
         # 검증되지 않은 문자열을 파일 경로 조각으로 그대로 쓴다.
         _echo(f"--to에 유효하지 않은 언어 태그가 있다: {', '.join(invalid)}", err=True)
         raise typer.Exit(2)
+
+    triage_requested = review_budget is not None or review_threshold is not None
+    profiles: dict[str, SpecProfile] = {}
+    if triage_requested:
+        # **모든 대상 언어를 여기서 검사한다 - 루프 안에서 하지 않는다.**
+        # 루프 안에서만 보면 `--to en,ja,fr`이 en·ja의 LLM 비용을 실제로 쓴
+        # 뒤 fr에서 exit 2를 낸다(설계 D13). `--dry-run`의 용어집 검사가
+        # 이미 같은 이유로 `targets[0]`이 아니라 전량을 본다(아래 주석 참고).
+        #
+        # 프로파일은 **대상 언어**의 규격이다 - `check --spec ko`(검사 대상
+        # 자막의 규격)와 이름이 같아도 다른 것이다(설계 §3.2). 신호 2종
+        # (`spec.violation`·`length.ratio`)이 번역문에 이것을 적용한다.
+        for target in targets:
+            try:
+                profiles[target] = load_builtin(target)
+            except (OSError, ValueError) as exc:
+                # **경고하고 그 언어만 건너뛴다 - 전량 거부하지 않는다**(D7).
+                # 전량 거부는 프로파일이 **있는** 언어의 트리아지까지 잃게 하고,
+                # 요구사항정의서 §8.1 S3의 문서화된 호출
+                # (`--to en,ja,th,vi --review-budget 10%`)을 깨뜨린다 -
+                # th·vi 프로파일이 없고 `tests/test_cli.py:57-73`이 그것을
+                # exit 0으로 고정하고 있다. 선례는 `cli.py`의 캐시 처리다:
+                # 프로바이더가 `cache_identity`를 주지 않으면 경고하고 캐시를
+                # 끈다("끄는 쪽이 안전하고, 조용히 끄지는 않는다").
+                #
+                # **건너뛰는 것은 트리아지이지 번역이 아니다.** 이 언어의
+                # 번역은 그대로 나간다 - `profiles`에 없다는 사실만 뒤에서
+                # 트리아지를 거르는 데 쓴다.
+                #
+                # `load_builtin`의 메시지가 이미 사용 가능 목록을 담으므로
+                # (`spec/profile.py:177-180`) 새로 쓰지 않고 전달한다.
+                # `[target]` 라벨만 붙인다: 이 함수의 다른 `_echo`들이 전부
+                # 그렇게 하고, 언어가 여러 개일 때 어느 언어인지 구별해야 한다.
+                _echo(
+                    f"[{target}] 경고: 규격 프로파일이 없어 트리아지를 건너뛴다 - {exc}", err=True
+                )
+
+        if not profiles:
+            # **한 언어도 못 돌면 요청이 통째로 무시된 것이다.** 경고만 내고
+            # exit 0으로 끝나면 CI가 "트리아지했다"로 읽는다. 하나라도 돌면
+            # 부분 적용이고 어느 언어가 빠졌는지는 위 경고가 말한다.
+            _echo("트리아지를 적용할 수 있는 대상 언어가 없다", err=True)
+            raise typer.Exit(2)
 
     try:
         result = load_subtitle(input, source_lang=source_lang)
@@ -1022,7 +1099,10 @@ def _parse_review_budget(raw: str) -> float:
     함께 막혀 "hard fail만 보기"가 사라진다.
 
     **NaN·inf는 범위 검사가 거부한다** - `nan <= 1.0`이 False이기 때문이다.
-    이것이 우연이 아니라 의도임을 테스트가 못 박고 있다. 이 방어가 없으면
+    이것이 우연이 아니라 의도임을 `test_NaN과_inf는_범위_검사가_거부한다`가
+    **오류 메시지로** 못 박고 있다 - 예외 타입만 단언하면 앞에 `math.isnan`
+    분기를 끼워 넣어 "숫자로 읽지 못했다"로 바꿔도 통과해, 이 문단이 약속한
+    경로가 사라진 것을 게이트가 못 잡는다. 이 방어가 없으면
     `select_by_budget`이 `math.isnan`으로 다시 막아 주지만, 그때는 오류
     메시지가 옵션 이름을 말하지 못한다.
     """
@@ -1036,7 +1116,7 @@ def _parse_review_budget(raw: str) -> float:
     if not 0.0 <= value <= 1.0:
         raise ValueError(
             f"--review-budget이 0~100% 범위를 벗어났다: {raw!r}. "
-            f"개수 지정은 v0.1 범위 밖이다 - 비율로 지정하라 (예: 10%)"
+            "개수 지정은 v0.1 범위 밖이다 - 비율로 지정하라 (예: 10%)"
         )
     return value
 
