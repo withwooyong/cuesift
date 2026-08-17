@@ -184,7 +184,7 @@ def _diagnose_empty_candidates(
         # 공백)이라 걸러졌다. **도달한다** - `source_text`가 공백뿐이면
         # `struct.empty`가 hard_fail을 내지 않아 회색지대를 그대로
         # 통과한다(모듈 독스트링 "넷째" 절 참고).
-        return "후보로 뽑혔지만 전부 번역 실패분(target_text 없음)이라 제외됐다"
+        return "후보로 뽑혔지만 전부 번역 실패분(target_text 없음 또는 공백)이라 제외됐다"
     if gray_zone(scored):
         return (
             f"세그먼트 수({len(scored)})에 비해 max_ratio({max_ratio})가 작아 "

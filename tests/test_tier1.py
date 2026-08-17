@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -466,3 +467,96 @@ def test_diagnose_empty_candidates가_다섯_사유를_구분한다():
 
     # ⑤ candidate_ids가 비었고 회색지대도 비었다(전부 hard_fail 또는 selected).
     assert "회색지대" in _diagnose_empty_candidates([hard, picked], set(), 0.5)
+
+
+# --- 게이트 3개 (3라운드 재리뷰 A1·A2·A3) ---
+#
+# 재리뷰가 P12(warn 필수화)·C5(Tier1Context 조기 생성)·C1(strip 기반 필터)를
+# 스크래치에서 각각 되돌려 봤는데 113 passed로 셋 다 생존했다 - 수정은
+# 옳았지만 그것을 지키는 게이트가 없었다는 뜻이다. "게이트를 만들면 반드시
+# 실패시켜 봐야 한다"는 이 저장소의 규율에 따라 아래 세 테스트를 추가한다.
+
+
+def test_warn은_기본값이_없다():
+    """P12 게이트 - `warn`에 기본값을 다시 붙이면(리뷰 재현: 조용히
+    `_ignore`류 기본값을 되살리는 변이) 이 테스트가 죽는다. 침묵 기본값이
+    돌아오면 유료 계층이 안 돌아도 아무도 모른다는 관측 가능성 판정
+    전체가 증발하므로, "기본값이 없다"는 계약 자체를 직접 검사한다.
+
+    `tests/fakes/provider.py`의 독스트링이 "`inspect.signature` 단언이 이
+    저장소에서 그 이탈을 잡는 유일한 수단"이라고 적은 것과 같은 장치다
+    (`test_cli.py::test_...`가 `fail_on` 기본값을 같은 방식으로 고정한다).
+    """
+    default = inspect.signature(triage_with_tier1).parameters["warn"].default
+    assert default is inspect.Parameter.empty
+
+
+def test_samples가_1이면_max_ratio와_무관하게_즉시_거부된다(signal_ctx):
+    """C5 게이트 - `Tier1Context` 생성이 조기 반환(`if not candidates`)
+    아래로 되돌아가면 `samples=1`처럼 잘못된 설정이 `max_ratio=0.0`(조기
+    반환 경로)에서는 조용히 통과한다(리뷰 재현: 되돌린 코드에서 실제로
+    통과 확인됨). **`max_ratio=0.0`을 써야 한다** - 그것이 조기 반환이
+    발동하는 조건이라, `Tier1Context`가 그 반환보다 위에 있어야만 여기서
+    검증이 돈다는 것을 정확히 겨냥한다.
+    """
+    segments = _plain_segments(3)
+    with pytest.raises(ValueError, match="samples"):
+        triage_with_tier1(
+            segments,
+            signal_ctx,
+            budget_ratio=0.1,
+            provider=EchoProvider(),
+            max_ratio=0.0,
+            samples=1,
+            warn=_ignore,
+        )
+
+
+def test_공백뿐인_번역은_후보에서_빠져_호출을_아낀다(signal_ctx):
+    """C1 게이트 - `.strip()` 없이 진리값만 보면(리뷰 재현: 되돌린 코드에서
+    24 -> 27회로 실측) 원문·번역이 둘 다 공백인 세그먼트가 "번역 있음"으로
+    통과해 낭비 호출이 샌다. id="5" 하나만 공백(source="   ",
+    target="   ")으로 두고 나머지 9건은 평범하게 둔다.
+
+    실측(컨트롤러, 현재 코드): budget_ratio=0.1 -> quota=1 -> id="0" 선별.
+    나머지 9건이 회색지대이고 max_ratio=1.0(cap=10, 회색지대 크기로 제한돼
+    9)이라 전부 후보가 된다 - 그중 id="5"만 `target_text.strip()`이 비어
+    필터에서 빠지므로 **8건 × samples=3 = 24회**가 정확한 값이다.
+    """
+    segments = []
+    for i in range(10):
+        if i == 5:
+            segments.append(
+                Segment(
+                    id=str(i),
+                    index=i,
+                    start_ms=i * 1000,
+                    end_ms=(i + 1) * 1000,
+                    source_text="   ",
+                    target_text="   ",
+                )
+            )
+        else:
+            segments.append(
+                Segment(
+                    id=str(i),
+                    index=i,
+                    start_ms=i * 1000,
+                    end_ms=(i + 1) * 1000,
+                    source_text=f"원문{i}",
+                    target_text=f"Target {i}",
+                )
+            )
+    provider = EchoProvider()
+
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=1.0,
+        samples=3,
+        warn=_ignore,
+    )
+
+    assert len(provider.calls) == 24
