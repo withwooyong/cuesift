@@ -208,6 +208,44 @@ def test_시도마다_다른_프로바이더를_받는다(signal_ctx):
     assert seen == [0, 1, 2]
 
 
+def test_전역_index_대신_로컬_0으로_보낸다(signal_ctx):
+    """Ruling P13 - 원본 전역 index를 그대로 보내면 약한 모델이 프롬프트
+    예시(`{"id": 0, "text": "<번역문>"}`)의 0을 그대로 베낀다. 항목이
+    여럿이면 서로 구분해야 하니 실제 id를 읽지만, **항목이 하나뿐이면
+    구분할 필요가 없어 예시를 복사한다.** 실측(`qwen2.5:3b`,
+    temperature=1.0, 서로 다른 문장·인덱스 2조 각 3회 = 6/6 재현):
+    `index != 0`인 세그먼트는 항상 `{"id": 0, ...}`를 답해
+    `parse_translations`가 "id가 누락됐다"로 거부했고, 같은 세그먼트를
+    `index=0`으로만 바꾸면 3/3 성공했다.
+
+    `loader.py`가 `id = f"{index:05d}"`로 매기고 `select_tier1_candidates`가
+    작은 id를 먼저 큐에 담으므로 **실전 Tier 1 후보는 거의 항상
+    `index != 0`이다** - 재번호하지 않으면 이 신호가 실물 모델에서
+    조용히 항상 `None`이 될 뻔했다(Q3 무음 열화).
+
+    `EchoProvider`는 요청받은 id를 그대로 채우는 가짜라 이 결함 자체를
+    재현하지는 못한다(약한 모델의 "예시를 베끼는" 실패를 흉내 내지
+    않는다) - 대신 **프롬프트에 실제로 실린 번호**를 검사해 "seg를
+    로컬 index=0으로 재번호했는가"라는 배선을 직접 단정한다."""
+    seg = Segment(
+        id="1",
+        index=7,
+        start_ms=0,
+        end_ms=2000,
+        source_text="그는 오지 않았다",
+        target_text="He did not come",
+    )
+    providers = [EchoProvider() for _ in range(3)]
+    ctx = Tier1Context(
+        signal=signal_ctx, provider_for=lambda a: providers[a], samples=3, temperature=1.0
+    )
+    SelfConsistency().collect_tier1(seg, ctx)
+    for p in providers:
+        prompt = p.calls[0][-1].content
+        assert "[0] " in prompt
+        assert "[7] " not in prompt
+
+
 def test_samples가_호출_횟수를_정한다(signal_ctx):
     """`range(ctx.samples)`가 상수 `range(3)`으로 굳어도, 이 파일의 다른
     테스트는 전부 `samples=3`이라 못 잡는다(2라운드 리뷰 지적 - 변이

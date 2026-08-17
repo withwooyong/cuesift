@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from itertools import combinations
 
 from cuesift.segment import Segment, Signal
@@ -175,11 +176,31 @@ class SelfConsistency:
         `None`이면 캐시 없이 그대로 통과하므로, 그런 실행에서는 이 이점이
         적용되지 않는다 - 그래도 전파가 옳은 것은 무음 열화를 막는 쪽이
         우선이기 때문이다.
+
+        **`seg`를 그대로 넘기지 않고 로컬 `index=0`으로 재번호한다
+        (Ruling P13).** 원본 전역 index를 그대로 보내면 약한 모델이
+        프롬프트 예시(`prompt.py`의 `{"id": 0, "text": "<번역문>"}`)의
+        `0`을 그대로 베낀다 - 항목이 여럿이면 서로 구분해야 하니 실제
+        id를 읽지만, **항목이 하나뿐이면 구분할 필요가 없어 예시를 그냥
+        복사한다.** 실측(`qwen2.5:3b`, temperature=1.0, 서로 다른
+        문장·인덱스 2조 각 3회 = 6/6 재현): `index=1`·`index=5`
+        세그먼트는 항상 `{"id": 0, ...}`를 답해 `parse_translations`가
+        "id가 누락됐다"로 거부했고, 같은 세그먼트를 `index=0`으로만
+        바꾸면 3/3 성공했다. 이것이 조용한 이유는 `loader.py`가
+        `id = f"{index:05d}"`로 매기고 `select_tier1_candidates`의
+        동점 처리가 작은 id를 먼저 큐에 담아 **실전 Tier 1 후보는 거의
+        항상 index != 0**이기 때문이다 - 이 신호가 실물 모델에서는
+        조용히 항상 `None`이 될 뻔했다(Q3 무음 열화). 되돌릴 매핑이
+        필요 없는 것은 아래 루프가 `translated.target_text`만 읽고
+        `index`·`id`를 다시 참조하지 않기 때문이다 - `translate_segments`
+        자신도 `segment.id`(바꾸지 않은 값)로 결과를 매칭한다
+        (`engine.py`의 `texts[segment.id] = text`).
         """
+        local_seg = replace(seg, index=0)
         out: list[str] = []
         for attempt in range(ctx.samples):
             result = translate_segments(
-                [seg],
+                [local_seg],
                 provider=ctx.provider_for(attempt),
                 source_lang=ctx.signal.source_lang,
                 target_lang=ctx.signal.target_lang,
