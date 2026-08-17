@@ -71,6 +71,11 @@ class CacheRequest:
     temperature: float
     max_tokens: int | None
     messages: tuple[ChatMessage, ...]
+    attempt: int = 0
+    """자가일관성의 시도 번호 (FR-4.1 · 설계 §8).
+
+    **0은 키 문자열에 넣지 않는다** - 아래 `key` 참고.
+    """
 
     @property
     def messages_sha(self) -> str:
@@ -89,14 +94,18 @@ class CacheRequest:
         온도인데 `repr`이 다르기 때문이다. 정규화가 없으면 호출부의 타입
         차이 하나로 캐시가 전량 미스가 된다.
         """
-        material = _SEP.join(
-            (
-                self.identity,
-                repr(float(self.temperature)),
-                "none" if self.max_tokens is None else str(self.max_tokens),
-                self.messages_sha,
-            )
-        )
+        parts = [
+            self.identity,
+            repr(float(self.temperature)),
+            "none" if self.max_tokens is None else str(self.max_tokens),
+            self.messages_sha,
+        ]
+        # **0이면 생략한다.** 넣으면 기존에 쌓인 캐시가 전량 미스가 되어
+        # WP7b가 실물로 증명한 재개(2회차 실제 호출 0개)가 한 번 헛돈다.
+        # 자가일관성만 시도를 가르면 되고, 나머지 경로는 0이다.
+        if self.attempt:
+            parts.append(f"attempt={self.attempt}")
+        material = _SEP.join(parts)
         return _sha256(material)
 
 

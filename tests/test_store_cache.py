@@ -11,8 +11,10 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from tests.fakes.provider import ScriptedProvider
 
 from cuesift.store.cache import CacheRequest, load, store
+from cuesift.store.provider import CachingProvider
 from cuesift.translate.provider import ChatMessage, Completion, TokenUsage
 
 
@@ -379,6 +381,65 @@ def test_KeyboardInterrupt에도_임시_파일을_남기지_않는다(
         store(tmp_path, _request(), _completion())
 
     assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_attempt_0은_키를_바꾸지_않는다():
+    """**하위 호환 회귀 테스트다** (설계 §8).
+
+    키에 attempt를 무조건 넣으면 기존에 쌓인 번역 캐시가 전량 미스가 되고,
+    WP7b가 실물로 증명한 재개(2회차 실제 호출 0개)가 한 번 헛돈다.
+    """
+    messages = (ChatMessage(role="user", content="안녕"),)
+    without = CacheRequest(identity="m|v1", temperature=0.0, max_tokens=None, messages=messages)
+    explicit_zero = CacheRequest(
+        identity="m|v1", temperature=0.0, max_tokens=None, messages=messages, attempt=0
+    )
+    assert without.key == explicit_zero.key
+
+
+def test_attempt가_다르면_키가_갈린다():
+    """자가일관성은 같은 입력을 N회 부른다 - 키가 같으면 2회차부터 캐시
+    히트가 나서 **분산이 항상 0**으로 나온다 (FR-4.1)."""
+    messages = (ChatMessage(role="user", content="안녕"),)
+    keys = {
+        CacheRequest(
+            identity="m|v1",
+            temperature=1.0,
+            max_tokens=None,
+            messages=messages,
+            attempt=k,
+        ).key
+        for k in range(3)
+    }
+    assert len(keys) == 3
+
+
+def test_온도가_다르면_키가_갈린다():
+    """설계 §8 - Tier 1(temperature>0)이 기존 번역(0.0)의 캐시를 건드리지
+    않는 것은 이 성질 덕이다."""
+    messages = (ChatMessage(role="user", content="안녕"),)
+    cold = CacheRequest(identity="m|v1", temperature=0.0, max_tokens=None, messages=messages)
+    hot = CacheRequest(identity="m|v1", temperature=1.0, max_tokens=None, messages=messages)
+    assert cold.key != hot.key
+
+
+def test_CachingProvider가_attempt를_고정한다(tmp_path):
+    inner = ScriptedProvider(["첫째", "둘째"])
+    a = CachingProvider(inner, identity="m|v1", cache_dir=tmp_path, attempt=0)
+    b = CachingProvider(inner, identity="m|v1", cache_dir=tmp_path, attempt=1)
+    messages = [ChatMessage(role="user", content="안녕")]
+
+    first = a.complete(messages, temperature=1.0, max_tokens=None)
+    second = b.complete(messages, temperature=1.0, max_tokens=None)
+
+    # attempt가 다르므로 캐시가 갈리고 안쪽이 두 번 불린다.
+    assert len(inner.calls) == 2
+    assert first.text != second.text
+
+    # 같은 attempt를 다시 부르면 캐시가 맞는다.
+    again = a.complete(messages, temperature=1.0, max_tokens=None)
+    assert len(inner.calls) == 2
+    assert again.text == first.text
 
 
 def test_정리_실패가_원래_예외를_가리지_않는다(
