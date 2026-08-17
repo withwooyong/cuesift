@@ -181,7 +181,7 @@ def _parse_review_budget(raw: str) -> float:
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_triage.py -v`
 
-Expected: PASS — 파라미터 케이스 9 + 11 + 1 = **21개 통과**
+Expected: PASS — 파라미터 케이스 9 + 10 + 1 = **20개 통과**
 
 - [ ] **Step 5: 게이트를 돌린다**
 
@@ -301,16 +301,17 @@ def test_예산_파싱_실패는_exit_2다(tmp_path: Path, monkeypatch: pytest.M
     assert "비율로 지정하라" in result.output
 
 
-def test_프로파일이_없는_언어는_번역_전에_exit_2다(
+def test_프로파일이_없는_언어는_경고하고_건너뛴다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """D13 — 루프 안에서만 검사하면 en의 LLM 비용을 쓴 뒤 fr에서 죽는다.
+    """D7 — 전량 거부하면 프로파일이 **있는** 언어의 트리아지까지 잃는다.
 
-    **프로바이더 호출 0회를 단언하는 것이 이 테스트의 요점이다.** exit 2만
-    보면 "언제" 죽었는지 알 수 없어, 비용을 쓴 뒤 죽는 구현도 통과한다.
+    요구사항정의서 §8.1 S3의 문서화된 호출이 `--to en,ja,th,vi`인데 th·vi
+    프로파일은 없다(`tests/test_cli.py:57-73`이 그것을 exit 0으로 고정한다).
+    선례도 있다 - `cli.py:869-877`이 프로바이더가 `cache_identity`를 주지
+    않으면 경고하고 캐시를 끈다("조용히 끄지는 않는다").
     """
-    provider = EchoProvider()
-    _patch_provider(monkeypatch, provider)
+    _patch_provider(monkeypatch, EchoProvider())
 
     result = runner.invoke(
         app,
@@ -331,10 +332,49 @@ def test_프로파일이_없는_언어는_번역_전에_exit_2다(
         ],
     )
 
-    assert result.exit_code == 2, result.output
-    assert "fr" in result.output
+    assert result.exit_code == 0, result.output
     # load_builtin의 메시지를 그대로 전달한다 - 사용 가능 목록이 거기 있다.
     assert "사용 가능" in result.output
+    assert "[fr]" in result.output
+    # 프로파일이 있는 언어는 정상 트리아지된다 - 이것이 전량 거부와 갈리는 지점이다.
+    assert "[en] 트리아지" in result.output
+    assert "[fr] 트리아지" not in result.output
+
+
+def test_트리아지할_언어가_하나도_없으면_exit_2다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling 3a + D13 — 요청이 통째로 무시되는 경우만 사용법 오류다.
+
+    **프로바이더 호출 0회를 단언하는 것이 이 테스트의 요점이다.** exit 2만
+    보면 "언제" 죽었는지 알 수 없어, LLM 비용을 쓴 뒤 죽는 구현도 통과한다.
+    """
+    provider = EchoProvider()
+    _patch_provider(monkeypatch, provider)
+
+    # `_args`를 쓰지 않는다 - 그것은 `--to en`을 주므로 프로파일이 존재해
+    # 번역이 실제로 돌고, 그러면 `provider.calls == []` 단언이 무의미해진다.
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "fr",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            "--review-budget",
+            "10%",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "적용할 수 있는 대상 언어가 없다" in result.output
     assert provider.calls == [], "프로파일 검증 전에 번역을 호출했다"
 
 
@@ -448,28 +488,65 @@ from collections import Counter
             try:
                 profiles[target] = load_builtin(target)
             except (OSError, ValueError) as exc:
-                # `load_builtin`의 메시지가 이미 사용 가능 목록을 담는다
-                # (`spec/profile.py:177-180`) - 새로 쓰지 않고 전달한다.
+                # **경고하고 그 언어만 건너뛴다 - 전량 거부하지 않는다**(D7).
+                # 전량 거부는 프로파일이 **있는** 언어의 트리아지까지 잃게 하고,
+                # 요구사항정의서 §8.1 S3의 문서화된 호출
+                # (`--to en,ja,th,vi --review-budget 10%`)을 깨뜨린다 -
+                # th·vi 프로파일이 없고 `tests/test_cli.py:57-73`이 그것을
+                # exit 0으로 고정하고 있다. 선례는 `cli.py:869-877`이다:
+                # 프로바이더가 `cache_identity`를 주지 않으면 경고하고 캐시를
+                # 끈다("끄는 쪽이 안전하고, 조용히 끄지는 않는다").
+                #
+                # `load_builtin`의 메시지가 이미 사용 가능 목록을 담으므로
+                # (`spec/profile.py:177-180`) 새로 쓰지 않고 전달한다.
                 # `[target]` 라벨만 붙인다: 이 함수의 다른 `_echo`들이 전부
                 # 그렇게 하고, 언어가 여러 개일 때 어느 언어인지 구별해야
                 # 한다(`cli.py:883-889`가 라벨 누락으로 겪은 문제).
-                _echo(f"[{target}] {exc}", err=True)
-                raise typer.Exit(2) from exc
+                _echo(f"[{target}] 경고: 규격 프로파일이 없어 트리아지를 건너뛴다 - {exc}", err=True)
+
+        if not profiles:
+            # **한 언어도 못 돌면 요청이 통째로 무시된 것이다.** 경고만 내고
+            # exit 0으로 끝나면 CI가 "트리아지했다"로 읽는다. 하나라도 돌면
+            # 부분 적용이고 어느 언어가 빠졌는지는 위 경고가 말한다.
+            _echo("트리아지를 적용할 수 있는 대상 언어가 없다", err=True)
+            raise typer.Exit(2)
 ```
 
 - [ ] **Step 7: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_triage.py -v`
 
-Expected: PASS — 21 + 4 = **25개 통과**
+Expected: PASS — 20 + 5 = **25개 통과**
 
-- [ ] **Step 8: 기존 테스트가 깨지지 않았는지 확인한다**
+- [ ] **Step 8: 경고를 단언하던 기존 테스트를 고친다**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_translate.py -v 2>&1 | tail -5`
+**정확한 위치를 이미 확인했다.** `tests/test_cli_translate.py:324`의
+`test_review_budget은_경고한다`가 `assert "review-budget" in result.output`으로 경고 문구를
+단언한다. 경고를 없앤 것이 이 태스크의 목적이므로 이 테스트가 죽는다.
 
-Expected: 102 passed. **`--review-budget` 경고를 단언하던 테스트가 있으면 여기서 죽는다** —
-죽으면 그 테스트를 "경고가 아니라 실제 동작"으로 고친다(경고 문구를 지운 것이 이 태스크의
-목적이므로 테스트 수정이 맞다).
+**삭제하지 않고 고쳐 쓴다.** 원래 의도("조용한 무시를 금지한다")는 여전히 유효하고,
+경고가 아니라 동작으로 바뀌었을 뿐이다:
+
+```python
+def test_review_budget이_실제로_트리아지한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 조용한 무시는 이 저장소가 1급으로 금지한 것이다 (--config 선례).
+    # WP8b 전에는 경고만 냈고, 이제는 실제로 트리아지한다.
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, [*_args(tmp_path), "--review-budget", "10%"])
+
+    assert result.exit_code == 0, result.output
+    assert "트리아지" in result.output
+```
+
+Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_translate.py tests/test_cli.py -v 2>&1 | tail -5`
+
+Expected: 전부 통과. **`tests/test_cli.py:57-73`이 특히 중요하다** —
+`--to en,ja,th,vi --review-budget 10%`로 exit 0을 단언하는 요구사항정의서 §8.1 S3의
+문서화된 호출이고, th·vi 프로파일이 없다. D7이 경고+건너뛰기이므로 이 테스트는 **수정 없이
+통과해야 한다.** 죽으면 Step 6의 구현이 전량 거부로 되어 있다는 뜻이다.
 
 - [ ] **Step 9: 게이트를 돌린다**
 
@@ -667,7 +744,9 @@ def test_실패가_없으면_제외_괄호를_내지_않는다(
 
     assert result.exit_code == 0, result.output
     assert "대상 세그먼트 10개" in result.output
-    assert "번역 실패" not in result.output
+    # **괄호까지 포함해 단언한다.** `_format_translate_summary`가 바로 위에서
+    # "성공 10개 · 실패 0개"를 내므로 `"번역 실패"`만으로는 우연에 기댄다.
+    assert "(번역 실패" not in result.output
 
 
 def test_임계값_방식이_동작한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1208,7 +1287,7 @@ PR 본문에는 **무엇을 · 근거 문서 · 게이트 수치**를 담는다.
 | §2 D3 (정책 없으면 트리아지 안 돎) | Task 2 Step 6 (`triage_requested`) · 테스트 |
 | §2 D4 (상호배타) | Task 2 Step 5 · 테스트 |
 | §2 D5 (비율만) | Task 1 |
-| §2 D6·D7 (프로파일 자동 유도·없으면 exit 2) | Task 2 Step 6 · 테스트 |
+| §2 D6·D7 (자동 유도 · 없으면 경고 후 건너뛰기 · 전부 없으면 exit 2) | Task 2 Step 6 · 테스트 2건 |
 | §2 D8 (요청·실제 병기) | Task 3 Step 5 · §9.3 게이트 |
 | §2 D9 (목록 출력 안 함) | Task 3 — `_format_triage_summary`가 집계만 낸다 |
 | §2 D10 (exit 0 유지) | Task 3 — `return 1 if translated.failures else 0` 그대로 |
