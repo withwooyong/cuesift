@@ -525,11 +525,12 @@ def translate(
         _echo(str(exc), err=True)
         raise typer.Exit(2) from exc
 
-    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69.
-    # 이 성질이 깨지면 아래 max()가 틀린 코드를 낸다 - 새 코드를 추가할 때
-    # 반드시 확인한다.
+    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69
+    # (설계 §6.6 표의 6종 중 70을 뺀 5종 - `_translate_one`은 70을 내지
+    # 않는다). 이 성질이 깨지면 아래 max()가 틀린 코드를 낸다 - 새 코드를
+    # 추가할 때 반드시 확인한다.
     worst = 0
-    for target in targets:
+    for i, target in enumerate(targets):
         code = _translate_one(
             result=result,
             input_path=input,
@@ -546,6 +547,18 @@ def translate(
         if code == EXIT_UNAVAILABLE:
             # 인증·모델 오류는 다음 언어에서도 같다. 반복하면 진짜 원인이
             # 실패 더미 아래 묻히고 호출만 언어 수만큼 는다 (설계 §6.4).
+            remaining = targets[i + 1 :]
+            if remaining:
+                # **여기서 말하지 않으면 "중단됐다"와 "애초에 안 시켰다"가
+                # 화면에서 구별되지 않는다.** `--to en,ja,th`에서 en만 성공하고
+                # 멈추면 디렉터리엔 `en.srt`만 남는데, 그것은 `--to en`만 친
+                # 결과와 바이트 단위로 같다. 어느 언어까지 됐는지는 위
+                # `_translate_one`의 `[target_lang]` 라벨이 말하고, 그 뒤로
+                # 뭐가 안 됐는지는 이 줄이 말한다(리뷰 라운드 1 Important 2).
+                _echo(
+                    f"중단: 남은 대상 언어 {', '.join(remaining)}는 시도하지 않았다",
+                    err=True,
+                )
             break
     if worst:
         raise typer.Exit(worst)
@@ -612,7 +625,8 @@ def _translate_one(
             # `NameError`를 주입하면 "name 'entrise' is not defined"만 찍히고
             # 타입이 안 보였다). 넓은 catch를 택한 대가를 이 한 줄이 줄인다.
             _echo(
-                f"{glossary_path}: 용어집을 읽지 못했다 - {type(exc).__name__}: {exc}",
+                f"[{target_lang}] {glossary_path}: 용어집을 읽지 못했다 - "
+                f"{type(exc).__name__}: {exc}",
                 err=True,
             )
             return EXIT_BAD_INPUT
@@ -624,7 +638,8 @@ def _translate_one(
             # 히트한다. 끄는 쪽이 안전하고, **조용히 끄지는 않는다** —
             # 사용자는 재개가 되는 줄 안다.
             _echo(
-                f"경고: {provider.name}이 cache_identity를 제공하지 않아 캐시를 끈다",
+                f"[{target_lang}] 경고: {provider.name}이 cache_identity를 제공하지 "
+                f"않아 캐시를 끈다",
                 err=True,
             )
         else:
@@ -646,7 +661,7 @@ def _translate_one(
             context_window=context_window,
         )
     except FatalProviderError as exc:
-        _echo(f"프로바이더가 요청을 거부했다: {exc}", err=True)
+        _echo(f"[{target_lang}] 프로바이더가 요청을 거부했다: {exc}", err=True)
         return EXIT_UNAVAILABLE
     except ProviderError as exc:
         # **마지막 그물이다.** 오늘은 도달 불가하다 - `openai_compat.py`는
@@ -659,11 +674,11 @@ def _translate_one(
         # 69로 막고 원인을 알리는 편이 낫다. `FatalProviderError` 절보다
         # **뒤에** 와야 한다 - 그 절이 자손을 먼저 잡지 않으면 이 절이
         # 죽은 코드가 된다.
-        _echo(f"프로바이더가 요청을 거부했다: {exc}", err=True)
+        _echo(f"[{target_lang}] 프로바이더가 요청을 거부했다: {exc}", err=True)
         return EXIT_UNAVAILABLE
     except ValueError as exc:
         # 배치·맥락 조립이 틀린 것이므로 명령줄 오류다.
-        _echo(str(exc), err=True)
+        _echo(f"[{target_lang}] {exc}", err=True)
         return 2
 
     out_path = _output_path(input_path, out_dir, source_lang, target_lang)

@@ -725,6 +725,18 @@ class _FirstLanguageFails:
         return target.complete(messages, temperature=temperature, max_tokens=max_tokens)
 
 
+def _summary_line(output: str, lang: str) -> str:
+    """`_format_translate_summary`가 낸 `[lang]` 헤더 다음 줄(세그먼트 요약)을 뽑는다.
+
+    리뷰 라운드 1 Important 1 - `exit_code == 1`만으로는 "en 실패·ja 성공"과
+    "en·ja 둘 다 실패"를 구별하지 못한다(둘 다 exit 1). 언어별 요약 줄을
+    직접 읽어야 시나리오가 실제로 의도한 형태(en만 실패)인지 확인된다.
+    """
+    lines = output.splitlines()
+    header = next(i for i, line in enumerate(lines) if line.startswith(f"[{lang}]"))
+    return lines[header + 1]
+
+
 def test_종료_코드는_가장_나쁜_것이다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # en은 부분 실패(1), ja는 성공(0)이다. max(1, 0) == 1이 정답이다.
     # 판별력의 근거는 _FirstLanguageFails의 독스트링 참고.
@@ -750,6 +762,107 @@ def test_종료_코드는_가장_나쁜_것이다(tmp_path: Path, monkeypatch: p
     )
 
     assert result.exit_code == 1, result.output
+    # **리뷰 라운드 1 Important 1**: 위 exit_code 단언만으로는 이 시나리오가
+    # "en 실패·ja 성공"인지 "en·ja 둘 다 실패"인지 구별하지 못한다(실측:
+    # `break_calls`를 6으로 드리프트시키면 후자가 되는데도 exit 1은 그대로다).
+    # en이 완전히 실패하고 ja가 완전히 성공했음을 직접 확인한다.
+    assert "실패 2개" in _summary_line(result.output, "en")
+    assert "실패 0개" in _summary_line(result.output, "ja")
+
+
+class _SecondLanguageIsFatal:
+    """en(첫 호출)은 성공시키고 ja(두 번째 호출부터)는 Fatal로 거부한다.
+
+    **리뷰 라운드 1 Important 2**: 유일한 기존 Fatal 테스트
+    (`test_치명적_실패는_다음_언어를_돌지_않는다`)는 Dead 프로바이더가
+    **첫 호출부터** 죽어 "성공한 언어가 하나도 없다" - en이 이미 파일로
+    나온 상태에서 ja가 죽는, 부분 출력이 남는 상황을 재현하지 못했다.
+    en(minimal.srt 2세그먼트, 배치 크기 10)은 배치 호출 1회로 끝나므로
+    두 번째 호출부터 깨뜨리면 정확히 ja에서 죽는다.
+    """
+
+    name = "second-fatal"
+    cache_identity = "second-fatal|fake|v1"
+
+    def __init__(self) -> None:
+        self._normal = EchoProvider()
+        self.calls: list[object] = []
+
+    def complete(self, messages, *, temperature, max_tokens):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            return self._normal.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        raise FatalProviderError("401 Unauthorized")
+
+
+def test_Fatal_중단은_남은_언어를_알린다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # en은 성공하고 ja에서 401이 나 중단된다. th는 아예 시도되지 않는다.
+    # 화면이 "어느 언어에서 멈췄는가"와 "뭐가 안 됐는가"를 말해야
+    # `--to en,ja,th`가 중단된 것과 `--to en`만 친 것을 구별할 수 있다
+    # (리뷰 라운드 1 Important 2).
+    provider = _SecondLanguageIsFatal()
+    _patch_provider(monkeypatch, provider)
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en,ja,th",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    assert result.exit_code == 69
+    assert (tmp_path / "minimal.en.srt").exists()  # en은 성공해 파일이 남는다
+    assert not (tmp_path / "minimal.ja.srt").exists()
+    assert not (tmp_path / "minimal.th.srt").exists()
+    assert "[ja] 프로바이더가 요청을 거부했다" in result.output  # 어느 언어에서 멈췄는가
+    assert "중단: 남은 대상 언어 th는 시도하지 않았다" in result.output  # 뭐가 안 됐는가
+
+
+def test_용어집_실패_메시지에_언어_라벨이_있다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # **리뷰 라운드 1 Important 3**: 용어집은 언어 무관 단일 파일이라 en·ja
+    # 둘 다에서 깨지면 실측으로 "똑같은 줄이 반복"됐다 - 어느 언어의 실패인지
+    # 표시가 없어 `targets: {en: ...}`만 망가진 경우와 구별할 수 없었다.
+    glossary = tmp_path / "g.yaml"
+    glossary.write_text("entries가 없다\n", encoding="utf-8")
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en,ja",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--glossary",
+            str(glossary),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    assert result.exit_code == 66
+    failure_lines = [line for line in result.output.splitlines() if "용어집을 읽지 못했다" in line]
+    assert any(line.startswith("[en] ") for line in failure_lines)
+    assert any(line.startswith("[ja] ") for line in failure_lines)
 
 
 # ── Task 5 종료 ────────────────────────────────────────────────────────
