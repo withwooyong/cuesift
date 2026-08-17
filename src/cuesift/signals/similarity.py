@@ -21,9 +21,12 @@ def similarity(a: str, b: str) -> float:
     표기 폭 하나로 "흔들렸다"고 판정된다 - `struct.number_missing`의 전각
     숫자 미탐과 같은 부류다.
 
-    `autojunk=False`가 아니면 difflib이 200자 이상 입력에서 빈출 요소를
-    junk로 취급해 유사도를 실제보다 낮게 낸다. 자막 한 줄은 짧지만
-    `detail`에 담기는 문자열은 길어질 수 있다.
+    `autojunk=False`가 필수다. 200자 이상 입력에서 정렬이 어긋나면
+    (한쪽에 접두사가 있으면) `autojunk=True`일 때 difflib이 빈출 요소를
+    junk로 취급해 인덱스 매칭을 못 한다 — 유사도가 0에 가까워진다.
+    자가일관성은 같은 원문의 N회 재번역을 비교하는데, 재번역의
+    서두가 다르면 정렬이 어긋나 이 현상이 발생한다. 그래서
+    autojunk=False는 이 신호의 필수 조건이다.
 
     엄밀히는 편집거리(Levenshtein)가 아니라 Ratcliff-Obershelp다. 직접
     구현하지 않는 것은 표준 라이브러리에 검증된 것이 있는데 새로 쓰면
@@ -33,6 +36,8 @@ def similarity(a: str, b: str) -> float:
     nb = unicodedata.normalize("NFKC", b)
     if na == nb:
         # 빈 문자열 쌍도 여기서 1.0이 된다 - 둘 다 "같다"가 맞다.
+        # 호출자는 빈 샘플을 거르지 않으면 전량 실패한 번역이
+        # 점수 0.0으로 큐에서 빠진다 (이상탐지 비활성화).
         return 1.0
     if not na or not nb:
         # 한쪽만 비면 공통 부분이 없다. difflib도 0.0을 내지만 명시하는

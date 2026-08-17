@@ -62,3 +62,47 @@ def test_negation과_paraphrase가_분리되지_않는다():
     # 두 집단의 범위가 겹친다 = 어떤 임계값으로도 분리 불가.
     assert min(neg) < max(para)
     assert min(para) < max(neg)
+
+
+def test_200자_이상_입력에서_autojunk가_동작한다():
+    """FR-4.1, §4.1 — `autojunk=False`가 정렬 어긋난 장문에서 중요하다.
+
+    200자를 넘는 입력에서 정렬이 어긋나면 (한쪽에 접두사가 있으면)
+    `autojunk=True`일 때 difflib의 인덱스 매칭이 실패해 유사도가 0에
+    가까워진다. 이 테스트는 자가일관성의 정상 입력이므로 반드시
+    보호되어야 한다. 돌연변이로 `autojunk=False`를 제거하면 죽어야 한다.
+    """
+    # 자가일관성 시나리오: 같은 원문의 두 재번역.
+    # 재번역이 서두부터 다르므로 정렬이 어긋남.
+    base = "그는 끝내 오지 않았다. " * 20  # ~260자
+    a = "서론입니다. " + base  # 접두사 추가 → 정렬 어긋남
+    b = base
+
+    # autojunk=True (기본값)는 빈출 문자를 junk로 취급해
+    # 인덱스 매칭을 못 해서 유사도가 0에 가깝다.
+    # autojunk=False는 모든 문자를 고려해서 높은 유사도(~0.99)가 나온다.
+    result = similarity(a, b)
+    assert result > 0.98, f"autojunk 미적용: {result}"
+
+
+def test_반환값이_0과_1_사이다():
+    """FR-4.1 — 모든 입력에 대해 유사도는 [0.0, 1.0] 범위여야 한다.
+
+    이 함수는 §12 Q4의 교체 지점이므로, 유일하게 지켜야 할 불변식은
+    반환 타입의 범위다. 교체 구현이 이 범위를 위반하면 Signal.__post_init__
+    에서 ValueError를 일으킨다.
+    """
+    test_cases = [
+        ("", ""),
+        ("a", "a"),
+        ("abc", "def"),
+        ("안녕", "반갑"),
+        ("", "안녕"),
+        ("긴 한글 텍스트" * 20, "다른 텍스트" * 20),
+        ("Hello World" * 20, "Goodbye World" * 20),
+        ("１２３", "123"),  # 전각·반각
+    ]
+    for a, b in test_cases:
+        result = similarity(a, b)
+        msg = f"범위 오류: {result}, [0.0,1.0] 필요. pair={a[:20]!r}..."
+        assert 0.0 <= result <= 1.0, msg
