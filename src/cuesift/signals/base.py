@@ -87,6 +87,12 @@ class Tier1Context:
         # 신호가 죽었는데 "안전"으로 보고되는 무음 열화다(Q3).
         if not self.temperature > 0.0:
             raise ValueError(f"temperature는 0보다 커야 한다 (받은 값: {self.temperature})")
+        # float(예: 2.7)이 여기를 통과하면 Task 5의 `range(ctx.samples)`에서
+        # TypeError로 늦게 터진다 - 생성 시점 검증의 취지("나중에 안 터지게")를
+        # 비켜 간다. bool은 int의 서브클래스라 samples=True는 아래 `< 2`에서
+        # 이미 걸린다 - 별도로 막을 필요가 없다.
+        if not isinstance(self.samples, int):
+            raise ValueError(f"samples는 int여야 한다 (받은 타입: {type(self.samples).__name__})")
         # 2개 미만이면 비교할 쌍이 만들어지지 않는다.
         if self.samples < 2:
             raise ValueError(f"samples는 2 이상이어야 한다 (받은 값: {self.samples})")
@@ -124,6 +130,12 @@ def register(collector: _Collector) -> None:
         # 조용히 덮어쓰면 앞선 신호가 사라지고, 그 신호가 잡던 오류가
         # 리포트에서 통째로 빠진다. 원인을 역추적하기 매우 어렵다.
         raise ValueError(f"신호 이름이 중복됐다: {collector.name}")
+    # 이 태스크(Tier 1 실행 격리)가 `tier` 값을 실행 경로 결정에 처음 쓰기
+    # 시작했으므로 이제 그것이 필수 계약이다. 없으면 여기가 아니라 나중
+    # collect_all·collect_tier1의 수집 루프에서 AttributeError로 죽어,
+    # 원인이 등록이 아니라 수집처럼 보인다.
+    if not hasattr(collector, "tier"):
+        raise ValueError(f"수집기 '{collector.name}'에 tier 속성이 없다")
     _REGISTRY[collector.name] = collector
 
 
@@ -132,9 +144,11 @@ def collect_all(
     ctx: SignalContext,
     enabled: Iterable[str] | None = None,
 ) -> dict[str, list[Signal]]:
-    """모든 수집기를 돌려 세그먼트별 신호 목록을 만든다.
+    """**tier 0 수집기만** 돌려 세그먼트별 신호 목록을 만든다 (설계 §4.1 D6).
 
-    `enabled`를 주면 그 이름들만 실행한다 — ablation 측정에 쓴다.
+    Tier 1은 여기서 돌지 않는다 — 전량 LLM 호출이 되기 때문이다.
+    `collect_tier1`을 쓴다. `enabled`를 주면 그 이름들만 실행하되
+    **tier 0이 아닌 이름은 거부한다** — ablation 측정에 쓴다.
     """
     if enabled is None:
         # **tier 0만 돈다.** Tier 1이 여기서 실행되면 전량 LLM 호출이
@@ -146,14 +160,16 @@ def collect_all(
         unknown = [n for n in names if n not in _REGISTRY]
         if unknown:
             raise ValueError(f"등록되지 않은 신호: {', '.join(sorted(unknown))}")
-        # 조용히 건너뛰지 않는 것도 같은 이유다. tier 1 이름을 넣었는데
+        # 조용히 건너뛰지 않는 것도 같은 이유다. tier 0이 아닌 이름을 넣었는데
         # 말없이 빠지면 ablation이 그 신호를 "기여 0"으로 집계한다.
-        higher = [n for n in names if _REGISTRY[n].tier != 0]
-        if higher:
-            raise ValueError(
-                f"collect_all은 tier 0만 실행한다. collect_tier1을 쓸 것: "
-                f"{', '.join(sorted(higher))}"
-            )
+        # 변수명은 `higher`가 아니라 `non_tier0`다 - tier 2가 생기면 "높다"는
+        # 뜻이 어긋난다. 메시지도 각 이름의 실제 tier를 실어 자기설명적으로
+        # 만든다 - "collect_tier1을 쓸 것"이라고만 적으면 tier 2 이름이
+        # 섞였을 때 사용자를 또 다른 ValueError로 보낸다.
+        non_tier0 = [n for n in names if _REGISTRY[n].tier != 0]
+        if non_tier0:
+            detail = ", ".join(f"{n}(tier={_REGISTRY[n].tier})" for n in sorted(non_tier0))
+            raise ValueError(f"collect_all은 tier 0만 실행한다: {detail}")
 
     # 신호가 하나도 없는 세그먼트도 키를 갖는다. 빠진 키는 KeyError를 부른다.
     result: dict[str, list[Signal]] = {seg.id: [] for seg in segments}
@@ -163,6 +179,11 @@ def collect_all(
         # 프로토콜 isinstance가 아니라 hasattr로 가른다. runtime_checkable
         # 프로토콜의 isinstance는 데이터 멤버(name·tier)까지 hasattr로 확인해
         # 두 프로토콜이 동시에 참이 될 수 있고, 판정이 미묘해진다.
+        #
+        # **`_REGISTRY`는 이제 `collect`가 없는 tier 1 수집기도 담는다.**
+        # 이 `else` 가지가 안전한 것은 오직 위의 tier 필터 덕분이다 -
+        # 필터가 사라지면(예: `== 0`이 `!= 1`로 느슨해지면) 여기서
+        # `AttributeError`로 죽는다.
         if hasattr(collector, "collect_batch"):
             for seg_id, signal in collector.collect_batch(segments, ctx).items():
                 result[seg_id].append(signal)
@@ -184,7 +205,16 @@ def collect_tier1(
 
     **호출자가 후보를 이미 좁혀서 넘긴다.** 이 함수는 상한(FR-4.3)을
     강제하지 않는다 - 상한은 `select_tier1_candidates`의 일이고, 두 곳이
-    같은 정책을 나눠 가지면 어긋난다.
+    같은 정책을 나눠 가지면 어긋난다. 다만 그 함수가 자르는 것은
+    **세그먼트 수뿐**이다 - 총 호출 수는 세그먼트 수 × 수집기 수 × `samples`고,
+    `samples`는 여기서도 `Tier1Context`에서도 상한이 없다(실제 상한은 값이
+    입력되는 자리, 즉 CLI가 근거와 함께 둔다).
+
+    **수집기가 자기 실패를 삼킨다고 전제한다.** 여기서는 예외를 잡지 않으므로
+    후반 세그먼트에서 난 예외가 앞서 성공한 세그먼트의 신호를 통째로 날린다
+    (이미 쓴 LLM 비용까지 소실된다). 설계 §6.2가 부분 실패 처리를 수집기 쪽에
+    배정했으므로 이 전파 자체는 위반이 아니지만, `Tier1Collector.collect_tier1`
+    구현이 예외를 올려 보내면 조용한 사고가 된다.
     """
     if enabled is None:
         names = [n for n, c in _REGISTRY.items() if c.tier == 1]
@@ -193,15 +223,21 @@ def collect_tier1(
         unknown = [n for n in names if n not in _REGISTRY]
         if unknown:
             raise ValueError(f"등록되지 않은 신호: {', '.join(sorted(unknown))}")
-        others = [n for n in names if _REGISTRY[n].tier != 1]
-        if others:
-            raise ValueError(f"collect_tier1은 tier 1만 실행한다: {', '.join(sorted(others))}")
+        # collect_all의 non_tier0 분기와 대칭이다 - 변수명·메시지 모두
+        # 실제 tier를 실어 자기설명적으로 만든다.
+        non_tier1 = [n for n in names if _REGISTRY[n].tier != 1]
+        if non_tier1:
+            detail = ", ".join(f"{n}(tier={_REGISTRY[n].tier})" for n in sorted(non_tier1))
+            raise ValueError(f"collect_tier1은 tier 1만 실행한다: {detail}")
 
     # 신호가 하나도 없는 세그먼트도 키를 갖는다. 빠진 키는 KeyError를 부른다.
     result: dict[str, list[Signal]] = {seg.id: [] for seg in segments}
 
     for name in names:
         collector = _REGISTRY[name]
+        # collect_all의 hasattr 분기와 같은 이유다 - `_REGISTRY`에는
+        # `collect_tier1`이 없는 tier 0 수집기도 있다. 위 tier 필터가
+        # 사라지면 이 루프가 `AttributeError`로 죽는다.
         for seg in segments:
             signal = collector.collect_tier1(seg, ctx)
             if signal is not None:

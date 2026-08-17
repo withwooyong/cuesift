@@ -44,11 +44,54 @@ class _SpyTier1:
         return Signal(name=self.name, tier=1, score=0.5)
 
 
+class _SpyTier2:
+    """v0.2 QE 모델(tier 2, 설계 §4.1 D6)의 자리를 흉내 낸다.
+
+    tier 1 스파이 하나만으로는 `collect_all`의 필터가 `c.tier == 0`에서
+    `c.tier != 1`로, `collect_tier1`의 필터가 `c.tier == 1`에서
+    `c.tier != 0`으로 느슨해지는 변이를 잡지 못한다 - tier 1 객체는 두
+    변이 모두에서 여전히 올바르게 걸러지기 때문이다(`!= 1`은 tier=1을
+    배제하고, `!= 0`은 tier=1을 포함하도록 놔둔다). tier 2 값이 있어야
+    "== 대신 != 조건이 새어 들어간다"는 실수가 보인다.
+    """
+
+    name = "test.tier2_spy"
+    tier = 2
+
+    def __init__(self) -> None:
+        self.tier0_calls = 0
+        self.tier1_calls = 0
+
+    def collect(self, seg: Segment, ctx: SignalContext) -> Signal | None:
+        self.tier0_calls += 1
+        return None
+
+    def collect_tier1(self, seg: Segment, ctx: Tier1Context) -> Signal | None:
+        self.tier1_calls += 1
+        return None
+
+
 @pytest.fixture
 def spy_registered():
     """레지스트리를 저장·복원한다. 전역이라 오염되면 다른 테스트가 깨진다."""
     saved = dict(registry())
     collector = _SpyTier1()
+    register(collector)
+    yield collector
+    registry().clear()
+    registry().update(saved)
+
+
+@pytest.fixture
+def tier2_spy_registered():
+    """tier 2 스파이 하나만 등록한다.
+
+    `spy_registered`(tier 1)와 합치지 않는 이유는, 두 스파이가 같은
+    테스트에 섞이면 실패 시 "어느 tier가 새었는가"가 바로 드러나지
+    않기 때문이다.
+    """
+    saved = dict(registry())
+    collector = _SpyTier2()
     register(collector)
     yield collector
     registry().clear()
@@ -104,13 +147,24 @@ def test_collect_tier1은_tier1만_부른다(spy_registered, signal_ctx):
 
 
 def test_collect_tier1은_넘긴_세그먼트에만_돈다(spy_registered, signal_ctx):
-    """상한은 select_tier1_candidates의 일이다. 여기서 또 자르지 않는다."""
-    provider = ScriptedProvider(["a"])
+    """상한은 select_tier1_candidates의 일이다. 여기서 또 자르지 않는다.
+
+    **세그먼트 1건으로는 이 계약을 단언할 수 없다.** "전부 돈다"와 "첫
+    1건만 돈다"가 구분되지 않는다 - `result`의 키는 딕셔너리 컴프리헨션이
+    `segments`에서 직접 만들므로 수집기 호출 횟수와 무관하게 항상 참이
+    된다(리뷰 실측: `for seg in segments:`를 `for seg in segments[:1]:`로
+    바꿔도 이 단언만으로는 6 passed가 유지됐다). 그래서 세그먼트 2건을
+    넘기고 호출 횟수까지 함께 잰다.
+    """
+    provider = ScriptedProvider(["a", "b"])
     t1 = Tier1Context(
         signal=signal_ctx, provider_for=lambda attempt: provider, samples=3, temperature=1.0
     )
-    result = collect_tier1(_segments()[:1], t1)
-    assert set(result) == {"1"}
+    segs = _segments()
+    result = collect_tier1(segs, t1)
+    assert set(result) == {"1", "2"}
+    assert spy_registered.tier1_calls == len(segs)
+    assert len(provider.calls) == len(segs)
 
 
 def test_temperature가_0이면_거부한다(signal_ctx):
@@ -127,3 +181,55 @@ def test_samples가_2_미만이면_거부한다(signal_ctx):
         Tier1Context(
             signal=signal_ctx, provider_for=lambda attempt: None, samples=1, temperature=1.0
         )
+
+
+def test_samples가_float이면_거부한다(signal_ctx):
+    """`samples=2.7`은 하한(`< 2`) 검사를 그냥 통과한다 - `2.7 < 2`가
+    거짓이기 때문이다. 여기서 막지 않으면 Task 5의 `range(ctx.samples)`가
+    `TypeError`로 터진다. 생성 시점 검증의 취지가 "나중에 안 터지게"인데
+    이 경로만 비켜 가는 것을 막는다."""
+    with pytest.raises(ValueError, match="samples"):
+        Tier1Context(
+            signal=signal_ctx, provider_for=lambda attempt: None, samples=2.7, temperature=1.0
+        )
+
+
+def test_collect_all과_collect_tier1_모두_tier2를_부르지_않는다(tier2_spy_registered, signal_ctx):
+    """향후 QE 모델(tier 2)이 등록돼도 두 함수 중 어느 쪽도 그것을 부르면
+    안 된다. `_SpyTier2` 독스트링이 설명하듯, tier 1 스파이만으로는 필터
+    조건이 `==`에서 `!=`로 느슨해지는 변이를 잡지 못한다."""
+    collect_all(_segments(), signal_ctx)
+    assert tier2_spy_registered.tier0_calls == 0
+
+    provider = ScriptedProvider(["a", "b"])
+    t1 = Tier1Context(
+        signal=signal_ctx, provider_for=lambda attempt: provider, samples=3, temperature=1.0
+    )
+    collect_tier1(_segments(), t1)
+    assert tier2_spy_registered.tier1_calls == 0
+
+
+def test_collect_tier1의_enabled은_지정한_이름만_돌린다(spy_registered, signal_ctx):
+    """`collect_all`의 `enabled` 경로는 `tests/test_signals_base.py`가 이미
+    검증한다. `collect_tier1`의 `enabled` 경로는 이 태스크가 새로 연
+    것이라 아무도 밟지 않은 채로 들어올 뻔했다(리뷰 지적) - 여기서 직접
+    검증한다."""
+    provider = ScriptedProvider(["a", "b"])
+    t1 = Tier1Context(
+        signal=signal_ctx, provider_for=lambda attempt: provider, samples=3, temperature=1.0
+    )
+    segs = _segments()
+    result = collect_tier1(segs, t1, enabled=["test.tier1_spy"])
+    assert [s.name for s in result["1"]] == ["test.tier1_spy"]
+    assert spy_registered.tier1_calls == len(segs)
+
+
+def test_collect_tier1은_tier0_이름을_enabled에_넣으면_거부한다(signal_ctx):
+    """`collect_all`의 대칭 테스트(enabled에 tier1을 넣으면 거부)와 반대
+    방향이다. `struct.untranslated`는 `cuesift.signals.structural`이 패키지
+    import 시점에 전역 등록하는 실제 tier 0 신호다."""
+    t1 = Tier1Context(
+        signal=signal_ctx, provider_for=lambda attempt: None, samples=3, temperature=1.0
+    )
+    with pytest.raises(ValueError, match="tier 1만"):
+        collect_tier1([], t1, enabled=["struct.untranslated"])

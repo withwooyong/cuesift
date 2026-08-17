@@ -152,8 +152,16 @@ def ablation(
     `spec.overlap`도 포함된다 — 재리뷰가 이 신호의 캐스케이드(단일 타임코드
     오타가 트랙 절반 이상을 flag)와 가중평균 희석(soft 신호를 최대 0.25 끌어내림)을
     실측했으므로, **A/B 대상 목록에서 빠지면 안 된다.**
+
+    **ablation은 구조상 tier 0만 잰다.** 내부에서 부르는 `measure` -> `collect_all`이
+    tier 0만 실행하기 때문이다(설계 §4.1 D6) - `collect_all`에 tier 1 이름을
+    섞으면 `ValueError`가 난다. tier 1 기여도는 여기서 재지 않는다. **말없이
+    빠지는 것이 아니다** - `enabled` 목록을 레지스트리 전체가 아니라 tier 0로
+    좁히지 않으면 tier 1 수집기가 등록되는 순간(Task 5, `llm.self_consistency`)
+    `measure`가 그 이름째로 `ValueError`를 던져 이 함수 전체가 죽는다. tier 1
+    기여도는 2라운드 경로(`tier1.triage_with_tier1`)로만 측정한다.
     """
-    names = sorted(registry())
+    names = sorted(n for n, c in registry().items() if c.tier == 0)
     full = measure(segments, labels, ctx, [budget])[0].recall
     drops: dict[str, float] = {}
     for name in names:
