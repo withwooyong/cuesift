@@ -399,17 +399,36 @@ Expected: FAIL — `--review-threshold` 옵션이 없어 `exit_code == 2`가 나
 **실패 이유를 반드시 눈으로 확인한다** — "우연히 exit 2"가 아니라 우리가 의도한 검증에서
 실패해야 한다. `result.output`을 출력해 확인한다.
 
-- [ ] **Step 3: import를 추가한다**
+- [ ] **Step 3: import를 추가하지 않는다 (확인만 한다)**
 
-`src/cuesift/cli.py`의 `from cuesift.spec import (...)` 블록은 이미 `load_builtin`을
-포함하므로 건드리지 않는다. 파일 상단 import에 다음을 추가한다:
+`src/cuesift/cli.py`의 `from cuesift.spec import (...)` 블록이 이미 `load_builtin`을
+포함하는지 확인한다 — 포함하고 있으므로 **import를 하나도 추가하지 않는다.**
+
+`Counter`·`cuesift.risk`·`cuesift.signals`·`cuesift.triage`·`cuesift.segment`는 전부
+Task 3에서 들인다. **미리 넣으면 이 태스크가 쓰지 않아 ruff `F401`로 게이트가 깨진다** —
+계획 초안이 `Counter`를 여기 넣으라고 적었던 것이 그 오류였다.
+
+- [ ] **Step 3b: 두 테스트의 양성 단언은 Task 2 범위에서 약화한다**
+
+Step 1의 `test_프로파일이_없는_언어는_경고하고_건너뛴다`와 Step 8의
+`test_review_budget은_더_이상_미구현_경고를_내지_않는다`가 단언하려는
+`"[en] 트리아지"`·`"트리아지"` 문자열은 **Task 3이 만드는 출력이다**(설계 §7.1). 이
+태스크는 `profiles` dict를 만들 뿐 트리아지를 돌리지 않으므로 그 단언은 통과할 수 없다.
+
+**판별력을 잃지 않는 대체 단언을 쓴다:**
+
+| 테스트 | Task 2에서 단언할 것 |
+| --- | --- |
+| 프로파일 경고 | `"[fr] 경고"` 있음 · `"[en] 경고"` **없음** · `(tmp_path / "minimal.en.srt").exists()` · exit 0 — 넷이 함께 "en은 안 걸렀고 fr만 걸렀다"를 고정한다. 경고 유무만으로는 en이 실제로 처리됐는지 알 수 없다 |
+| 미구현 경고 제거 | `"아직 구현되지 않았"` **없음** · exit 0 |
+
+두 곳 모두 아래 주석을 남긴다 — `Task 3 Step 3a`가 grep 회수용 고유 문자열이다:
 
 ```python
-from collections import Counter
+# **이 단언은 Task 2 범위에서 약화된 것이다.** 트리아지 출력 라인은 Task 3이
+# 만든다(설계 §7.1). Task 3 Step 3a가 이 단언을 `"[en] 트리아지"`로 되돌린다 -
+# 되돌리지 않으면 약화된 채 남아 "검사하지 않고 통과하는 게이트"가 된다.
 ```
-
-`cuesift.risk`·`cuesift.signals`·`cuesift.triage`·`cuesift.segment` import는 Task 3에서
-추가한다 — 이 태스크는 아직 그것들을 쓰지 않는다.
 
 - [ ] **Step 4: 옵션을 신설하고 help를 갱신한다**
 
@@ -795,16 +814,46 @@ Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_triage.py -v -k "트리�
 
 Expected: FAIL — 출력에 "트리아지"라는 문자열이 없다(아직 아무것도 출력하지 않는다).
 
+- [ ] **Step 3a: Task 2가 약화한 단언 2건을 되돌린다**
+
+**Task 2는 트리아지 출력 라인을 만들지 않으므로** 아래 두 테스트의 양성 단언을 약화한 채로
+커밋했다. Task 3이 그 라인을 만드는 지금이 되돌릴 자리다 — **되돌리지 않으면 약화된 채
+남아 "검사하지 않고 통과하는 게이트"가 된다**(이 저장소가 1급으로 금지하는 것).
+
+두 곳을 `Task 3 Step 3a`로 grep해 찾는다 — Task 2가 그 문자열을 주석에 남겼다:
+
+```bash
+grep -rn "Task 3 Step 3a" tests/
+```
+
+| 파일 | 테스트 | 약화된 단언 | 되돌릴 단언 |
+| --- | --- | --- | --- |
+| `tests/test_cli_triage.py` | `test_프로파일이_없는_언어는_경고하고_건너뛴다` | `"[en] 경고" not in ...` + `en.srt` 존재 | `"[en] 트리아지" in result.output` **추가** (기존 단언은 남긴다) |
+| `tests/test_cli_translate.py` | `test_review_budget은_더_이상_미구현_경고를_내지_않는다` | `"아직 구현되지 않았" not in ...` | `"트리아지" in result.output` **추가** |
+
+**이름은 바꾸지 않는다** — Task 2가 이미 한 번 바꿨고, 두 번 바뀌면 git 히스토리에서
+추적이 끊긴다. 단언만 강화하고 안내 주석은 지운다.
+
+Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_triage.py tests/test_cli_translate.py -k "프로파일이_없는 or 미구현_경고" -v`
+
+Expected: **FAIL** — 되돌린 두 단언이 죽는다(트리아지 출력이 아직 없다). 이것이 Step 3의
+실패와 같은 성질이고, 아래 구현이 둘을 함께 살린다.
+
 - [ ] **Step 4: import를 추가한다**
 
 `src/cuesift/cli.py` 상단 import에 추가한다:
 
 ```python
+from collections import Counter
+
 from cuesift.risk import fuse
 from cuesift.segment import SegmentRisk
 from cuesift.signals import SignalContext, collect_all
 from cuesift.triage import review_ratio, select_by_budget, select_by_threshold
 ```
+
+`Counter`가 여기 있는 이유: Task 2는 그것을 쓰지 않아 미리 넣으면 ruff `F401`로 게이트가
+깨진다. 쓰는 자리(Step 5의 신호별 적발 집계)와 같은 태스크에서 들인다.
 
 - [ ] **Step 5: 요약 포맷터를 쓴다**
 
