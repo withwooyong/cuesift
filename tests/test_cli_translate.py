@@ -569,6 +569,192 @@ def test_맨_ProviderError도_exit_69로_막는다(
 # ── 리뷰 라운드 1 (함께 처리할 것 b) — 대소문자 무시 언어 태그 치환 ─────
 
 
+# ── Task 5 — 여러 대상 언어 ────────────────────────────────────────────
+
+
+def test_두_언어를_모두_낸다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en,ja",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "minimal.en.srt").exists()
+    assert (tmp_path / "minimal.ja.srt").exists()
+
+
+def test_언어별로_요약을_낸다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 뭉뚱그리면 "ja만 전부 실패"가 "2개 언어 6건 중 3건 실패"로 보인다.
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en,ja",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    assert "[en]" in result.output
+    assert "[ja]" in result.output
+
+
+def test_치명적_실패는_다음_언어를_돌지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 401을 언어 수만큼 반복하면 진짜 원인이 실패 더미 아래 묻힌다.
+    class Dead:
+        name = "dead"
+        cache_identity = "dead|u|m"
+
+        def __init__(self) -> None:
+            self.calls: list[object] = []
+
+        def complete(self, messages, *, temperature, max_tokens):
+            self.calls.append(messages)
+            raise FatalProviderError("401 Unauthorized")
+
+    provider = Dead()
+    _patch_provider(monkeypatch, provider)
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en,ja,th",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    assert result.exit_code == 69
+    # 한 언어에서만 시도했다. 세 언어를 다 돌면 호출이 3배가 된다.
+    assert len(provider.calls) == 1
+
+
+def test_한_언어가_실패해도_나머지를_낸다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 부분 실패는 FR-2.6의 정신대로 계속 진행한다.
+    _patch_provider(monkeypatch, EchoProvider(garbage=True))
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en,ja",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert (tmp_path / "minimal.en.srt").exists()
+    assert (tmp_path / "minimal.ja.srt").exists()
+
+
+class _FirstLanguageFails:
+    """처음 `break_calls`번의 호출만 깨뜨리고 이후는 EchoProvider처럼 정상 응답한다.
+
+    **정정 (팀장 지시)**: 브리프 원안(`test_종료_코드는_가장_나쁜_것이다`)은
+    en·ja 둘 다 용어집 오류(66)를 내는 형태였다 - 용어집은 언어와 무관한
+    같은 파일이라 **둘 다** 실패하고, 결과가 66이어도 그것은 max()가
+    "가장 나쁜 것"을 골랐다는 증거가 아니다. 코드가 하나뿐이면 max()든
+    "마지막 것"이든 같은 답을 낸다.
+
+    판별력을 가지려면 **첫 언어가 실패하고 뒤 언어가 성공해야** 한다.
+    en(minimal.srt 2세그먼트, 배치 크기 10)은 배치 호출 1회가 깨지면 개별
+    폴백 2회로 강등되어(engine.py `_fallback_individually`) 총 3회가
+    "en의 모든 호출"이다 - 그 3회를 깨뜨려 두 세그먼트를 전부
+    실패시킨다(부분 실패, exit 1). ja는 4번째 호출부터라 한 번도 깨지지
+    않고 완전히 성공한다(exit 0). max(1, 0) == 1이 정답이고,
+    `worst = code`(마지막 것)로 바꾸면 0이 나와 이 테스트가 죽는다.
+    """
+
+    name = "first-fails"
+    cache_identity = "first-fails|fake|v1"
+
+    def __init__(self, break_calls: int) -> None:
+        self._break_calls = break_calls
+        self._broken = EchoProvider(garbage=True)
+        self._normal = EchoProvider()
+        self.calls: list[object] = []
+
+    def complete(self, messages, *, temperature, max_tokens):
+        self.calls.append(messages)
+        target = self._broken if len(self.calls) <= self._break_calls else self._normal
+        return target.complete(messages, temperature=temperature, max_tokens=max_tokens)
+
+
+def test_종료_코드는_가장_나쁜_것이다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # en은 부분 실패(1), ja는 성공(0)이다. max(1, 0) == 1이 정답이다.
+    # 판별력의 근거는 _FirstLanguageFails의 독스트링 참고.
+    provider = _FirstLanguageFails(break_calls=3)
+    _patch_provider(monkeypatch, provider)
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en,ja",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+
+
+# ── Task 5 종료 ────────────────────────────────────────────────────────
+
+
 def test_대문자_언어_태그도_치환한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "ep01.KO.srt"
     source.write_bytes((_FIXTURES / "minimal.srt").read_bytes())

@@ -525,23 +525,28 @@ def translate(
         _echo(str(exc), err=True)
         raise typer.Exit(2) from exc
 
+    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69.
+    # 이 성질이 깨지면 아래 max()가 틀린 코드를 낸다 - 새 코드를 추가할 때
+    # 반드시 확인한다.
     worst = 0
     for target in targets:
-        worst = max(
-            worst,
-            _translate_one(
-                result=result,
-                input_path=input,
-                out_dir=out,
-                source_lang=source_lang,
-                target_lang=target,
-                provider=provider,
-                glossary_path=glossary,
-                work_context=work_context,
-                context_window=context_window,
-                cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
-            ),
+        code = _translate_one(
+            result=result,
+            input_path=input,
+            out_dir=out,
+            source_lang=source_lang,
+            target_lang=target,
+            provider=provider,
+            glossary_path=glossary,
+            work_context=work_context,
+            context_window=context_window,
+            cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
         )
+        worst = max(worst, code)
+        if code == EXIT_UNAVAILABLE:
+            # 인증·모델 오류는 다음 언어에서도 같다. 반복하면 진짜 원인이
+            # 실패 더미 아래 묻히고 호출만 언어 수만큼 는다 (설계 §6.4).
+            break
     if worst:
         raise typer.Exit(worst)
 
