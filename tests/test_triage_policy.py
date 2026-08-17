@@ -3,11 +3,26 @@
 import pytest
 
 from cuesift.segment import SegmentRisk
-from cuesift.triage import review_ratio, select_by_budget, select_by_threshold
+from cuesift.triage import (
+    review_ratio,
+    select_by_budget,
+    select_by_threshold,
+    select_tier1_candidates,
+)
 
 
 def _risk(sid: str, score: float, hard: bool = False) -> SegmentRisk:
     return SegmentRisk(segment_id=sid, signals=[], risk_score=score, hard_fail=hard)
+
+
+def _t1_risk(seg_id: str, score: float, *, hard_fail: bool = False, selected: bool = False):
+    return SegmentRisk(
+        segment_id=seg_id,
+        signals=[],
+        risk_score=score,
+        hard_fail=hard_fail,
+        selected=selected,
+    )
 
 
 @pytest.fixture
@@ -159,3 +174,67 @@ def test_nan_budget_is_rejected_explicitly():
     """NaN 방어가 비교 연산의 우연이 아니라 명시적이어야 한다."""
     with pytest.raises(ValueError, match="budget_ratio"):
         select_by_budget([_risk("a", 0.5)], float("nan"))
+
+
+def test_hard_fail은_후보에서_빠진다():
+    """risk_score가 1.0으로 고정돼 신호를 더해도 순위가 안 바뀐다 -
+    낭비가 아니라 **무의미**하다 (설계 §5)."""
+    risks = [
+        _t1_risk("a", 1.0, hard_fail=True),
+        _t1_risk("b", 0.4),
+        _t1_risk("c", 0.3),
+        _t1_risk("d", 0.2),
+    ]
+    assert "a" not in select_tier1_candidates(risks, 1.0)
+
+
+def test_이미_선별된_것은_후보에서_빠진다():
+    """예산을 여기 쓰면 그만큼 회색지대를 못 본다 (설계 §5)."""
+    risks = [_t1_risk("a", 0.9, selected=True), _t1_risk("b", 0.4), _t1_risk("c", 0.3)]
+    assert select_tier1_candidates(risks, 1.0) == ["b", "c"]
+
+
+def test_상한의_분모는_전체다():
+    """FR-4.3이 '전체 세그먼트 중 최대 비율'이라고 적혀 있다. 후보 집합을
+    분모로 삼으면 회색지대가 좁은 트랙에서 상한이 사실상 사라진다."""
+    risks = [_t1_risk("a", 0.9, selected=True)] + [
+        _t1_risk(str(i), 0.5 - i * 0.01) for i in range(9)
+    ]
+    # 전체 10건 × 0.2 = 2건 (올림)
+    assert len(select_tier1_candidates(risks, 0.2)) == 2
+
+
+def test_회색지대가_상한보다_작으면_있는_만큼만():
+    """상한이지 할당량이 아니다 (설계 §5)."""
+    risks = [_t1_risk("a", 0.9, selected=True), _t1_risk("b", 0.4)] + [
+        _t1_risk(f"h{i}", 1.0, hard_fail=True) for i in range(8)
+    ]
+    assert select_tier1_candidates(risks, 1.0) == ["b"]
+
+
+def test_위험도_내림차순으로_고른다():
+    risks = [_t1_risk("low", 0.1), _t1_risk("high", 0.8), _t1_risk("mid", 0.5)]
+    assert select_tier1_candidates(risks, 0.7) == ["high", "mid"]
+
+
+def test_동점은_세그먼트_ID로_깨뜨린다():
+    """NFR-3 - 순서가 흔들리면 같은 입력에 같은 LLM 호출이 나가지 않는다."""
+    risks = [_t1_risk("b", 0.5), _t1_risk("a", 0.5), _t1_risk("c", 0.5)]
+    assert select_tier1_candidates(risks, 0.7) == ["a", "b"]
+
+
+def test_빈_입력은_빈_목록():
+    assert select_tier1_candidates([], 0.5) == []
+
+
+def test_상한이_0이면_아무도_안_고른다():
+    risks = [_t1_risk("a", 0.5), _t1_risk("b", 0.4)]
+    assert select_tier1_candidates(risks, 0.0) == []
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.1, float("nan")])
+def test_잘못된_상한을_거부한다(bad):
+    """select_by_budget과 같은 방어다. NaN을 비교 연산의 우연에 맡기면
+    리팩터링 한 번에 조용히 깨진다."""
+    with pytest.raises(ValueError):
+        select_tier1_candidates([_t1_risk("a", 0.5)], bad)

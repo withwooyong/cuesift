@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
-from cuesift.triage.policy import review_ratio, select_by_budget, select_by_threshold
+from cuesift.triage.policy import (
+    review_ratio,
+    select_by_budget,
+    select_by_threshold,
+    select_tier1_candidates,
+)
 
-__all__ = ["review_ratio", "select_by_budget", "select_by_threshold"]
+__all__ = ["review_ratio", "select_by_budget", "select_by_threshold", "select_tier1_candidates"]
