@@ -1,6 +1,6 @@
 # WBS — cuesift 작업 분해 구조
 
-> 갱신: 2026-08-16 (KST) · 기준 커밋 `e487c1d`
+> 갱신: 2026-08-17 (KST) · 기준 커밋 `4685be1`
 > 대상 마일스톤: **v0.1 (MVP)** — [요구사항정의서](요구사항정의서.md) §10
 >
 > **기준 커밋은 구조적으로 한 커밋 뒤처진다.** 자기 해시는 커밋 전에 알 수
@@ -27,15 +27,15 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 ## 현재 위치
 
 ```text
-  v0.1 대상 FR 42개 중 28개 완료 (67%)
+  v0.1 대상 FR 42개 중 31개 완료 (74%)
 
   WP1 Tier 0 신호 엔진   ████████████████████  ✅  FR 16개
   WP2 벤치마크 하네스     ████████████████████  ✅  (§9.1)
   WP3 융합·검출 정정      ████████████████████  ✅  FR-6.1·3.4 정정
   WP4 인제스트           ████████████████████  ✅  FR-1.1·1.3·1.5
-  WP5 출력              ████░░░░░░░░░░░░░░░░  🟡  FR 5개 중 7.5 완료
-  WP6 CLI 배선           ████░░░░░░░░░░░░░░░░  🟡  FR 5개 중 8.2 완료
-  WP7 번역 계층          ██████████████████░░  🟡  FR 8개 중 7개 (7a 완료)
+  WP5 출력              ████████░░░░░░░░░░░░  🟡  FR 5개 중 7.1·7.5 완료
+  WP6 CLI 배선           ████████░░░░░░░░░░░░  🟡  FR 5개 중 8.1·8.2 완료
+  WP7 번역 계층          ████████████████████  ✅  FR 8개 전부 (7a·7b 완료)
   WP8 Tier 1 신호        ░░░░░░░░░░░░░░░░░░░░  ⬜  FR 3개
   WP9 STT               ░░░░░░░░░░░░░░░░░░░░  ⬜  FR 2개
 ```
@@ -56,10 +56,10 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 | **2** | 벤치마크 하네스 | §9.1 | ✅ | L | 1 | `bench/` · `scripts/fetch_ted2020.py` |
 | **3** | 융합·검출 정정 | 6.1 · 3.4 | ✅ | S | 1·2 | `risk/fuse.py` noisy-or · `signals/structural.py` NFKC · `bench/results/` 재측정 (`2314fc6`·`78921d4`·`57bbded`) |
 | **4** | 인제스트 | 1.1 · 1.3 · 1.5 | ✅ | S | — | `src/cuesift/ingest/{__init__,loader}.py` · `tests/fixtures/ingest/`(픽스처 12종) · `tests/test_ingest.py` · `tests/test_ingest_fixtures.py` · `tests/test_ingest_contamination.py` (`42a126f`·`bb105b7`·`be51706`·`52acf5b`·`d51cb3c`·`1cbc21a`·`26f7517`·`6ad9366`·`50e62cf`) |
-| **5** | 출력 | 7.1~7.5 | 🟡 | M | 4 | **FR-7.5 완료** — `check`의 CI 종료 코드 5종(0·1·2·66·70)이 실제로 갈린다 (`90c6a7d`·`4899fec`·`59c7b51`·`6b45f95`). 남은 FR-7.1~7.4는 `review.json` · `report.html` · 요약 통계 |
-| **6** | CLI 배선 | 8.1~8.5 | 🟡 | M | 4·5 | **FR-8.2 완료** — `cuesift check <자막파일> --spec <프로파일>`이 동작한다. `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). 남은 FR-8.1·8.3은 WP7b·WP9에, 8.4(`cuesift.yaml` 로더)·8.5(진행 표시·CI 감지)는 미착수. **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 — FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`) |
+| **5** | 출력 | 7.1~7.5 | 🟡 | M | 4 | **FR-7.1·7.5 완료** — `check`의 CI 종료 코드 5종(0·1·2·66·70)이 실제로 갈린다(FR-7.5, `90c6a7d`·`4899fec`·`59c7b51`·`6b45f95`). `ingest/writer.py`가 번역된 자막을 실제 파일로 낸다(FR-7.1, `4dc5571`·`eeb4d33`). 남은 FR-7.2~7.4는 `review.json` · `report.html` · 요약 통계 |
+| **6** | CLI 배선 | 8.1~8.5 | 🟡 | M | 4·5 | **FR-8.1·8.2 완료** — `cuesift translate`와 `cuesift check <자막파일> --spec <프로파일>`이 둘 다 동작한다. `check`는 `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). `translate`는 캐시·재개·다국어 순차 번역·`--dry-run`이 붙었다 — 완료 개수는 이 행에서 세지만 구현 커밋은 WP7b 행에 있다. 남은 FR-8.3은 WP9(STT 배선)에, 8.4(`cuesift.yaml` 로더)·8.5(진행 표시·CI 감지)는 미착수. **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 — FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`) |
 | **7a** | 번역 엔진 | 2.1~2.6 · 2.8 | ✅ | L | 4 | **FR 7개 완료** — `src/cuesift/translate/`(`provider`·`batch`·`prompt`·`engine`·`openai_compat`)와 `Glossary.terms_in`. 배치 번역·개별 폴백·재시도·예외 분류가 동작한다. [설계 스펙](superpowers/specs/2026-08-16-translate-engine-design.md) (`10d3b31`) · [구현 계획](superpowers/plans/2026-08-16-translate-engine.md) (`8f0ea4a`) · 구현 (`f6e0ec6`..`1b4ea6e`, 테스트 499→**813**) · 공개 API·`live` 마커와 게이트 방어 3겹 (`9159791`~, 813→**859**). **네트워크를 치지 않는다** — `httpx.MockTransport`로 검증하고 실 API는 `-m live` opt-in |
-| **7b** | 번역 영속화·CLI | 2.7 | ⬜ | M | 7a·5 | 재개(FR-2.7)·캐시(NFR-3) · `--dry-run`. **FR-8.1(`cuesift translate` 배선)도 여기서 닫힌다** — 소속은 WP6이고 WP6 행이 이미 "남은 FR-8.1·8.3은 WP7b·WP9에"라고 적어 둔 그것이다. 완료 개수는 WP6에서 센다 |
+| **7b** | 번역 영속화·CLI | 2.7 | ✅ | M | 7a·5 | **FR-2.7 완료** — 캐시(NFR-3)·재개·`--dry-run`이 실제로 동작한다. `cuesift translate` 배선(FR-8.1, 완료 개수는 WP6에서 센다)과 번역된 자막 파일 쓰기(FR-7.1, 완료 개수는 WP5에서 센다)도 이 작업 패키지에서 나왔다. `python -m cuesift`를 서브프로세스로 두 번 실행해 재개를 실물로 확인했다 — Ollama `qwen2.5:3b`, 1회차 exit 0·실제 호출 1개(2.71초), 2회차 exit 0·캐시 히트 1개·**실제 호출 0개**(0.38초). [설계 스펙](superpowers/specs/2026-08-17-translate-cli-design.md) · [구현 계획](superpowers/plans/2026-08-17-translate-cli.md) (`2d17cc2`·`cb4e0c7`) · 구현 (`742ac52`..`4685be1`) |
 | **8** | Tier 1 신호 | 4.1~4.3 | ⬜ | M | **7a** | 자가일관성 N회 호출 · 역번역 · 적용 상한. **선행은 7a까지다** — 7b(재개·CLI)를 기다리지 않는다 |
 | **9** | STT | 1.2 · 1.4 | ⬜ | M | 4 | Whisper 계열 어댑터 · `원문 검수 필요` 플래그 |
 
@@ -83,10 +83,10 @@ flowchart TD
     WP2["WP2 벤치마크 하네스<br/>✅ 완료"]
     WP3["WP3 융합·검출 정정<br/>✅ 완료"]
     WP4["WP4 인제스트<br/>✅ 완료"]
-    WP5["WP5 출력<br/>🟡 FR-7.5 완료"]
-    WP6["WP6 CLI 배선<br/>🟡 FR-8.2 완료"]
+    WP5["WP5 출력<br/>🟡 FR-7.1·7.5 완료"]
+    WP6["WP6 CLI 배선<br/>🟡 FR-8.1·8.2 완료"]
     WP7A["WP7a 번역 엔진<br/>✅ FR-2.1~2.6·2.8"]
-    WP7B["WP7b 영속화·CLI<br/>FR-2.7 · FR-8.1"]
+    WP7B["WP7b 영속화·CLI<br/>✅ FR-2.7 · FR-8.1"]
     WP8["WP8 Tier 1 신호<br/>FR-4.1~4.3"]
     WP9["WP9 STT<br/>FR-1.2·1.4"]
     V01(["v0.1 MVP<br/>S1 단일 명령 완주"])
@@ -112,6 +112,7 @@ flowchart TD
     style WP3 fill:#e6f4ea,stroke:#34a853
     style WP4 fill:#e6f4ea,stroke:#34a853
     style WP7A fill:#e6f4ea,stroke:#34a853
+    style WP7B fill:#e6f4ea,stroke:#34a853
     style WP5 fill:#fef7e0,stroke:#f9ab00
     style WP6 fill:#fef7e0,stroke:#f9ab00
 ```
@@ -176,16 +177,15 @@ v0.1 전체를 기다리지 않고 중간 산출물을 낼 수 있는 유일한 
 | ~~2~~ | ~~WP4~~ | ✅ 완료 (2026-08-01). 병목이 풀려 WP5·WP7·WP9가 착수 가능해졌다 |
 | ~~3~~ | ~~WP6 부분 (FR-8.2 `check`)~~ | ✅ 완료 (2026-08-13). 최초로 **쓸 수 있는 제품**이 나왔다 (`4899fec`) |
 | ~~4~~ | ~~WP7a (번역 엔진)~~ | ✅ 완료 (2026-08-16). FR 7개를 닫았고 **WP8의 선행이 풀렸다** (`f6e0ec6`..`1b4ea6e` 엔진 499→**813**, `9159791`~ 공개 API·마커 813→**859**) |
-| 1 | **WP7b** | `cuesift translate`가 붙어야 번역 계층이 사람 손에 닿는다. 재개(FR-2.7)·캐시는 실사용 첫날부터 필요하다 — LLM 호출은 돈이라 중단된 작업을 처음부터 다시 도는 것이 곧 비용이다. `--dry-run`도 여기서 나온다 |
-| 2 | WP8 | Tier 1은 번역 계층 없이는 만들 수 없었고 이제 가능하다. **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나이며, `negation` Recall이 무작위보다 낮다는 실측이 이 투자의 근거다. **WP7b를 기다리지 않는다** — `translate_segments`와 `build_messages`만 있으면 된다 |
-| 3 | WP5 나머지 (FR-7.1~7.4) | `review.json`·`report.html`·요약 통계. **WP7이 먼저였던 이유**는 리포트에 실을 신호가 번역 계층에서 나오기 때문이다 — 규격 위반 7종만 아는 상태에서 FR-7.2를 확정하면 스키마를 다시 깨야 한다(설계 D4가 `--json`을 미룬 것과 같은 판단) |
-| 4 | WP6 나머지 (FR-8.3~8.5) | `transcribe` 배선과 `cuesift.yaml` 로더·진행 표시. FR-8.1은 WP7b가 닫는다 |
-| 5 | WP9 | STT는 FR-1.3이 "자막 우선"이라 마지막이어도 S1이 성립한다 |
+| ~~5~~ | ~~WP7b~~ | ✅ 완료 (2026-08-17). 캐시·재개·다국어 순차 번역·`--dry-run`·`python -m cuesift`가 실제로 동작하고, live로 재개(2회차 실제 호출 0개)를 실물 확인했다. FR-2.7·FR-7.1·FR-8.1 완료 (`742ac52`..`4685be1`) |
+| 1 | **WP8** | Tier 1은 번역 계층 없이는 만들 수 없었고 이제 가능하다. **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나이며, `negation` Recall이 무작위보다 낮다는 실측이 이 투자의 근거다 |
+| 2 | WP5 나머지 (FR-7.2~7.4) | `review.json`·`report.html`·요약 통계. **WP7이 먼저였던 이유**는 리포트에 실을 신호가 번역 계층에서 나오기 때문이다 — 규격 위반 7종만 아는 상태에서 FR-7.2를 확정하면 스키마를 다시 깨야 한다(설계 D4가 `--json`을 미룬 것과 같은 판단) |
+| 3 | WP6 나머지 (FR-8.3~8.5) | `transcribe` 배선과 `cuesift.yaml` 로더·진행 표시. FR-8.1은 WP7b가 닫았다 |
+| 4 | WP9 | STT는 FR-1.3이 "자막 우선"이라 마지막이어도 S1이 성립한다 |
 
-**1순위가 WP7b이고 2순위가 WP8인 것은 순서 제약이 아니라 선택이다.** 둘 다 지금
-착수 가능하다(위 도식의 갈라진 화살표). WP7b를 앞에 둔 이유는 그것이 **사용자가
-만질 수 있는 산출물**을 내기 때문이고, `check` 때 배운 "중간 산출물을 먼저 낸다"와
-같은 판단이다.
+**WP7b 완료로 WP7 전체가 닫혔다.** WP8 착수의 필수 선행은 WP7a까지였고(위 도식의
+갈라진 화살표 참고) WP7b는 조건이 아니었지만, 둘 다 끝난 지금은 그 구분이 더 이상
+의미가 없다. 남은 1순위는 WP8 하나다.
 
 ## 갱신 규칙
 

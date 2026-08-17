@@ -612,6 +612,11 @@ def test_dry_run은_파일도_캐시도_쓰지_않는다(
 
     monkeypatch.setattr("cuesift.cli.write_subtitle", _forbidden)
     monkeypatch.setattr("cuesift.store.provider.store", _forbidden)
+    # [Task 7 (C)] 위 둘은 이름을 아는 쓰기만 잡는다 - `cache_dir.mkdir(...)`
+    # 처럼 함수 밖에서 직접 부르는 다른 쓰기는 새어 나가도 죽지 않는다
+    # (Task 6 리뷰어 실측: 이 변이가 기존 975건을 전부 통과했다).
+    # `Path.mkdir` 자체를 계측해 이름과 무관하게 "디스크에 뭔가 만들었다"를 막는다.
+    monkeypatch.setattr(Path, "mkdir", _forbidden)
     _patch_provider(monkeypatch, EchoProvider())
 
     result = runner.invoke(app, [*_args(tmp_path), "--dry-run"])
