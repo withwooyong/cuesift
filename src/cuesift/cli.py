@@ -11,7 +11,7 @@
 | 0 | 위반 없음, 또는 `--fail-on none` | |
 | 1 | 규격 위반 발견, 또는 번역 일부 세그먼트 실패(원문 유지) | FR-7.5, FR-2.6 |
 | 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패·출력 경로 충돌) | typer 관행 |
-| 66 | 파일 내용이 틀림 (자막·용어집 파싱 실패, utf-8 아님, 읽지 못함) | `sysexits.h` EX_NOINPUT |
+| 66 | 파일 사정 (자막·용어집 파싱 실패, utf-8 아님, 읽거나 쓰지 못함) | `sysexits.h` EX_NOINPUT |
 | 69 | 외부 서비스(LLM 프로바이더)가 요청을 거부함 | `sysexits.h` EX_UNAVAILABLE |
 | 70 | 미구현 | |
 
@@ -572,6 +572,13 @@ def _translate_one(
     """
     glossary = None
     if glossary_path is not None:
+        # **이 try는 호출 하나(`load_glossary`)로 유지해야 한다.** 아래
+        # `except Exception`은 `typer.Exit`까지 삼킨다 - `issubclass(typer.Exit,
+        # Exception)`이 `True`다(`RuntimeError` 경유, 실측: WP7b Task 4 리뷰
+        # 라운드 3). 오늘은 try 안에 호출이 하나뿐이라 도달 불가하지만, 누가
+        # 여기 줄을 보태 그 안에서 `typer.Exit(2)`를 던지면 **조용히 66으로
+        # 바뀐다.** `KeyboardInterrupt`·`SystemExit`은 `BaseException`이라
+        # 이 catch가 삼키지 않는다 - Ctrl+C는 정상 동작한다.
         try:
             glossary = load_glossary(glossary_path, target_lang)
         except Exception as exc:
@@ -585,13 +592,24 @@ def _translate_one(
             # 사용자가 준 파일이고 어떤 실패든 "파일 내용이 틀림"(66)이지
             # 이 프로세스가 잘못 짜인 것(1, traceback)이 아니다.
             #
-            # **`glossary/` 자체는 고치지 않는다** - 이번 태스크 범위 밖이고,
-            # `ingest.load_subtitle`처럼 자기 실패를 `GlossaryError`로 모으게
-            # 바꾸면 이 태스크가 모르는 다른 호출부(WP5)의 계약이 바뀐다.
-            # 이 사실을 여기 남겨 두는 것은, 나중에 `glossary/`가 정규화를
-            # 갖추면 "CLI가 이미 넓게 잡고 있으니 좁혀도 안전하다"는 근거가
-            # 되게 하기 위해서다.
-            _echo(f"{glossary_path}: 용어집을 읽지 못했다 - {exc}", err=True)
+            # **"모든 실패가 66이 된다"는 열린 집합에 대한 단언이라 테스트로
+            # 완결할 수 없다** - 넓은 catch가 유일하게 구성상(by construction)
+            # 참인 선택이다(리뷰어 판정, WP7b Task 4 리뷰 라운드 3). `glossary/`
+            # 자체는 고치지 않는다 - 이번 태스크 범위 밖이고, `ingest.load_subtitle`
+            # 처럼 자기 실패를 `GlossaryError`로 모으게 바꾸면 이 태스크가 모르는
+            # 다른 호출부(WP5)의 계약이 바뀐다. 이 사실을 여기 남겨 두는 것은,
+            # 나중에 `glossary/`가 정규화를 갖추면 "CLI가 이미 넓게 잡고 있으니
+            # 좁혀도 안전하다"는 근거가 되게 하기 위해서다.
+            #
+            # **예외 타입명을 메시지에 넣는다.** `{exc}`만 찍으면
+            # `ParserError`(YAML을 고쳐야 함)와 `NameError`(버그를 신고해야 함)가
+            # 사용자에게 같은 모양으로 보인다(실측: WP7b Task 4 리뷰 라운드 3 -
+            # `NameError`를 주입하면 "name 'entrise' is not defined"만 찍히고
+            # 타입이 안 보였다). 넓은 catch를 택한 대가를 이 한 줄이 줄인다.
+            _echo(
+                f"{glossary_path}: 용어집을 읽지 못했다 - {type(exc).__name__}: {exc}",
+                err=True,
+            )
             return EXIT_BAD_INPUT
 
     if cache_dir is not None:

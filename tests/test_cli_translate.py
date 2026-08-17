@@ -432,9 +432,21 @@ def test_용어집_targets가_dict가_아니면_exit_66이다(
 # ── 리뷰 라운드 1 (Critical 3) — write_subtitle 예외 누수 2종 ──────────
 
 
-def test_출력_디렉터리_자리가_이미_파일이면_exit_2다(tmp_path: Path) -> None:
+def test_출력_디렉터리_자리가_이미_파일이면_exit_2다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # --out에 file_okay=False를 걸어 typer가 본문 전에 거른다 - write_subtitle의
     # mkdir(parents=True, exist_ok=True)가 FileExistsError를 내기 전에 막는다.
+    #
+    # **가드가 회귀해도 네트워크를 타지 않도록 프로바이더를 패치한다.** 이
+    # 파일의 모듈 독스트링이 "네트워크를 타지 않는다"고 선언한다 - 가드가
+    # 무력화되면 패치 없는 테스트는 진짜 http://h/v1로 연결을 시도해 재시도
+    # 백오프까지 기다린다(실측: WP7b Task 4 리뷰 라운드 3, 이 파일 3개 테스트
+    # 소요가 7~8초에서 24~25초로 늘어남). 패치가 있으면 가드가 회귀해도
+    # `_build_provider`까지 가지 않거나, 가더라도 EchoProvider는 즉시 응답해
+    # 시간이 늘지 않는다.
+    _patch_provider(monkeypatch, EchoProvider())
+
     out_as_file = tmp_path / "out"
     out_as_file.write_text("x", encoding="utf-8")
 
@@ -474,10 +486,19 @@ def test_출력_경로_자리가_이미_디렉터리면_exit_66이다(
 # ── 리뷰 라운드 1 (Important 4) — --to 값 검증 ──────────────────────────
 
 
-def test_유효하지_않은_언어_태그는_exit_2다(tmp_path: Path) -> None:
+def test_유효하지_않은_언어_태그는_exit_2다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # 'e:n'은 NTFS 대체 데이터 스트림으로 해석되고, 나머지 둘은 --out 밖에
     # 쓰거나 exit 1로 새는 경로 조작이다. 셋 다 검증 없이 파일 경로 조각이
     # 되기 전에 막아야 한다.
+    #
+    # **가드가 회귀해도 네트워크를 타지 않도록 프로바이더를 패치한다.**
+    # 위 `test_출력_디렉터리_자리가_이미_파일이면_exit_2다`의 주석 참고 -
+    # 이 파일의 "네트워크를 타지 않는다"는 선언은 mutant 상태에서도 지켜야
+    # 계약이지, 정상 경로에서만 지켜지면 주석에 불과하다.
+    _patch_provider(monkeypatch, EchoProvider())
+
     for bad in ("e:n", "x/../../ESCAPED", "../pwned"):
         result = runner.invoke(
             app,
