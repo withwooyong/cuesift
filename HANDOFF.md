@@ -1,7 +1,7 @@
 # Session Handoff
 
 > Last updated: 2026-08-17 (KST)
-> Branch: **`feat/translate-cli`** — 커밋 12개, `main`에 아직 안 올라갔다.
+> Branch: **`feat/translate-cli`** — 커밋 20개, `main`에 아직 안 올라갔다.
 > **WP7b(번역 영속화·CLI)가 이 세션으로 닫혔다** — `cuesift translate`가 캐시·재개·
 > 다국어·`--dry-run`까지 실제로 동작하고, 재개는 `python -m cuesift`를 서브프로세스로
 > 두 번 실행한 live 테스트로 실물 확인됐다.
@@ -9,10 +9,16 @@
 
 ## Current Status
 
-**작업 계획 [2026-08-17-translate-cli](.superpowers/sdd/2026-08-17-translate-cli/) 태스크 7개(캐시 저장소 →
+**[설계 스펙](docs/superpowers/specs/2026-08-17-translate-cli-design.md)과
+[구현 계획](docs/superpowers/plans/2026-08-17-translate-cli.md)의 태스크 7개(캐시 저장소 →
 캐시를 끼운 프로바이더 → 자막 쓰기 → CLI 배선 → 다국어 → `--dry-run` → live 검증·문서)를
-전부 마쳤다.** 이번 세션(Task 7)이 한 일은 코드가 아니라 **검증과 기록**이다 — 새 로직은
-없고, 기존 dry-run 쓰기 계측의 빈틈 하나를 메운 것과 live 프로세스 테스트 추가가 전부다.
+전부 마쳤다.** 브리프·리뷰 기록은 `.superpowers/sdd/2026-08-17-translate-cli/`에 있지만
+**이 경로는 `.superpowers/sdd/.gitignore`(`*`)로 git에서 완전히 빠져 있다** — 링크로
+걸면 로컬에서는 열려도 GitHub에서는 404이고 `scripts/check_links.py`는 `exists()`만
+보므로 이 누수를 잡지 못한다. 그래서 코드 스팬으로만 남긴다(검사받지 않는 링크는
+남기지 않는다). 이번 세션(Task 7)이 한 일은 코드가 아니라 **검증과 기록**이다 — 새
+로직은 없고, 기존 dry-run 쓰기 계측의 빈틈 하나를 메운 것과 live 프로세스 테스트
+추가가 전부다.
 
 | | 이전 세션 종료 시점 (Task 6) | 이번 세션 (Task 7) |
 | --- | --- | --- |
@@ -130,7 +136,7 @@ Task 7의 범위가 `translate/`·`store/`·`ingest/`·`cli.py`의 **로직을 �
 | `pytest -m live -v -s` (Ollama `qwen2.5:3b`) | **2 passed, 975 deselected** in 29.91초 |
 | `python -m cuesift translate ...` 1회차 | exit **0** · 캐시 히트 0개 · **실제 호출 1개** · 2.71초 |
 | `python -m cuesift translate ...` 2회차 (재개) | exit **0** · 캐시 히트 1개 · **실제 호출 0개** · 0.38초 |
-| `python scripts/check_links.py` | 마크다운 **23개 파일** · 상대 링크 **97개** / 깨진 링크 0 |
+| `python scripts/check_links.py` | 마크다운 **23개 파일** · 상대 링크 **99개** / 깨진 링크 0 |
 | `npx markdownlint-cli2` | Linting: **23 files** / 0 issues |
 | 3.11 문법 검사 (`ast.parse`, `src`+`tests`) | **3.11 OK** |
 

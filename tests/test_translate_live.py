@@ -214,3 +214,13 @@ def test_cli가_실제_프로세스로_동작한다(tmp_path: Path) -> None:
     )
 
     assert "실제 호출 0개" in again.stdout, again.stdout
+    # [리뷰 라운드 1 Important 4] "캐시 히트 = 재개 성공"이 아니다 - `CachingProvider`는
+    # 형식을 어긴 응답도 저장한다(README "형식을 어긴 응답도 캐시됩니다" 참고, 의도된
+    # 설계다). 그래서 위 단언 하나만으로는 "재개가 쓰레기를 재사용하는 상태"와
+    # "재개가 동작하는 상태"가 구분되지 않는다 - 리뷰어가 모든 응답을 형식 위반으로
+    # 내는 가짜 엔드포인트로 재현했다: 1회차 실패 2/2·exit 1, 2회차 캐시 히트 2개·
+    # 실제 호출 0개·**여전히 실패 2/2**·exit 1인데 위 단언까지는 전부 통과했다.
+    # 2회차의 종료 코드와 실패 수까지 단언해야 "캐시를 재사용했다"가 아니라
+    # "번역이 성공한 채로 재개됐다"를 증명한다.
+    assert again.returncode == 0, again.stderr
+    assert "실패 0개" in again.stdout, again.stdout

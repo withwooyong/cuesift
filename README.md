@@ -291,9 +291,12 @@ cuesift translate ep01.ko.srt --to en --dry-run   # 몇 번 더 불러야 하나
 기본값으로 넣지 않음").
 
 `--review-budget`은 아직 구현되지 않았습니다(WP5) — 지정해도 경고만 내고 무시됩니다.
-설정 파일 `cuesift.yaml`(FR-8.4)도 아직 구현되지 않았습니다. **`--config`는 현재
-받기만 하고 아무 일도 하지 않습니다** — 경고도 내지 않으므로 지정해도 조용히 무시됩니다.
-구현되면 모든 옵션을 파일로 지정할 수 있으며, **CLI 인자가 설정 파일보다 우선**합니다.
+설정 파일 `cuesift.yaml`(FR-8.4)도 아직 구현되지 않았습니다. **`--config`는
+`translate`의 옵션이 아니라 `cuesift` 바로 뒤에 붙는 최상위 옵션입니다**
+(`cuesift --config c.yaml translate ...` — 서브커맨드 뒤에 쓰면 `No such option`으로
+종료 코드 2가 납니다). 지정하면 경고를 내고 CLI 인자만 반영합니다 — 조용히
+무시되지 않습니다. 구현되면 모든 옵션을 파일로 지정할 수 있으며, **CLI 인자가
+설정 파일보다 우선**합니다.
 
 ### `cuesift transcribe` (설계 확정, 구현 예정)
 
