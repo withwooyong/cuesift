@@ -114,6 +114,19 @@ def select_by_threshold(risks: Sequence[SegmentRisk], threshold: float) -> list[
     return [_copy(r, selected=r.hard_fail or r.risk_score >= threshold) for r in ordered]
 
 
+def gray_zone(risks: Sequence[SegmentRisk]) -> list[SegmentRisk]:
+    """컷라인 아래 회색지대 - hard_fail도 아니고 이미 선별되지도 않은 것 (설계 §5).
+
+    **`select_tier1_candidates`와 `tier1.py`의 진단 헬퍼가 이 술어를 따로
+    복제해 갖고 있었다** (2라운드 리뷰 C3) - `select_tier1_candidates`가
+    제외 조건을 하나 더 넣으면 `tier1.py`의 "회색지대가 비었다" 진단이
+    조용히 틀린 원인을 말하게 된다. 정렬은 `_sorted_desc`를 그대로 쓴다 -
+    동점을 세그먼트 ID로 깨뜨리는 규칙이 검수 큐와 같아야 NFR-3(재현성)이
+    성립한다.
+    """
+    return [r for r in _sorted_desc(risks) if not r.hard_fail and not r.selected]
+
+
 def select_tier1_candidates(
     risks: Sequence[SegmentRisk],
     max_ratio: float,
@@ -165,10 +178,7 @@ def select_tier1_candidates(
     if cap <= 0:
         return []
 
-    # _sorted_desc를 그대로 쓴다 - 동점을 세그먼트 ID로 깨뜨리는 규칙이
-    # 검수 큐와 같아야 NFR-3(재현성)이 성립한다.
-    gray = [r for r in _sorted_desc(risks) if not r.hard_fail and not r.selected]
-    return [r.segment_id for r in gray[:cap]]
+    return [r.segment_id for r in gray_zone(risks)[:cap]]
 
 
 def review_ratio(risks: Sequence[SegmentRisk]) -> float:

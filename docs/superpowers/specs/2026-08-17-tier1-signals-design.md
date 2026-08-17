@@ -314,10 +314,10 @@ flowchart TD
     A["세그먼트 전량"] --> B["① collect_all(segments, ctx)<br/>Tier 0 · 비용 0"]
     B --> C["② fuse() → risks"]
     C --> D["③ select_by_budget(risks, budget)"]
-    D --> E["④ select_tier1_candidates(risks, max_ratio)<br/>hard_fail 제외 · selected 제외"]
+    D --> E["④ select_tier1_candidates(scored, max_ratio)<br/>hard_fail 제외 · selected 제외"]
     E --> F["⑤ collect_tier1(candidates, t1ctx)<br/><b>LLM 호출 · 후보만</b>"]
     F --> G["⑥ fuse(tier0 신호 + tier1 신호)"]
-    G --> H["⑦ select_by_budget(risks, budget)"]
+    G --> H["⑦ select_by_budget(rescored, budget)"]
     H --> I["최종 검수 큐"]
 ```
 
@@ -472,6 +472,7 @@ collect_all(segments, ctx) 실행
 | `HANDOFF.md` | 브랜치 정보가 사실과 다르다 — `feat/translate-cli`는 `48f9133`으로 이미 머지됐다 |
 | `CHANGELOG.md` | WP8a 항목 |
 | 이 설계 §6.3 | "배치·컨텍스트 윈도우를 재사용한다"가 §4.1의 세그먼트 단위 프로토콜과 모순 — 재사용되는 것은 재시도·실패 분류뿐임을 실측(30회/10320자 vs 3회/1599자)과 함께 정정 (Task 5 리뷰, Ruling P11) |
+| 이 설계 §7 | 도식 ④·⑦이 둘 다 `risks`(예산 적용 전)를 인자로 그렸다 — §7 산문(329-331행)은 이미 `scored`/재융합 결과를 전제해 서로 모순이었다. 도식을 따라간 사람이 "③에서 만든 `scored`를 ④·⑦에 넘긴다"는 산문 규칙 대신 예산 미적용 `risks`를 다시 넘기는 회귀(M1)를 재도입할 수 있었다 — `tier1.py` 구현은 처음부터 산문 쪽(④는 `scored`, ⑦은 재융합한 `rescored`)이 맞았다. 도식을 코드에 맞춰 정정 (Task 6 2라운드 리뷰, C7) |
 
 **§12 Q4 항목이 제일 중요하다.** 다음 사람이 "WP8이 끝났으니 Q4도 닫혔겠지"로
 읽으면 닫히지 않은 미결정 위에 v0.1을 올리게 된다.

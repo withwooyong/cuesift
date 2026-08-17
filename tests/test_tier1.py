@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from tests.fakes.provider import EchoProvider
 
@@ -9,6 +11,7 @@ from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals.base import SignalContext
 from cuesift.spec import load_builtin
 from cuesift.tier1 import _diagnose_empty_candidates, triage_with_tier1
+from cuesift.triage import review_ratio
 
 
 @pytest.fixture
@@ -18,12 +21,33 @@ def signal_ctx() -> SignalContext:
     )
 
 
-def test_tier1은_후보에만_불린다(signal_ctx):
-    """**비용 통제의 핵심 게이트다** (FR-4.3).
+def _ignore(_message: str) -> None:
+    """`warn`이 필수 키워드가 된 뒤(2라운드 리뷰 Ruling P12), 사유에 관심
+    없는 테스트가 매번 람다를 새로 쓰지 않도록 하는 공용 자리표시자."""
 
-    전량에 불리면 요구사항정의서 §4가 '감당 불가'라고 적은 비용이 난다.
+
+class _VaryingProvider(EchoProvider):
+    """호출마다 다른 번역을 내 자가일관성 점수가 0이 아니게 한다.
+
+    `EchoProvider`(결정론적 - 매번 같은 `EN:` 접두만 붙인다)로는 재번역
+    N개가 항상 동일해 `llm.self_consistency`가 늘 0.0을 내므로, ⑥ 재융합이
+    Tier 1 신호를 실제로 반영하는지 구분할 수 없다(2라운드 리뷰 A2 - M3·
+    M4·M5가 이 이유로 생존했다). 호출마다 다른 접미사를 붙여 진짜 분산을
+    만든다.
     """
-    segments = [
+
+    def __init__(self) -> None:
+        self.n = 0
+        super().__init__(transform=self._t)
+
+    def _t(self, s: str) -> str:
+        self.n += 1
+        return f"EN{self.n}:{s}" + ("x" * (self.n % 7))
+
+
+def _plain_segments(n: int) -> list[Segment]:
+    """Tier 0 신호가 하나도 붙지 않는 세그먼트 n개 (id는 "0".."n-1")."""
+    return [
         Segment(
             id=str(i),
             index=i,
@@ -32,8 +56,16 @@ def test_tier1은_후보에만_불린다(signal_ctx):
             source_text=f"원문{i}",
             target_text=f"Target {i}",
         )
-        for i in range(10)
+        for i in range(n)
     ]
+
+
+def test_tier1은_후보에만_불린다(signal_ctx):
+    """**비용 통제의 핵심 게이트다** (FR-4.3).
+
+    전량에 불리면 요구사항정의서 §4가 '감당 불가'라고 적은 비용이 난다.
+    """
+    segments = _plain_segments(10)
     # EchoProvider는 요청받은 id를 그대로 채워 정상 JSON을 낸다 - 파싱
     # 실패가 없으므로 재시도가 끼지 않고 호출 횟수를 정확히 셀 수 있다.
     provider = EchoProvider()
@@ -45,6 +77,7 @@ def test_tier1은_후보에만_불린다(signal_ctx):
         provider=provider,
         max_ratio=0.2,
         samples=3,
+        warn=_ignore,
     )
 
     # 후보 2건(10 × 0.2) × 3회 재번역 = 6회. 전량이면 30회다.
@@ -61,10 +94,13 @@ def test_번역_실패분은_후보에서_빠진다(signal_ctx):
     들지 못하지만, **선별되지 않은 것과 회색지대 후보 자격은 별개다** -
     id=2는 hard_fail도 아니고 selected도 아니므로 여전히 회색지대다.
     남는 후보는 id=2 하나 = `samples=2`회 호출. 이 시나리오에서
-    `triage_with_tier1`의 target_text 필터(설계 §5)는 실제로 아무것도
-    더 거르지 않는다 - id=1이 hard_fail 제외에서 이미 빠졌기 때문이다.
-    그 필터가 실제로 무언가를 거르는 경로는 현재 등록된 신호로는
-    도달하지 않는다(`_diagnose_empty_candidates`의 넷째 분기 참고).
+    `triage_with_tier1`의 target_text 필터(설계 §5)는 아무것도 더 거르지
+    않는다 - id=1이 hard_fail 제외에서 이미 빠졌기 때문이다.
+
+    **그 필터가 실제로 무언가를 거르는 경로는 따로 있다** -
+    `test_공백_원문은_회색지대를_거쳐_target_text_필터에_걸린다`가
+    재현한다(2라운드 리뷰 A1 - 이 테스트의 이전 버전은 "현재 신호로는
+    도달 불가"라고 잘못 적었다).
     """
     segments = [
         Segment(id="1", index=0, start_ms=0, end_ms=1000, source_text="원문", target_text=None),
@@ -83,24 +119,124 @@ def test_번역_실패분은_후보에서_빠진다(signal_ctx):
         provider=provider,
         max_ratio=1.0,
         samples=2,
+        warn=_ignore,
     )
 
     assert len(provider.calls) == 2
 
 
-def test_max_ratio가_0이면_LLM을_안_부른다(signal_ctx):
-    """비용을 완전히 끄는 경로가 있어야 한다."""
+def test_공백_원문은_회색지대를_거쳐_target_text_필터에_걸린다(signal_ctx):
+    """target_text 필터가 실제로 걸러내는 경로 (2라운드 리뷰 A1).
+
+    `struct.empty`는 `source_text`가 있는데 `target_text`가 비면
+    hard_fail을 낸다 - 그러나 **`source_text` 자체가 공백뿐이면 `None`을
+    낸다**(`structural.py`: "원문이 비었으면 번역문이 빈 것은 오류가
+    아니다"). id=2는 그래서 hard_fail이 아니라 회색지대로 들어오고,
+    `select_tier1_candidates`가 후보로 뽑는다 - 그런데 `target_text`가
+    없어 재번역할 원문 대응이 없으므로 `triage_with_tier1`의 필터에서
+    걸린다. `loader.py`가 "텍스트가 빈 큐는 남긴다"고 명시하므로 실제
+    자막 파일에서 발생 가능하다.
+    """
+    segments = [
+        Segment(id="1", index=0, start_ms=0, end_ms=1000, source_text="원문", target_text=None),
+        Segment(id="2", index=1, start_ms=1000, end_ms=2000, source_text="  ", target_text=None),
+    ]
+    provider = EchoProvider()
+    messages: list[str] = []
+
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=1.0,
+        samples=2,
+        warn=messages.append,
+    )
+
+    assert provider.calls == []
+    assert len(messages) == 1
+    assert "번역 실패분" in messages[0]
+    # id=1은 hard_fail(예산 우회로 선별), id=2는 회색지대에 남아 있었을
+    # 뿐 선별되지 않는다 - 필터가 "선별에서 뺀다"가 아니라 "LLM을 안
+    # 부른다"만 한다는 것을 같이 확인한다.
+    by_id = {r.segment_id: r for r in risks}
+    assert by_id["1"].hard_fail is True
+    assert by_id["1"].selected is True
+    assert by_id["2"].selected is False
+
+
+def test_Tier1_신호가_최종_점수와_신호목록에_반영된다(signal_ctx):
+    """⑤⑥⑦의 **효과**를 직접 단언한다 (2라운드 리뷰 A2).
+
+    브리프 원안의 4개 테스트는 `EchoProvider`(결정론적)와 Tier 0 신호가
+    하나도 없는 세그먼트만 썼다 - 그러면 `llm.self_consistency`가 항상
+    0.0이라 `rescored`가 `risks`와 수치적으로 동일해지고, **Tier 1이
+    돈만 쓰는 순수 부작용이어도 전 테스트가 통과했다**(변이 실측: ⑥⑦을
+    건너뛰고 `scored`를 그대로 반환하는 M3, ⑥에서 Tier 0 신호를 버리는
+    M4, Tier 1 신호를 버리는 M5가 전부 생존).
+
+    id="0"은 `struct.number_missing`(Tier 0, score=0.5, hard_fail=False -
+    누락이 한 자리 수라 hard_fail이 해제된다)이 붙어 예산(quota=1)을
+    독점하도록 설계했다 - 회색지대 후보는 id="1"·"2"로 고정된다(실측
+    확인, 컨트롤러). `_VaryingProvider`로 재번역을 흩어 두 후보의
+    `llm.self_consistency`가 확실히 0보다 크게 만든다.
+    """
     segments = [
         Segment(
-            id=str(i),
-            index=i,
-            start_ms=i * 1000,
-            end_ms=(i + 1) * 1000,
-            source_text=f"원문{i}",
-            target_text=f"Target {i}",
-        )
-        for i in range(10)
+            id="0",
+            index=0,
+            start_ms=0,
+            end_ms=1000,
+            source_text="3개 있다",
+            target_text="There are some",
+        ),
+        *(
+            Segment(
+                id=str(i),
+                index=i,
+                start_ms=i * 1000,
+                end_ms=(i + 1) * 1000,
+                source_text=f"원문{i}",
+                target_text=f"Target {i}",
+            )
+            for i in range(1, 10)
+        ),
     ]
+    provider = _VaryingProvider()
+    messages: list[str] = []
+
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        warn=messages.append,
+    )
+
+    assert len(provider.calls) == 6  # 후보 2건(id=1,2) × samples=3
+    assert messages == []  # 후보가 있었으니 진단 메시지는 안 나간다
+    by_id = {r.segment_id: r for r in risks}
+
+    # id="0"은 Tier 1 후보가 아니었다 - ⑥이 Tier 0 신호를 버리면(M4) 이
+    # 세그먼트의 struct.number_missing이 조용히 사라진다.
+    assert [s.name for s in by_id["0"].signals] == ["struct.number_missing"]
+    assert by_id["0"].risk_score == pytest.approx(0.5)
+
+    # id="1"·"2"는 Tier 1 후보였다 - llm.self_consistency가 최종 신호
+    # 목록에 있고 점수가 0보다 커야 한다. ⑤⑥⑦을 건너뛰면(M3) 또는 ⑥이
+    # Tier 1 신호를 버리면(M5) 둘 다 사라진다.
+    for seg_id in ("1", "2"):
+        names = [s.name for s in by_id[seg_id].signals]
+        assert "llm.self_consistency" in names
+        assert by_id[seg_id].risk_score > 0.0
+
+
+def test_max_ratio가_0이면_LLM을_안_부른다(signal_ctx):
+    """비용을 완전히 끄는 경로가 있어야 한다."""
+    segments = _plain_segments(10)
     # EchoProvider는 요청받은 id를 그대로 채워 정상 JSON을 낸다 - 파싱
     # 실패가 없으므로 재시도가 끼지 않고 호출 횟수를 정확히 셀 수 있다.
     provider = EchoProvider()
@@ -112,6 +248,7 @@ def test_max_ratio가_0이면_LLM을_안_부른다(signal_ctx):
         provider=provider,
         max_ratio=0.0,
         samples=3,
+        warn=_ignore,
     )
 
     assert provider.calls == []
@@ -121,17 +258,7 @@ def test_max_ratio가_0이면_LLM을_안_부른다(signal_ctx):
 def test_전체_목록을_반환한다(signal_ctx):
     """select_by_budget과 같은 계약이다 - 선별된 것만 반환하면
     review_ratio가 언제나 1.0이 되어 §9.1 배수의 분모가 무너진다."""
-    segments = [
-        Segment(
-            id=str(i),
-            index=i,
-            start_ms=i * 1000,
-            end_ms=(i + 1) * 1000,
-            source_text=f"원문{i}",
-            target_text=f"Target {i}",
-        )
-        for i in range(10)
-    ]
+    segments = _plain_segments(10)
     # EchoProvider는 요청받은 id를 그대로 채워 정상 JSON을 낸다 - 파싱
     # 실패가 없으므로 재시도가 끼지 않고 호출 횟수를 정확히 셀 수 있다.
     provider = EchoProvider()
@@ -143,38 +270,102 @@ def test_전체_목록을_반환한다(signal_ctx):
         provider=provider,
         max_ratio=0.2,
         samples=3,
+        warn=_ignore,
     )
 
     assert len(risks) == 10
     assert any(r.selected for r in risks)
 
 
-# --- 후보 0건의 세 가지(+1) 원인 관측 가능성 (컨트롤러 요구 ①) ---
+def test_세그먼트_id가_중복되면_거부한다(signal_ctx):
+    """중복 id는 ④의 `set()` 집합화에서 조용히 뭉개져 FR-4.3 상한을
+    초과시킨다(2라운드 리뷰 C6). `triage_with_tier1`은 임의
+    `Sequence[Segment]`를 받는 공개 함수라 로더의 유일성 보장에 기댈 수
+    없다 - 여기서 직접 막는다."""
+    segments = [
+        Segment(id="1", index=0, start_ms=0, end_ms=1000, source_text="a", target_text="A"),
+        Segment(id="1", index=1, start_ms=1000, end_ms=2000, source_text="b", target_text="B"),
+    ]
+    with pytest.raises(ValueError, match="중복"):
+        triage_with_tier1(
+            segments,
+            signal_ctx,
+            budget_ratio=0.5,
+            provider=EchoProvider(),
+            max_ratio=1.0,
+            warn=_ignore,
+        )
+
+
+def test_attempt별로_캐시가_갈린다(signal_ctx, tmp_path):
+    """설계 §8 - `attempt`로 캐시 키가 갈리지 않으면 2회차부터 캐시 히트가
+    나서 재번역 N개가 전부 동일해지고 자가일관성 분산이 항상 0이 된다
+    (2라운드 리뷰 A3 - `attempt=attempt` -> `attempt=0` 변이가 이 게이트
+    없이는 70개 테스트를 통과해 생존했다).
+
+    캐시 파일이 요청 재료를 그대로 담으므로(`cache.py`의 `store()`)
+    `attempt` 필드를 직접 읽어 분포를 확인한다.
+    """
+    segments = _plain_segments(10)
+    provider = EchoProvider()
+
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        cache_dir=tmp_path,
+        identity="echo|fake|v1",
+        warn=_ignore,
+    )
+
+    files = list(tmp_path.glob("*.json"))
+    attempts = sorted(json.loads(f.read_text(encoding="utf-8"))["attempt"] for f in files)
+    # 후보 2건 × samples=3 - 각 후보가 attempt=0,1,2를 한 번씩 쓴다.
+    assert attempts == [0, 0, 1, 1, 2, 2]
+
+    # 재개(NFR-3): 캐시가 있으므로 2회차는 LLM을 다시 부르지 않는다.
+    provider2 = EchoProvider()
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider2,
+        max_ratio=0.2,
+        samples=3,
+        cache_dir=tmp_path,
+        identity="echo|fake|v1",
+        warn=_ignore,
+    )
+    assert provider2.calls == []
+
+
+# --- 후보 0건의 네 가지 원인 관측 가능성 (컨트롤러 요구 ①) ---
 #
 # Task 4 리뷰어가 "select_tier1_candidates의 내림(floor) 상한이 조용히
 # 0건을 낼 수 있다"를 지적하며 "오케스트레이션이 0건을 관측 가능하게
-# 내는 것"을 조건으로 달았다. 아래 세 통합 테스트가 그 조건이 요구하는
-# 세 원인을 각각 재현하고, 넷째(불가능하지만 논리적으로 존재하는) 원인은
-# `_diagnose_empty_candidates`를 직접 단위 테스트해 별도로 확인한다.
+# 내는 것"을 조건으로 달았다. 아래 통합 테스트가 그 조건이 요구하는
+# 원인들을 재현하고, `test_diagnose_empty_candidates가_다섯_사유를_구분한다`가
+# `_diagnose_empty_candidates`를 직접 단위 테스트해 나머지(빈 입력)를 덮는다.
 
 
-def test_max_ratio가_0이면_사유를_warn한다(signal_ctx):
-    """세 원인 중 첫째 - 사용자가 껐다 (정상)."""
-    segments = [
-        Segment(
-            id=str(i),
-            index=i,
-            start_ms=i * 1000,
-            end_ms=(i + 1) * 1000,
-            source_text=f"원문{i}",
-            target_text=f"Target {i}",
-        )
-        for i in range(10)
-    ]
+def test_max_ratio가_0이면_사유를_warn하고_예산이_적용된_scored를_반환한다(signal_ctx):
+    """원인 중 하나 - 사용자가 껐다 (정상).
+
+    **반환값도 함께 확인한다** (2라운드 리뷰 A2, M7) - 조기 반환이
+    예산 적용 전 `risks`를 내면(`selected`가 전부 False) `review_ratio`가
+    0.0이 되는데, `max_ratio=0`은 "Tier 1을 끈 기본 실행"이라 가장 흔한
+    경로다. 여기서 무단언이면 그 경로의 예산 계약이 안 지켜져도 아무
+    테스트도 죽지 않는다. 10건·budget_ratio=0.1 -> quota=ceil(1.0)=1
+    -> review_ratio는 정확히 0.1이어야 한다(실측 확인).
+    """
+    segments = _plain_segments(10)
     provider = EchoProvider()
     messages: list[str] = []
 
-    triage_with_tier1(
+    risks = triage_with_tier1(
         segments,
         signal_ctx,
         budget_ratio=0.1,
@@ -186,26 +377,17 @@ def test_max_ratio가_0이면_사유를_warn한다(signal_ctx):
 
     assert len(messages) == 1
     assert "껐다" in messages[0]
+    assert review_ratio(risks) == pytest.approx(0.1)
 
 
 def test_세그먼트_수가_적어_상한이_0이면_사유를_warn한다(signal_ctx):
-    """세 원인 중 둘째 - `select_tier1_candidates`의 내림 상한이 0이 됐다.
+    """원인 중 하나 - `select_tier1_candidates`의 내림 상한이 0이 됐다.
 
     n=3, max_ratio=0.2 -> cap=floor(0.6)=0. 회색지대 자체는 비지 않는다
     (budget_ratio=0.1이 1건만 선별하므로 나머지 2건이 회색지대에 남는다) -
     "회색지대가 빔"과 구분되는 것을 확인하는 것이 이 테스트의 요점이다.
     """
-    segments = [
-        Segment(
-            id=str(i),
-            index=i,
-            start_ms=i * 1000,
-            end_ms=(i + 1) * 1000,
-            source_text=f"원문{i}",
-            target_text=f"Target {i}",
-        )
-        for i in range(3)
-    ]
+    segments = _plain_segments(3)
     provider = EchoProvider()
     messages: list[str] = []
 
@@ -225,7 +407,7 @@ def test_세그먼트_수가_적어_상한이_0이면_사유를_warn한다(signa
 
 
 def test_회색지대가_비면_사유를_warn한다(signal_ctx):
-    """세 원인 중 셋째 - 전부 hard_fail이거나 이미 선별돼 회색지대가 빈다.
+    """원인 중 하나 - 전부 hard_fail이거나 이미 선별돼 회색지대가 빈다.
 
     id=1은 target_text가 없어 hard_fail이고, budget_ratio=1.0(전량 예산)이
     id=2까지 선별한다 - 남는 회색지대가 없다.
@@ -254,29 +436,33 @@ def test_회색지대가_비면_사유를_warn한다(signal_ctx):
     assert "회색지대" in messages[0]
 
 
-def test_diagnose_empty_candidates가_네_사유를_구분한다():
+def test_diagnose_empty_candidates가_다섯_사유를_구분한다():
     """`_diagnose_empty_candidates`를 직접 단위 테스트한다.
 
-    넷째 원인(후보로 뽑혔지만 전부 번역 실패분)은 현재 등록된 신호로는
-    통합 테스트로 재현할 수 없다 - `struct.empty`가 빈 target_text를 항상
-    hard_fail로 잡아 회색지대에 들어오기 전에 걸러지기 때문이다(함수
-    독스트링 참고). 순수 함수라 합성 `SegmentRisk`로 각 분기를 직접
-    겨냥할 수 있다.
+    다섯째(후보로 뽑혔지만 전부 번역 실패분)는
+    `test_공백_원문은_회색지대를_거쳐_target_text_필터에_걸린다`가 통합
+    시나리오로 이미 재현했다 - 여기서는 순수 함수의 각 분기를 직접
+    겨냥한다(빈 입력은 통합 테스트로 재현할 이유가 없는 사소한 경계라
+    단위 테스트로만 덮는다).
     """
     hard = SegmentRisk(segment_id="h", signals=[], risk_score=1.0, hard_fail=True, selected=True)
     picked = SegmentRisk(segment_id="p", signals=[], risk_score=0.9, hard_fail=False, selected=True)
     gray = SegmentRisk(segment_id="g", signals=[], risk_score=0.1, hard_fail=False, selected=False)
 
-    # ① max_ratio=0.0 - candidate_ids·scored 내용과 무관하게 최우선이다.
+    # ① 빈 입력 - "전부 hard_fail이거나 선별됨"으로 오진하면(2라운드 리뷰
+    # C2) 파서가 자막을 하나도 못 읽은 사고가 "전량 hard_fail"로 보인다.
+    assert "0건" in _diagnose_empty_candidates([], set(), 0.5)
+
+    # ② max_ratio=0.0 - candidate_ids·scored 내용과 무관하게 최우선이다.
     assert "껐다" in _diagnose_empty_candidates([gray], set(), 0.0)
 
-    # ② candidate_ids가 비지 않았는데 후보가 0건 -> target_text 필터가
+    # ③ candidate_ids가 비지 않았는데 후보가 0건 -> target_text 필터가
     # 전부 걸렀다.
     assert "번역 실패분" in _diagnose_empty_candidates([gray], {"g"}, 0.2)
 
-    # ③ candidate_ids가 비었고 회색지대(비-hard_fail·비-selected)가 남아
+    # ④ candidate_ids가 비었고 회색지대(비-hard_fail·비-selected)가 남아
     # 있다 -> 상한이 내림으로 0이 됐다.
     assert "상한" in _diagnose_empty_candidates([hard, gray], set(), 0.01)
 
-    # ④ candidate_ids가 비었고 회색지대도 비었다(전부 hard_fail 또는 selected).
+    # ⑤ candidate_ids가 비었고 회색지대도 비었다(전부 hard_fail 또는 selected).
     assert "회색지대" in _diagnose_empty_candidates([hard, picked], set(), 0.5)
