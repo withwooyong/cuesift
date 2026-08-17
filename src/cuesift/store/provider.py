@@ -55,6 +55,7 @@ class CachingProvider:
         identity: str,
         cache_dir: Path,
         warn: Callable[[str], None] = _ignore,
+        attempt: int = 0,
     ) -> None:
         """`identity`는 **키워드 필수**다.
 
@@ -85,6 +86,9 @@ class CachingProvider:
         self._warned = False
         self.hits = 0
         self.misses = 0
+        # 시도 번호는 **감싸는 시점에 고정된다.** complete()마다 받으면
+        # Provider 프로토콜이 달라져 translate_segments를 고쳐야 한다.
+        self._attempt = attempt
 
     def complete(
         self,
@@ -99,6 +103,7 @@ class CachingProvider:
             temperature=temperature,
             max_tokens=max_tokens,
             messages=tuple(messages),
+            attempt=self._attempt,
         )
         cached = self._load_or_none(request)
         if cached is not None:

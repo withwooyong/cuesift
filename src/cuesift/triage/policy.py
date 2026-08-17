@@ -1,7 +1,10 @@
 """검수 큐 선별 정책 (요구사항정의서 FR-6.3, 스펙 §6.2).
 
-두 정책 모두 **전체 목록을 반환하고 입력을 변형하지 않는다.** 선별된 것만
-반환하면 그 결과를 그대로 `review_ratio`에 넘겼을 때 언제나 1.0이 나온다 —
+**정책 함수들의 계약:**
+- `select_by_budget`·`select_by_threshold`: 전체 목록을 반환하고 입력을 변형하지 않는다
+- `select_tier1_candidates`: Tier 1 후보 세그먼트 ID의 **목록을 반환한다** (`list[str]`)
+
+선별된 것만 반환하면 그 결과를 그대로 `review_ratio`에 넘겼을 때 언제나 1.0이 나온다 —
 그 값이 스펙 §6.2의 "실제 검수 비율"이자 README 최상단 배수의 분모라,
 조용히 틀리면 프로젝트의 핵심 주장이 무너진다. 선별된 것만 필요하면
 호출자가 `[r for r in result if r.selected]`로 거른다.
@@ -109,6 +112,73 @@ def select_by_threshold(risks: Sequence[SegmentRisk], threshold: float) -> list[
 
     ordered = _sorted_desc(risks)
     return [_copy(r, selected=r.hard_fail or r.risk_score >= threshold) for r in ordered]
+
+
+def gray_zone(risks: Sequence[SegmentRisk]) -> list[SegmentRisk]:
+    """컷라인 아래 회색지대 - hard_fail도 아니고 이미 선별되지도 않은 것 (설계 §5).
+
+    **`select_tier1_candidates`와 `tier1.py`의 진단 헬퍼가 이 술어를 따로
+    복제해 갖고 있었다** (2라운드 리뷰 C3) - `select_tier1_candidates`가
+    제외 조건을 하나 더 넣으면 `tier1.py`의 "회색지대가 비었다" 진단이
+    조용히 틀린 원인을 말하게 된다. 정렬은 `_sorted_desc`를 그대로 쓴다 -
+    동점을 세그먼트 ID로 깨뜨리는 규칙이 검수 큐와 같아야 NFR-3(재현성)이
+    성립한다.
+    """
+    return [r for r in _sorted_desc(risks) if not r.hard_fail and not r.selected]
+
+
+def select_tier1_candidates(
+    risks: Sequence[SegmentRisk],
+    max_ratio: float,
+) -> list[str]:
+    """Tier 1을 적용할 세그먼트 ID (FR-4.3 · 설계 §5).
+
+    `select_by_budget`이 `selected`를 채운 **전체 목록**을 받는다. 선별분만
+    받으면 "컷라인 아래"라는 개념 자체가 성립하지 않는다.
+
+    ## 왜 컷라인 위가 아니라 아래인가
+
+    요구사항정의서 §4의 도식은 "Tier 0 -> 의심 후보 -> Tier 1"이라고 적혀
+    있으나, 그 도식은 벤치마크(2026-07-29)보다 먼저 쓰였다. 실측은 Tier 0가
+    의미 반전을 큐에서 **밀어낸다**고 말한다 - 예산 10%에서 `negation`
+    Recall이 1.41%로 무작위 기준선 9.61%보다 낮다. 위험도 상위를 후보로
+    삼으면 Tier 1은 **이미 잡힌 것만 다시 본다.**
+
+    ## 제외 대상
+
+    - `hard_fail`: `fuse()`가 risk_score를 1.0으로 고정하므로 신호를 더해도
+      순위가 바뀌지 않는다. 낭비가 아니라 무의미하다
+    - `selected`: 이미 검수 큐행이다. 상한을 여기 쓰면 그만큼 회색지대를
+      못 본다
+
+    `target_text is None`(번역 실패분) 제외는 **호출자의 일이다** -
+    `SegmentRisk`가 텍스트를 갖지 않으므로 여기서 판정할 수 없고, 끌어들이면
+    `triage/`가 `segment/` 본문에 결합된다.
+
+    상한은 **할당량이 아니다.** 회색지대가 상한보다 작으면 있는 만큼만 낸다.
+    """
+    # select_by_budget과 같은 방어다. NaN을 비교 연산의 방향에 맡기면
+    # 훗날 리팩터링 한 번에 조용히 깨진다.
+    if math.isnan(max_ratio):
+        raise ValueError(f"max_ratio는 NaN일 수 없다 (받은 값: {max_ratio})")
+    if not 0.0 <= max_ratio <= 1.0:
+        raise ValueError(f"max_ratio는 0.0~1.0이어야 한다 (받은 값: {max_ratio})")
+    if not risks:
+        return []
+
+    # **분모가 후보 집합이 아니라 전체다.** FR-4.3이 "전체 세그먼트 중
+    # Tier 1을 적용할 최대 비율"이라고 적혀 있고, 후보 집합을 분모로 삼으면
+    # 회색지대가 좁은 트랙에서 상한이 사실상 사라진다.
+    #
+    # **내림한다** — 올림이면 상한이 상한을 넘는다 (3×0.7 → 실제 100%).
+    # 내림이면 n < 1/max_ratio일 때 cap이 0이 되어 Tier 1이 통째로 꺼진다
+    # (0.25 비율은 n<4, 0.10은 n<10에서 빈 목록). 이것은 **명시되면 설계**이고,
+    # 조용하면 사고다 — 주석으로 비용을 기록해 다음 사람이 설계를 읽을 수 있게.
+    cap = math.floor(len(risks) * max_ratio)
+    if cap <= 0:
+        return []
+
+    return [r.segment_id for r in gray_zone(risks)[:cap]]
 
 
 def review_ratio(risks: Sequence[SegmentRisk]) -> float:

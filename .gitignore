@@ -75,3 +75,8 @@ models/
 
 # 벤치마크 코퍼스와 가공물 (CC BY-NC-ND 4.0 — 파생물 배포 금지, 스펙 §3.2)
 data/
+
+# subagent-driven-development 작업 원장·브리프·리뷰 패키지 (세션 스크래치).
+# 무시하지 않으면 `git add -A`가 이것들을 커밋에 쓸어 담고, check_links.py가
+# `git ls-files`로 훑을 때 브리프 안의 상대 링크가 깨진 링크로 잡힌다.
+.superpowers/

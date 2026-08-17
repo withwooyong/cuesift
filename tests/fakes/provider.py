@@ -118,6 +118,37 @@ class EchoProvider:
         return completion
 
 
+class AlwaysZeroProvider:
+    """실물 `qwen2.5:3b`의 id 추종 실패를 재현한다 (Ruling P13).
+
+    항목이 하나뿐인 요청에서 요청받은 id를 무시하고 **항상 `id: 0`**으로
+    답한다 - 실측(Task 7, 서로 다른 문장·index 조합 6/6 재현)이 보인 실제
+    모델의 형식 습관이다. `EchoProvider`(요청 id를 그대로 채운다)와
+    `_retranslate`가 로컬 `index=0`으로 재번호해 보내는지를 가르는 것이
+    이 가짜의 존재 이유다 - `EchoProvider`로는 재번호 여부가 결과에
+    드러나지 않는다(항상 맞으므로).
+    """
+
+    name = "alwayszero"
+    cache_identity = "alwayszero|fake|v1"
+
+    def __init__(self, transform: Callable[[str], str] = lambda s: f"EN:{s}") -> None:
+        self._transform = transform
+        self.calls: list[list[ChatMessage]] = []
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> Completion:
+        self.calls.append(list(messages))
+        pairs = _parse_targets(messages[-1].content)
+        items = [{"id": 0, "text": self._transform(t)} for _, t in pairs]
+        return _completion(json.dumps({"translations": items}, ensure_ascii=False))
+
+
 def _completion(text: str) -> Completion:
     """토큰 수를 **내용에 따라 다르게** 낸다 (NFR-2).
 

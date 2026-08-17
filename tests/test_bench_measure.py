@@ -35,7 +35,7 @@ from bench.measure import (
 from cuesift.glossary import Glossary, GlossaryEntry
 from cuesift.risk import fuse
 from cuesift.segment import Segment, SegmentRisk
-from cuesift.signals import SignalContext, collect_all, registry
+from cuesift.signals import SignalContext, collect_all, register, registry
 from cuesift.spec import load_builtin
 
 PROFILE = load_builtin("ted-en")
@@ -192,11 +192,51 @@ def test_by_kind_recall_covers_every_injected_type():
 
 
 def test_ablation_reports_a_number_for_every_signal():
-    """신호별 기여도. 오타로 신호를 껐는데 '기여도 0'으로 읽히면 안 된다."""
+    """신호별 기여도. 오타로 신호를 껐는데 '기여도 0'으로 읽히면 안 된다.
+
+    **tier 0 한정이다.** `ablation` -> `measure` -> `collect_all`이 tier 0만
+    실행하므로(설계 §4.1 D6, Task 2), tier 1 수집기가 등록돼 있어도 그
+    이름은 여기 집합에 들지 않는다. `set(registry())`로 두면 Task 5가
+    `llm.self_consistency`(tier 1)를 등록하는 순간 이 단언이 깨진다 -
+    실제로는 `ablation`이 tier 1 이름을 `collect_all`에 넘기다 `ValueError`로
+    먼저 죽으므로, 이 단언에 닿기도 전에 실패한다."""
     segs = _clean_track()
     mutated, labels, _ = inject(segs, GLOSSARY, PROFILE, rate=0.10, seed=3)
     drops = ablation(mutated, labels, CTX, budget=0.10)
-    assert set(drops) == set(registry())
+    assert set(drops) == {n for n, c in registry().items() if c.tier == 0}
+
+
+def test_ablation_survives_a_registered_tier1_signal():
+    """A1 회귀 — Task 5가 `llm.self_consistency`(tier 1)를 전역 등록하는
+    순간을 흉내 낸다.
+
+    이 태스크(Tier 1 실행 격리) 착지 전에는 `ablation`이 `sorted(registry())`로
+    **레지스트리 전체**를 `collect_all(enabled=...)`에 되먹였다 - tier 1
+    수집기가 하나라도 등록되면 `collect_all`이 `ValueError: collect_all은
+    tier 0만 실행한다`로 죽어 `ablation` 전체가 실패했다(리뷰어 2명이
+    독립적으로 확인). tier 0로 좁힌 지금은 tier 1 이름이 애초에 `names`에
+    들지 않으므로 살아남고, `drops`에도 나타나지 않는다 - "말없이 빠진다"가
+    아니라 "애초에 이 함수의 대상이 아니다"인 이유는 위 `ablation` 독스트링에
+    적혀 있다.
+    """
+
+    class _FakeTier1:
+        name = "test.fake_tier1_for_ablation"
+        tier = 1
+
+        def collect_tier1(self, seg, ctx):
+            return None
+
+    saved = dict(registry())
+    register(_FakeTier1())
+    try:
+        segs = _clean_track()
+        mutated, labels, _ = inject(segs, GLOSSARY, PROFILE, rate=0.10, seed=3)
+        drops = ablation(mutated, labels, CTX, budget=0.10)
+        assert "test.fake_tier1_for_ablation" not in drops
+    finally:
+        registry().clear()
+        registry().update(saved)
 
 
 def test_check_invariants_passes_on_real_pipeline_output_and_returns_the_rate():

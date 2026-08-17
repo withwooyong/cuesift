@@ -22,15 +22,14 @@ from pathlib import Path
 
 from cuesift.translate.provider import ChatMessage, Completion, TokenUsage
 
-# `key`의 최상위 네 필드(identity·temperature·max_tokens·messages_sha)를
-# 잇는 구분자. **여기서만 안전하다.** 네 필드는 **개수가 고정**이라
-# `_messages_material`이 겪었던 "요소 개수가 늘거나 줄어 경계가 옮겨가는"
-# 재분할 모호성 자체가 성립하지 않는다 - 남는 유일한 경로는 필드 값
-# 자체에 이 문자가 박히는 것인데, temperature(숫자의 repr)·max_tokens
-# (숫자 또는 "none")·messages_sha(64자리 hex)는 구조상 이 문자를 담을 수
-# 없고, identity는 CLI가 (base_url, model)로 조립하는 값이라 자막 원문
-# 같은 임의 텍스트가 여기로 들어올 경로가 없다. `content`는 자막 원문이라
-# 사정이 다르므로 `_messages_material`은 이 구분자를 쓰지 않는다.
+# `key`의 필수 필드들(identity·temperature·max_tokens·messages_sha)을 잇는
+# 구분자. **안전한 이유: (1) 필수 필드는 고정폭 또는 라벨이 있어 경계가 고정되고,
+# (2) 옵션 파트(attempt)에는 "attempt=N" 라벨이 있어 파트가 명확히 구분되며,
+# (3) 라벨 없는 여섯 번째 파트를 나중에 추가하면 이 안전성이 깨진다.**
+# identity·temperature·max_tokens·messages_sha는 이 문자를 담을 수 없다:
+# temperature(숫자의 repr)·max_tokens(숫자 또는 "none")·messages_sha(64자리 hex)·
+# identity(CLI가 base_url, model로 조립). `content`는 자막 원문이라 담을 수 있으므로
+# `_messages_material`은 이 구분자를 쓰지 않는다.
 _SEP = "\x1f"
 
 # `_matches`에서 "필드가 없다"를 "값이 None이다"와 구별하려고 쓰는 전용
@@ -71,6 +70,11 @@ class CacheRequest:
     temperature: float
     max_tokens: int | None
     messages: tuple[ChatMessage, ...]
+    attempt: int = 0
+    """자가일관성의 시도 번호 (FR-4.1 · 설계 §8).
+
+    **0은 키 문자열에 넣지 않는다** - 아래 `key` 참고.
+    """
 
     @property
     def messages_sha(self) -> str:
@@ -89,14 +93,21 @@ class CacheRequest:
         온도인데 `repr`이 다르기 때문이다. 정규화가 없으면 호출부의 타입
         차이 하나로 캐시가 전량 미스가 된다.
         """
-        material = _SEP.join(
-            (
-                self.identity,
-                repr(float(self.temperature)),
-                "none" if self.max_tokens is None else str(self.max_tokens),
-                self.messages_sha,
-            )
-        )
+        parts = [
+            self.identity,
+            repr(float(self.temperature)),
+            "none" if self.max_tokens is None else str(self.max_tokens),
+            self.messages_sha,
+        ]
+        # **0이면 생략한다.** 넣으면 기존에 쌓인 캐시가 전량 미스가 되어
+        # WP7b가 실물로 증명한 재개(2회차 실제 호출 0개)가 한 번 헛돈다.
+        # 자가일관성만 시도를 가르면 되고, 나머지 경로는 0이다.
+        # 첫 샘플의 attempt=0이 기존 번역(Tier 0)과 섞이지 않는 것은 온도가
+        # 다르기 때문이다(일반 번역은 0.0, 자가일관성은 >0). Tier 1이
+        # temperature=0.0으로 불리면 이 성질이 깨진다 (설계 §8, 요구사항 FR-4.1).
+        if self.attempt:
+            parts.append(f"attempt={self.attempt}")
+        material = _SEP.join(parts)
         return _sha256(material)
 
 
@@ -204,6 +215,7 @@ def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> Non
         "temperature": float(request.temperature),
         "max_tokens": request.max_tokens,
         "messages_sha": request.messages_sha,
+        "attempt": request.attempt,
         "text": completion.text,
         "usage": {
             "prompt_tokens": completion.usage.prompt_tokens,
@@ -224,7 +236,7 @@ def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> Non
 def _matches(raw: object, request: CacheRequest) -> bool:
     """파일 안의 재료가 현재 요청과 같은지 본다.
 
-    **키가 이미 이 넷을 덮으므로 정상 경로에서는 항상 참이다.** 이 검사가
+    **키가 이미 이 다섯 개를 덮으므로 정상 경로에서는 항상 참이다.** 이 검사가
     잡는 것은 해시 충돌·파일 손상·수동 편집이다. 그래서 어긋남을 예외가
     아니라 미스로 다룬다 - 캐시를 못 믿을 뿐 실행이 틀린 것은 아니다.
 
@@ -232,8 +244,11 @@ def _matches(raw: object, request: CacheRequest) -> bool:
     유효값 자체가 `None`이라, 필드가 통째로 빠진 파일에서 `.get()`의
     기본값도 `None`이면 "필드 없음"과 "값이 None"이 구별되지 않는다 -
     실측: `max_tokens` 필드를 지운 파일이 `request.max_tokens is None`인
-    요청과 우연히 일치해 통과했다. 네 필드 모두 같은 위험이라 전부에
-    적용한다.
+    요청과 우연히 일치해 통과했다.
+
+    **`attempt` 필드는 기본값이 0이다.** 옛 파일(a433cbe~1)에는 이 필드가
+    없고, 그것은 `attempt=0`을 의미한다 - 기본값을 `_MISSING`으로 하면
+    기존 캐시가 전량 미스가 되어 이 태스크가 막으려던 바로 그 일이 일어난다.
     """
     if not isinstance(raw, dict):
         return False
@@ -242,6 +257,7 @@ def _matches(raw: object, request: CacheRequest) -> bool:
         and raw.get("temperature", _MISSING) == float(request.temperature)
         and raw.get("max_tokens", _MISSING) == request.max_tokens
         and raw.get("messages_sha", _MISSING) == request.messages_sha
+        and raw.get("attempt", 0) == request.attempt
     )
 
 
