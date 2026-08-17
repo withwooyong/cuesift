@@ -1010,6 +1010,37 @@ def _format_translate_summary(
     return lines
 
 
+def _parse_review_budget(raw: str) -> float:
+    """`--review-budget` 값을 비율로 바꾼다 (FR-6.3 ① · 설계 §5.2).
+
+    `10%`와 `0.1`을 모두 받는다. **개수 지정(`50`)은 범위 밖으로 거부된다** -
+    라이브러리에 개수 기반 선별 함수가 없고, `k/n`으로 환산하면 `ceil`과 hard
+    fail 소진 때문에 정확히 K개가 나오지 않아 옵션이 거짓말을 한다(설계 D5).
+
+    **`1`은 100%다.** `%` 유무만 다르고 나머지는 `0.0 <= x <= 1.0` 한 규칙이라
+    그 결과다. 규칙을 좁혀(`%` 없는 값에 소수점을 요구해) `1`을 거부하면 `0`도
+    함께 막혀 "hard fail만 보기"가 사라진다.
+
+    **NaN·inf는 범위 검사가 거부한다** - `nan <= 1.0`이 False이기 때문이다.
+    이것이 우연이 아니라 의도임을 테스트가 못 박고 있다. 이 방어가 없으면
+    `select_by_budget`이 `math.isnan`으로 다시 막아 주지만, 그때는 오류
+    메시지가 옵션 이름을 말하지 못한다.
+    """
+    text = raw.strip()
+    percent = text.endswith("%")
+    number = text[:-1].strip() if percent else text
+    try:
+        value = float(number) / 100.0 if percent else float(number)
+    except ValueError as exc:
+        raise ValueError(f"--review-budget을 숫자로 읽지 못했다: {raw!r}") from exc
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(
+            f"--review-budget이 0~100% 범위를 벗어났다: {raw!r}. "
+            f"개수 지정은 v0.1 범위 밖이다 - 비율로 지정하라 (예: 10%)"
+        )
+    return value
+
+
 def _resolve_profile(spec: str) -> tuple[SpecProfile, str]:
     """`--spec` 값을 프로파일과 표시용 label로 바꾼다 (FR-5.3·설계 §8·§7.2).
 
