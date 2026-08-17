@@ -356,22 +356,188 @@ def test_망가진_용어집은_exit_66이다(tmp_path: Path, monkeypatch: pytes
     assert result.exit_code == 66
 
 
-# ── 리뷰 라운드 1 (Critical 1) ──────────────────────────────────────────
+# ── Task 6 — `--dry-run` 실제 구현 (NFR-2) ──────────────────────────────
+#
+# Task 4까지는 "경고 후 무시"(--review-budget과 같은 임시 처리)였다 - 아래는
+# 그 자리를 교체한 실제 구현을 고정한다.
 
 
-def test_dry_run은_경고하고_실제로_실행한다(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # --dry-run이 아무것도 하지 않으면 사용자는 견적만 뽑았다고 믿는데
-    # 실제로는 프로바이더가 호출되고 파일이 덮인다. Task 6 전까지는 최소한
-    # "안 됐다"를 큰 소리로 말해야 한다.
-    _patch_provider(monkeypatch, EchoProvider())
+def test_dry_run은_파일을_만들지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = EchoProvider()
+    _patch_provider(monkeypatch, provider)
 
     result = runner.invoke(app, [*_args(tmp_path), "--dry-run"])
 
     assert result.exit_code == 0, result.output
-    assert "dry-run" in result.output
-    assert (tmp_path / "minimal.en.srt").exists()  # 조용히 무시되지 않고 실제로 실행됐다
+    assert not (tmp_path / "minimal.en.srt").exists()
+
+
+def test_dry_run은_네트워크를_타지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # "실행 전 추정"이라는 NFR-2의 전제가 여기 걸려 있다. `_build_provider`는
+    # 부른다(identity를 얻으려고) - 여기서 재는 것은 "프로바이더를 만드는가"가
+    # 아니라 "`complete()`를 부르는가"다. 전자는 네트워크를 타지 않는다
+    # (`_dry_run_report`의 독스트링 참고).
+    provider = EchoProvider()
+    _patch_provider(monkeypatch, provider)
+
+    runner.invoke(app, [*_args(tmp_path), "--dry-run"])
+
+    assert provider.calls == []
+
+
+def test_dry_run이_배치_수를_낸다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, [*_args(tmp_path), "--dry-run"])
+
+    assert "배치" in result.output
+    assert "호출 필요" in result.output
+
+
+def test_dry_run이_캐시_히트를_센다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 실사용에서 가장 쓸모있는 정보다 - "몇 번 더 불러야 하나". 이 테스트는
+    # dry-run의 identity 계산이 실제 실행과 어긋나지 않는다는 것도 함께
+    # 고정한다 - 어긋나면 캐시 파일 이름이 달라져 여기서 반드시 "히트 0개"로
+    # 떨어진다.
+    _patch_provider(monkeypatch, EchoProvider())
+    runner.invoke(app, _args(tmp_path))  # 먼저 실제로 돌려 캐시를 채운다
+
+    result = runner.invoke(app, [*_args(tmp_path), "--dry-run"])
+
+    assert "캐시 히트 1개" in result.output
+    assert "호출 필요 0개" in result.output
+
+
+def test_dry_run은_토큰을_추정하지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 계수 출처가 없다 (§11 R8). 틀린 수치는 수치가 없는 것보다 나쁘다.
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, [*_args(tmp_path), "--dry-run"])
+
+    assert "토큰 추정" not in result.output
+    assert "$" not in result.output
+
+
+def test_dry_run_no_cache는_히트를_0으로_낸다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_provider(monkeypatch, EchoProvider())
+    runner.invoke(app, _args(tmp_path))
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            "--dry-run",
+        ],
+    )
+
+    assert "캐시 히트 0개" in result.output
+
+
+def test_dry_run의_identity가_실제와_같다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # dry-run은 identity를 손으로 다시 조립하지 않는다 - 실제 실행과 같은
+    # `_cache_identity(provider)`를 그대로 불러 쓴다(cli.py의 `translate()`
+    # 안 dry-run 분기 참고). 그래서 여기서 실제로 고정하는 것은 "dry-run이
+    # real 실행과 같은 provider 인스턴스·같은 identity 계산 경로를 타는가"다.
+    #
+    # **끝 슬래시(rstrip) 자체는 이 테스트로 검증되지 않는다.** `_patch_provider`가
+    # 꽂는 `EchoProvider`는 `base_url`을 받지 않고 `cache_identity`가 고정
+    # 문자열("echo|fake|v1")이라 끝 슬래시가 fake에는 전달되지 않는다 - 브리프
+    # 원안은 이 테스트로 rstrip을 겨냥했지만, 손조립 자체를 없앤 지금 구현에서는
+    # 애초에 겨냥할 rstrip 코드가 cli.py에 없다. rstrip 정합성은
+    # `OpenAICompatibleProvider.cache_identity` 자신의 계약이고 그 테스트는
+    # translate/ 쪽(WP7a)이 이미 갖고 있다 - 이 태스크는 translate/를 고치지
+    # 않는다.
+    _patch_provider(monkeypatch, EchoProvider())
+    runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1/",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1/",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--dry-run",
+        ],
+    )
+
+    assert "캐시 히트 1개" in result.output
+
+
+def test_캐시_경고에_언어_라벨이_있고_summary_line이_속지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 함께 처리할 것 (A)(B) - CachingProvider의 warn 콜백에 언어 라벨이 없으면
+    # 캐시 쓰기 실패 경고가 언어 수만큼 무라벨로 반복된다[리뷰어 실측 3회,
+    # WP7b Task 5 리뷰가 넘김]. (A)로 라벨을 붙이면 그 경고 줄도 `[en]`으로
+    # 시작해 `_summary_line`이 진짜 헤더로 오인할 수 있다 - (B)로 다음 줄이
+    # "  세그먼트 "인지까지 확인하게 고쳤다.
+    #
+    # cache_dir 자리에 이미 파일을 둬 store()의 mkdir(parents=True,
+    # exist_ok=True)가 FileExistsError를 내게 만든다(실측: exist_ok는 "이미
+    # 디렉터리"만 봐주고 "이미 파일"은 봐주지 않는다) - 캐시 경고 경로를
+    # network 없이 결정적으로 재현하는 가장 싼 방법이다.
+    _patch_provider(monkeypatch, EchoProvider())
+    cache_as_file = tmp_path / "cache"
+    cache_as_file.write_text("x", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--cache-dir",
+            str(cache_as_file),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[en] 캐시를 쓰지 못했다" in result.output  # (A): 라벨이 붙는다
+    assert "세그먼트 2개" in _summary_line(result.output, "en")  # (B): 진짜 헤더를 찾는다
 
 
 # ── 리뷰 라운드 1 (Critical 2) — 용어집 예외 누수 4종 ──────────────────
@@ -731,9 +897,23 @@ def _summary_line(output: str, lang: str) -> str:
     리뷰 라운드 1 Important 1 - `exit_code == 1`만으로는 "en 실패·ja 성공"과
     "en·ja 둘 다 실패"를 구별하지 못한다(둘 다 exit 1). 언어별 요약 줄을
     직접 읽어야 시나리오가 실제로 의도한 형태(en만 실패)인지 확인된다.
+
+    **함께 처리할 것 (B)**: `[lang]`로 시작하는 줄이 진짜 헤더만은 아니다 -
+    `CachingProvider`의 캐시 경고도 (A) 수정 이후 `[lang] 캐시를 쓰지
+    못했다...` 형태로 같은 접두어를 쓴다[리뷰어 실측]. `line.startswith`만
+    보면 그 경고 줄을 헤더로 오인해 **바로 다음 줄(진짜 헤더)을 세그먼트
+    요약으로 잘못 읽는다** - 방향은 안전하다(거짓 통과가 아니라 거짓
+    실패다)지만 원인 추적이 어려워진다. 그래서 다음 줄이
+    `"  세그먼트 "`로 시작하는 줄까지 확인해야 진짜 헤더를 고른다.
     """
     lines = output.splitlines()
-    header = next(i for i, line in enumerate(lines) if line.startswith(f"[{lang}]"))
+    header = next(
+        i
+        for i, line in enumerate(lines)
+        if line.startswith(f"[{lang}]")
+        and i + 1 < len(lines)
+        and lines[i + 1].startswith("  세그먼트 ")
+    )
     return lines[header + 1]
 
 

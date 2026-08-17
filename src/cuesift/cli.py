@@ -34,7 +34,7 @@ from typing import IO, Annotated
 import typer
 
 from cuesift import __version__
-from cuesift.glossary import load_glossary
+from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
 from cuesift.spec import (
     SpecProfile,
@@ -44,14 +44,17 @@ from cuesift.spec import (
     load_builtin,
     load_profile,
 )
-from cuesift.store import CachingProvider
+from cuesift.store import CacheRequest, CachingProvider
 from cuesift.translate import (
+    DEFAULT_BATCH_SIZE,
     DEFAULT_CONTEXT_WINDOW,
     FatalProviderError,
     OpenAICompatibleProvider,
     Provider,
     ProviderError,
     TranslationResult,
+    build_messages,
+    iter_batches,
     translate_segments,
 )
 
@@ -458,15 +461,14 @@ def translate(
     ] = None,
     dry_run: Annotated[
         bool,
-        # 현재형으로 약속하지 않는다(`--config` 선례). 이전 판은 "실행하지
-        # 않고 호출 수만 추정합니다"라고 적었는데 거짓이었다 - 본문이 `dry_run`을
-        # 한 번도 읽지 않아 프로바이더를 그대로 호출하고 파일을 그대로 쓴다
-        # (실측: WP7b Task 4 리뷰 라운드 1). `--review-budget`보다 나쁘다 -
-        # "안 해 준다"가 아니라 "하지 않겠다"를 어겨 전액 청구된 실행과
-        # 덮어쓴 파일을 사용자가 원하지 않은 채로 받는다.
+        # Task 4까지는 "경고 후 무시"(--review-budget과 같은 임시 처리)였다
+        # (실측: WP7b Task 4 리뷰 라운드 1 - 본문이 `dry_run`을 한 번도 읽지
+        # 않아 프로바이더를 그대로 호출하고 파일을 그대로 썼다). Task 6이
+        # `_dry_run_report`로 그 자리를 교체했다 - 지금은 실제로 아무 것도
+        # 호출·기록하지 않는다.
         typer.Option(
             "--dry-run",
-            help="아직 구현되지 않아 지정해도 무시되고 실제로 실행됩니다 (Task 6).",
+            help="실행하지 않고 배치 수·캐시 히트·호출 필요 수를 추정합니다 (NFR-2).",
         ),
     ] = False,
 ) -> None:
@@ -482,16 +484,6 @@ def translate(
             f"지정한 '{review_budget}'는 무시됩니다.",
             err=True,
         )
-    if dry_run:
-        # 위 dry_run 파라미터 주석 참고 - 조용히 무시하면 사용자는 견적만
-        # 뽑았다고 믿는데 실제로는 과금과 파일 덮어쓰기가 일어난다. 진짜
-        # 구현(Task 6) 전까지는 최소한 "안 됐다"를 큰 소리로 말한다.
-        _echo(
-            "경고: --dry-run은 아직 구현되지 않았습니다 (Task 6). "
-            "실제로 프로바이더를 호출하고 파일을 씁니다.",
-            err=True,
-        )
-
     resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
     if not targets:
@@ -524,6 +516,57 @@ def translate(
         # 호출 실패가 아니다. 명령줄이 틀린 것이므로 2다.
         _echo(str(exc), err=True)
         raise typer.Exit(2) from exc
+
+    if dry_run:
+        if glossary is not None:
+            # 실패 여부만 미리 확인한다. YAML 파싱과 항목 구조 검사는
+            # target_lang을 보지 않으므로(`load_glossary`), 대상 언어 중
+            # 아무거나로 시도해도 같은 성패가 난다 - 대응어 필터링만 언어마다
+            # 달라 그 내용은 `_dry_run_report`가 언어별로 다시 읽는다(그
+            # 함수의 독스트링 참고). `_translate_one`과 같은 이유로
+            # `except Exception`까지 넓힌다 - `entries: 5`(TypeError)·
+            # `targets: Hello`(AttributeError)는 `(OSError, ValueError)`를
+            # 지나쳐 그대로 샌다(실측: WP7b Task 4 리뷰 라운드 1). 이 upfront
+            # 검사를 좁게 두면 실제 번역(`_translate_one`)은 exit 66으로
+            # 막는 바로 그 입력을 dry-run만 트레이스백으로 죽인다.
+            try:
+                load_glossary(glossary, targets[0])
+            except Exception as exc:
+                _echo(f"{glossary}: 용어집을 읽지 못했다 - {type(exc).__name__}: {exc}", err=True)
+                raise typer.Exit(EXIT_BAD_INPUT) from exc
+
+        # identity는 `_cache_identity(provider)`로 얻는다 — **손으로 다시
+        # 조립하지 않는다.** `_build_provider()`가 이미 `provider`를 만들었고
+        # (바로 위), `_translate_one`도 캐시를 켤 때 같은 함수로 같은 값을
+        # 얻는다 - 실행 경로 하나를 공유하므로 "dry-run의 identity 계산이
+        # 실제 실행과 어긋난다"는 실패 모드 자체가 구조적으로 성립하지
+        # 않는다(WP7b Task 6 리뷰가 지목한 위험 - 상세 근거는
+        # `_dry_run_report`의 독스트링).
+        identity = _cache_identity(provider)
+        # dry-run은 `provider.complete()`를 부르지 않으므로 연결 풀이
+        # 쓰이지 않은 채로 남는다 - 정리해도 실행에는 영향이 없다.
+        # `getattr`로 읽는 것은 `Provider` 프로토콜에 `close`가 없어서다
+        # (테스트 가짜에는 없는 경우가 흔하다).
+        close = getattr(provider, "close", None)
+        if close is not None:
+            close()
+
+        for line in _dry_run_report(
+            result=result,
+            input_path=input,
+            out_dir=out,
+            source_lang=source_lang,
+            targets=targets,
+            base_url=resolved_base,
+            model=resolved_model,
+            identity=None if no_cache else identity,
+            glossary_path=None if glossary is None else glossary,
+            work_context=work_context,
+            context_window=context_window,
+            cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+        ):
+            _echo(line)
+        return
 
     # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69
     # (설계 §6.6 표의 6종 중 70을 뺀 5종 - `_translate_one`은 70을 내지
@@ -562,6 +605,137 @@ def translate(
             break
     if worst:
         raise typer.Exit(worst)
+
+
+def _dry_run_report(
+    *,
+    result: IngestResult,
+    input_path: Path,
+    out_dir: Path | None,
+    source_lang: str,
+    targets: Sequence[str],
+    base_url: str,
+    model: str,
+    identity: str | None,
+    glossary_path: Path | None,
+    work_context: str | None,
+    context_window: int,
+    cache_dir: Path | None,
+) -> list[str]:
+    """실행하지 않고 추정치를 낸다 (NFR-2 · 설계 §7).
+
+    **실측할 수 있는 것만 낸다.** 배치 수와 문자 수는 `build_messages`를 실제로
+    불러 정확히 세고, 캐시 히트는 키를 계산해 파일 존재만 확인한다. 토큰과
+    비용은 내지 않는다 - 문자에서 토큰으로 가는 계수가 모델마다 다르고
+    우리에게 출처가 없다(요구사항정의서 §11 R8).
+
+    **네트워크를 타지 않는다.** 이 함수는 프로바이더를 참조하지 않는다 -
+    호출자(`translate()`)가 `_cache_identity(provider)`로 이미 뽑아 둔
+    `identity` 문자열만 받는다. `build_messages`·`iter_batches`·
+    `load_glossary` 셋 다 순수 함수이거나 로컬 파일만 읽으므로 이 함수
+    자체는 구조적으로 네트워크에 닿을 수 없다.
+
+    ## identity는 손으로 다시 조립하지 않는다
+
+    `OpenAICompatibleProvider.cache_identity`(translate/openai_compat.py)와
+    글자 그대로 같아야 할 값이라 손으로 베끼면 어긋날 위험이 있다 - 실제로
+    "호출자가 `_cache_identity(provider)`를 한 번 부르고 그 결과를 넘긴다"는
+    계약으로 이 위험을 없앴다(호출부 `translate()` 참고). 프로바이더를
+    만들면(`OpenAICompatibleProvider(...)`) 생성자가 `httpx.Client()`를 실제로
+    여는 것은 확인했지만(openai_compat.py:124), **생성 자체는 네트워크 I/O가
+    아니다** - httpx의 연결 풀은 지연 생성이라 소켓은 첫 요청까지 열리지
+    않는다(실측: 존재하지 않는 IP로 만들어도 생성이 0.1초 미만). 위험한 것은
+    `provider.complete()`를 부르는 것이고, 이 함수도 호출자도 그것을 부르지
+    않는다.
+
+    ## 용어집은 대상 언어마다 다시 읽는다
+
+    `load_glossary`가 대상 언어의 대응어만 걸러 담으므로(용어집 모듈), en으로
+    채운 `Glossary`를 ja 배치 조립에 그대로 쓰면 프롬프트 문자 수뿐 아니라
+    캐시 재료(`messages_sha`)까지 실제 실행과 달라진다 - `_translate_one`도
+    언어 루프 안에서 매번 `load_glossary(glossary_path, target_lang)`를 새로
+    부르는 것과 같은 이유다. 호출자가 `targets[0]`로 한 번 읽어 성공을
+    확인해 두므로(YAML 파싱과 항목 구조 검사는 target_lang을 보지 않아 어느
+    언어로 시도해도 같은 성패가 난다) 여기서 다시 실패할 일은 없지만, 그
+    전제가 깨져도 트레이스백 대신 이 언어의 보고만 생략한다.
+
+    ## temperature·max_tokens는 여전히 손으로 맞춘다 (남은 한계)
+
+    아래 `CacheRequest`의 `temperature=0.0`·`max_tokens=None`은 각각
+    `translate_segments`의 기본값과 `_call_with_retry`의 리터럴을 손으로
+    베낀 것이다. `translate_segments`의 `temperature` 기본값은 이름 있는
+    상수가 아니라 함수 시그니처의 기본 인자값이고, `max_tokens=None`은
+    `translate/engine.py`의 `_call_with_retry` 본문에 직접 박혀 있어(참조할
+    수 있는 이름조차 없다) 이 태스크가 손대지 않는 `translate/` 밖에서는
+    가져올 방법이 없다. **어긋나면 dry-run이 "호출 필요 82개"라 해 놓고
+    실행은 0개를 부른다.** 이 어긋남을 직접 겨냥한 단위 테스트는 없고,
+    `tests/test_cli_translate.py::test_dry_run이_캐시_히트를_센다`가 실행
+    결과(캐시 파일이 실제로 히트하는가)로 두 값을 **간접** 고정한다 - 둘 중
+    하나라도 어긋나면 캐시 파일 이름이 달라져 "히트 1개"가 "히트 0개"로
+    떨어진다.
+    """
+    lines = [
+        f"입력   {input_path} ({result.format}) · {len(result.segments)} 세그먼트",
+        f"모델   {model} @ {base_url}",
+    ]
+    for target in targets:
+        glossary: Glossary | None = None
+        if glossary_path is not None:
+            try:
+                glossary = load_glossary(glossary_path, target)
+            except Exception as exc:
+                lines.extend(
+                    [
+                        "",
+                        f"[{target}] 용어집을 다시 읽지 못했다 - {type(exc).__name__}: {exc}",
+                    ]
+                )
+                continue
+
+        batches = 0
+        hits = 0
+        system_chars = 0
+        user_chars = 0
+        for window in iter_batches(
+            result.segments, size=DEFAULT_BATCH_SIZE, context_window=context_window
+        ):
+            batches += 1
+            # `build_messages`는 `BatchWindow`를 받지 않는다. batch·before·after를
+            # 따로 받는다(`prompt.py`) - 통째로 넘기면 TypeError다.
+            messages = build_messages(
+                window.batch,
+                source_lang=source_lang,
+                target_lang=target,
+                before=window.before,
+                after=window.after,
+                glossary=glossary,
+                work_context=work_context,
+            )
+            system_chars += sum(len(m.content) for m in messages if m.role == "system")
+            user_chars += sum(len(m.content) for m in messages if m.role == "user")
+            if cache_dir is not None and identity is not None:
+                request = CacheRequest(
+                    identity=identity,
+                    # 위 독스트링 "temperature·max_tokens는 여전히 손으로
+                    # 맞춘다" 참고 - 엔진이 실제로 쓰는 값과 같아야 한다.
+                    temperature=0.0,
+                    max_tokens=None,
+                    messages=tuple(messages),
+                )
+                if (cache_dir / f"{request.key}.json").exists():
+                    hits += 1
+        lines.extend(
+            [
+                "",
+                f"[{target}] {_output_path(input_path, out_dir, source_lang, target)}",
+                f"  배치 {batches}개 (size={DEFAULT_BATCH_SIZE}, context_window={context_window})",
+                f"  캐시 히트 {hits}개 · 호출 필요 {batches - hits}개",
+                f"  프롬프트 문자 system {system_chars:,} + user {user_chars:,}",
+            ]
+        )
+    lines.append("")
+    lines.append("(토큰·비용은 내지 않는다 - 문자에서 토큰으로 가는 계수의 출처가 없다)")
+    return lines
 
 
 def _translate_one(
@@ -647,7 +821,13 @@ def _translate_one(
                 provider,
                 identity=identity,
                 cache_dir=cache_dir,
-                warn=lambda message: _echo(message, err=True),
+                # **라벨을 붙인다.** 이 함수의 다른 `_echo` 다섯 곳이 전부
+                # `[target_lang]`을 붙이는데 여기만 빠져 있었다 - 캐시 쓰기
+                # 실패 경고가 언어 수만큼 무라벨로 반복돼 어느 언어의 경고인지
+                # 구별할 수 없었다(리뷰어 실측 3회, WP7b Task 5 리뷰가 넘김).
+                # `CachingProvider`는 언어마다 새로 만들어지므로 인스턴스당
+                # 1회로 막는 `_warn_once`도 이 반복을 막지 못한다.
+                warn=lambda message: _echo(f"[{target_lang}] {message}", err=True),
             )
 
     try:
