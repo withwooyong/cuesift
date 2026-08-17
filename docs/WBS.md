@@ -27,7 +27,7 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 ## 현재 위치
 
 ```text
-  v0.1 대상 FR 42개 중 31개 완료 (74%)
+  v0.1 대상 FR 42개 중 32개 완료 (76%)
 
   WP1 Tier 0 신호 엔진   ████████████████████  ✅  FR 16개
   WP2 벤치마크 하네스     ████████████████████  ✅  (§9.1)
@@ -36,7 +36,8 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
   WP5 출력              ████████░░░░░░░░░░░░  🟡  FR 5개 중 7.1·7.5 완료
   WP6 CLI 배선           ████████░░░░░░░░░░░░  🟡  FR 5개 중 8.1·8.2 완료
   WP7 번역 계층          ████████████████████  ✅  FR 8개 전부 (7a·7b 완료)
-  WP8 Tier 1 신호        ░░░░░░░░░░░░░░░░░░░░  ⬜  FR 3개
+  WP8a Tier 1 라이브러리 ████████████████████  ✅  FR 3개 중 4.1 완료(4.3은 라이브러리만)
+  WP8b Tier 1 CLI 배선   ░░░░░░░░░░░░░░░░░░░░  ⬜  FR 3개 중 4.3 나머지(CLI 노출)
   WP9 STT               ░░░░░░░░░░░░░░░░░░░░  ⬜  FR 2개
 ```
 
@@ -60,7 +61,8 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 | **6** | CLI 배선 | 8.1~8.5 | 🟡 | M | 4·5 | **FR-8.1·8.2 완료** — `cuesift translate`와 `cuesift check <자막파일> --spec <프로파일>`이 둘 다 동작한다. `check`는 `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). `translate`는 캐시·재개·다국어 순차 번역·`--dry-run`이 붙었다 — 완료 개수는 이 행에서 세지만 구현 커밋은 WP7b 행에 있다. 남은 8.3(`transcribe` 배선)·8.4(`cuesift.yaml` 로더)·8.5(진행 표시·CI 감지)는 **모두 이 WP(WP6)에 남아 있다** — FR-8.3은 §5.8("CLI")에 있어 STT 로직이 아니라 CLI 소속이다. WP9는 STT 어댑터(FR-1.2·1.4)만 내고, `transcribe`가 그 어댑터를 실제로 부르게 배선하는 것은 WP6의 몫이다. **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 — FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`) |
 | **7a** | 번역 엔진 | 2.1~2.6 · 2.8 | ✅ | L | 4 | **FR 7개 완료** — `src/cuesift/translate/`(`provider`·`batch`·`prompt`·`engine`·`openai_compat`)와 `Glossary.terms_in`. 배치 번역·개별 폴백·재시도·예외 분류가 동작한다. [설계 스펙](superpowers/specs/2026-08-16-translate-engine-design.md) (`10d3b31`) · [구현 계획](superpowers/plans/2026-08-16-translate-engine.md) (`8f0ea4a`) · 구현 (`f6e0ec6`..`1b4ea6e`, 테스트 499→**813**) · 공개 API·`live` 마커와 게이트 방어 3겹 (`9159791`~, 813→**859**). **네트워크를 치지 않는다** — `httpx.MockTransport`로 검증하고 실 API는 `-m live` opt-in |
 | **7b** | 번역 영속화·CLI | 2.7 | ✅ | M | 7a·5 | **FR-2.7 완료** — 캐시(NFR-3)·재개·`--dry-run`이 실제로 동작한다. `cuesift translate` 배선(FR-8.1, 완료 개수는 WP6에서 센다)과 번역된 자막 파일 쓰기(FR-7.1, 완료 개수는 WP5에서 센다)도 이 작업 패키지에서 나왔다. `python -m cuesift`를 서브프로세스로 두 번 실행해 재개를 실물로 확인했다 — Ollama `qwen2.5:3b`, 1회차 exit 0·실제 호출 1개(2.71초), 2회차 exit 0·캐시 히트 1개·**실제 호출 0개**(0.38초). [설계 스펙](superpowers/specs/2026-08-17-translate-cli-design.md) · [구현 계획](superpowers/plans/2026-08-17-translate-cli.md) (`2d17cc2`·`cb4e0c7`) · 구현 (`742ac52`..`4685be1`) |
-| **8** | Tier 1 신호 | 4.1~4.3 | ⬜ | M | **7a** | 자가일관성 N회 호출 · 역번역 · 적용 상한. **선행은 7a까지다** — 7b(재개·CLI)를 기다리지 않는다 |
+| **8a** | Tier 1 신호 — 라이브러리 | 4.1 · 4.3(라이브러리) | ✅ | M | **7a** | `src/cuesift/{signals/llm,signals/similarity,tier1}.py` 신규, `signals/base`·`triage/policy`·`store/cache`·`store/provider`·`risk/fuse` 수정. 자가일관성(`llm.self_consistency`, FR-4.1)이 N회 재번역의 상호 유사도를 재고, Tier 1은 컷라인 아래 회색지대에서만 후보를 고르며(`select_tier1_candidates`, FR-4.3) `collect_all()`은 tier 0만 돈다(비용 격리). **선행은 7a까지다** — 7b(재개·CLI)를 기다리지 않는다. FR-4.2(역번역)는 착수 시점 실측이 역방향 작동 위험을 보여 **보류**했다(요구사항정의서 §12 Q4). [설계 스펙](superpowers/specs/2026-08-17-tier1-signals-design.md) · [구현 계획](superpowers/plans/2026-08-17-tier1-signals.md) · live 검증(Ollama `qwen2.5:3b`, 실제 엔드포인트에서 `llm.self_consistency` 신호 실측 확인) |
+| 8b | Tier 1 신호 — CLI 배선 | 4.3(사용자 설정) | ⬜ | S | 8a·6 | `--tier1-max-ratio`·`--tier1-samples`·`--tier1-temperature`를 `cuesift translate`에 배선한다 — **FR-4.3이 "라이브러리에 있음"을 넘어 "사용자가 설정할 수 있음"이 되려면 여기가 닫혀야 한다**(FR-5.3이 같은 함정에 걸렸던 전례, 위 "FR 개수는..." 각주 참고). 착수 전 정리해야 할 것 3건은 `HANDOFF.md` "다음 사람이 반드시 알아야 할 것" 참고 — 세그먼트 단위 프로토콜이라 호출이 배치 대비 10배(실측: 세그먼트 10개·samples=3에서 30회 vs 3회), Tier 1 토큰 사용량이 리포트에 집계되지 않음(NFR-2·FR-7.4), `samples` 상한이 없음(§11 R8) |
 | **9** | STT | 1.2 · 1.4 | ⬜ | M | 4 | Whisper 계열 어댑터 · `원문 검수 필요` 플래그 |
 
 v0.1 완료 조건은 **"S1 시나리오가 단일 명령으로 완주"** 이므로 WP4~9가 전부 필요하다.
@@ -87,7 +89,8 @@ flowchart TD
     WP6["WP6 CLI 배선<br/>🟡 FR-8.1·8.2 완료"]
     WP7A["WP7a 번역 엔진<br/>✅ FR-2.1~2.6·2.8"]
     WP7B["WP7b 영속화·CLI<br/>✅ FR-2.7 · FR-8.1"]
-    WP8["WP8 Tier 1 신호<br/>FR-4.1~4.3"]
+    WP8A["WP8a Tier 1 라이브러리<br/>✅ FR-4.1 · FR-4.3(라이브러리)"]
+    WP8B["WP8b Tier 1 CLI 배선<br/>FR-4.3(사용자 설정)"]
     WP9["WP9 STT<br/>FR-1.2·1.4"]
     V01(["v0.1 MVP<br/>S1 단일 명령 완주"])
 
@@ -99,10 +102,12 @@ flowchart TD
     WP4 --> WP9
     WP5 --> WP6
     WP7A --> WP7B
-    WP7A --> WP8
+    WP7A --> WP8A
+    WP8A --> WP8B
     WP5 --> WP7B
     WP7B --> WP6
-    WP8 --> V01
+    WP6 --> WP8B
+    WP8B --> V01
     WP9 --> V01
     WP6 --> V01
     WP3 --> V01
@@ -113,14 +118,20 @@ flowchart TD
     style WP4 fill:#e6f4ea,stroke:#34a853
     style WP7A fill:#e6f4ea,stroke:#34a853
     style WP7B fill:#e6f4ea,stroke:#34a853
+    style WP8A fill:#e6f4ea,stroke:#34a853
     style WP5 fill:#fef7e0,stroke:#f9ab00
     style WP6 fill:#fef7e0,stroke:#f9ab00
 ```
 
-**WP7a는 WP8의 선행이지만 WP7b는 아니다.** 자가일관성(FR-4.1)은 같은 세그먼트를
+**WP7a는 WP8a의 선행이지만 WP7b는 아니다.** 자가일관성(FR-4.1)은 같은 세그먼트를
 N회 번역해 비교하는 것이라 `translate_segments`와 `build_messages`만 있으면 되고,
 재개도 CLI도 필요 없다. 두 화살표를 갈라 둔 이유가 이것이다 — 합쳐 두면
-WP8이 CLI 배선을 기다리는 것처럼 보인다.
+WP8a가 CLI 배선을 기다리는 것처럼 보인다.
+
+**WP8도 WP7과 같은 이유로 8a(라이브러리)/8b(CLI 배선)로 갈랐다** — 자가일관성은
+`translate_segments`만 있으면 동작하는 순수 라이브러리 호출이고, `--tier1-*` 옵션을
+붙이는 것은 별개의 배선 작업이다. 상세 근거는
+[Tier 1 설계 스펙](superpowers/specs/2026-08-17-tier1-signals-design.md) §1.3.
 
 ### WP7을 왜 쪼갰나
 
@@ -178,14 +189,15 @@ v0.1 전체를 기다리지 않고 중간 산출물을 낼 수 있는 유일한 
 | ~~3~~ | ~~WP6 부분 (FR-8.2 `check`)~~ | ✅ 완료 (2026-08-13). 최초로 **쓸 수 있는 제품**이 나왔다 (`4899fec`) |
 | ~~4~~ | ~~WP7a (번역 엔진)~~ | ✅ 완료 (2026-08-16). FR 7개를 닫았고 **WP8의 선행이 풀렸다** (`f6e0ec6`..`1b4ea6e` 엔진 499→**813**, `9159791`~ 공개 API·마커 813→**859**) |
 | ~~5~~ | ~~WP7b~~ | ✅ 완료 (2026-08-17). 캐시·재개·다국어 순차 번역·`--dry-run`·`python -m cuesift`가 실제로 동작하고, live로 재개(2회차 실제 호출 0개)를 실물 확인했다. FR-2.7·FR-7.1·FR-8.1 완료 (`742ac52`..`4685be1`) |
-| 1 | **WP8** | Tier 1은 번역 계층 없이는 만들 수 없었고 이제 가능하다. **Q4(자가일관성 유사도)가 여기서 닫힌다** — 남은 미결정 하나이며, `negation` Recall이 무작위보다 낮다는 실측이 이 투자의 근거다 |
-| 2 | WP5 나머지 (FR-7.2~7.4) | `review.json`·`report.html`·요약 통계. **WP7이 먼저였던 이유**는 리포트에 실을 신호가 번역 계층에서 나오기 때문이다 — 규격 위반 7종만 아는 상태에서 FR-7.2를 확정하면 스키마를 다시 깨야 한다(설계 D4가 `--json`을 미룬 것과 같은 판단) |
+| ~~6~~ | ~~WP8a (Tier 1 라이브러리)~~ | ✅ 완료 (2026-08-17). FR-4.1(자가일관성)이 실제 엔드포인트(Ollama `qwen2.5:3b`)에서 신호를 낸다 — live 검증으로 확인(`llm.self_consistency`). **Q4는 이번에도 닫히지 않는다** — 문자 단위 유사도의 판별력 실측(요구사항정의서 §12 Q4)이 방향(형태는 재지만 의미는 못 잰다)을 좁혔을 뿐, 판정은 Tier 1을 벤치마크에 태우는 별도 작업의 몫이다 |
+| 1 | **WP8b (Tier 1 CLI 배선)** | 8a가 라이브러리를 냈으니 `--tier1-max-ratio`·`--tier1-samples`·`--tier1-temperature`를 `cuesift translate`에 붙이는 일만 남았다 — FR-4.3이 "라이브러리에 있음"에서 "**사용자가** 설정할 수 있음"이 되려면 여기가 닫혀야 한다. 착수 전 정리할 것 3건은 `HANDOFF.md`를 본다(세그먼트 단위 프로토콜의 호출 10배가 가장 중요). WP5보다 먼저인 이유는 WP7 때와 같다 — `review.json`(FR-7.2)이 `llm.self_consistency`를 실을 스키마를 정하려면 Tier 1이 CLI에서 실제로 도는 모습이 먼저 있어야 스키마를 두 번 깨지 않는다 |
+| 2 | WP5 나머지 (FR-7.2~7.4) | `review.json`·`report.html`·요약 통계. **WP7이 먼저였던 이유**는 리포트에 실을 신호가 번역 계층에서 나오기 때문이다 — 규격 위반 7종만 아는 상태에서 FR-7.2를 확정하면 스키마를 다시 깨야 한다(설계 D4가 `--json`을 미룬 것과 같은 판단). 같은 논리로 WP8b도 먼저다 |
 | 3 | WP6 나머지 (FR-8.3~8.5) | `transcribe` 배선과 `cuesift.yaml` 로더·진행 표시. FR-8.1은 WP7b가 닫았다 |
 | 4 | WP9 | STT는 FR-1.3이 "자막 우선"이라 마지막이어도 S1이 성립한다 |
 
-**WP7b 완료로 WP7 전체가 닫혔다.** WP8 착수의 필수 선행은 WP7a까지였고(위 도식의
+**WP7b 완료로 WP7 전체가 닫혔다.** WP8a 착수의 필수 선행은 WP7a까지였고(위 도식의
 갈라진 화살표 참고) WP7b는 조건이 아니었지만, 둘 다 끝난 지금은 그 구분이 더 이상
-의미가 없다. 남은 1순위는 WP8 하나다.
+의미가 없다. **WP8a도 완료됐다** — 남은 1순위는 WP8b 하나다.
 
 ## 갱신 규칙
 

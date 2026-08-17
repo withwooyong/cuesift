@@ -72,6 +72,9 @@ from pathlib import Path
 import pytest
 
 from cuesift.segment.models import Segment
+from cuesift.signals.base import SignalContext
+from cuesift.spec import load_builtin
+from cuesift.tier1 import triage_with_tier1
 from cuesift.translate import (
     DEFAULT_MAX_RETRIES,
     OpenAICompatibleProvider,
@@ -224,3 +227,75 @@ def test_cli가_실제_프로세스로_동작한다(tmp_path: Path) -> None:
     # "번역이 성공한 채로 재개됐다"를 증명한다.
     assert again.returncode == 0, again.stderr
     assert "실패 0개" in again.stdout, again.stdout
+
+
+@pytest.mark.live
+def test_자가일관성이_실제_엔드포인트에서_신호를_낸다(tmp_path: Path) -> None:
+    """설계 §11 A4 - 가짜가 아니라 실제 모델에서 신호가 나오는지 본다.
+
+    **점수의 크기를 단정하지 않는다.** temperature=1.0이라 재번역이 흔들리는
+    정도는 모델마다 다르고, 특정 수치를 기대하면 모델을 바꿀 때마다 빨개진다.
+    이 파일이 호출 횟수를 단정하지 않는 것과 같은 이유다.
+
+    **`warn`은 기본값이 없다**(`tier1.py`의 Ruling P12) - Tier 1이 돌았을 때와
+    안 돌았을 때 반환값의 형태(길이·`selected`)가 완전히 같아, `warn` 하나가
+    유일한 관측 통로다. 그래서 `messages.append`를 넘기고 받은 내용을 그대로
+    출력한다 - 비어 있으면 그 자체가 "Tier 1이 안 돌았다"는 신호다.
+
+    **세그먼트에 원본 트랙에서와 같이 0이 아닌 `index`를 그대로 쓴다** -
+    Task 7 착수 시점에는 `qwen2.5:3b`가 단일 세그먼트 호출에서 `index != 0`을
+    무시하고 항상 `id: 0`을 답해(실측 6/6) 이 테스트가 실패했다. 원인과
+    수정(로컬 `index=0`으로 재번호)은 `signals/llm.py`의 `_retranslate`
+    독스트링(Ruling P13)이 단일 출처다. 여기서 실전과 다른 index를 골라
+    우회하면 이 회귀를 다시 놓칠 수 있어 실전 값 그대로 둔다.
+    """
+    segments = [
+        Segment(
+            id="s0",
+            index=0,
+            start_ms=0,
+            end_ms=2000,
+            source_text="그는 끝내 오지 않았다.",
+            target_text="He never came.",
+        ),
+        Segment(
+            id="s1",
+            index=1,
+            start_ms=2000,
+            end_ms=4000,
+            source_text="비가 그치기를 기다렸다.",
+            target_text="We waited for the rain to stop.",
+        ),
+    ]
+    ctx = SignalContext(
+        profile=load_builtin("en"), glossary=None, source_lang="ko", target_lang="en"
+    )
+
+    provider = _provider()
+    # Tier 0 신호가 없어 둘 다 위험도 0.0으로 동점이다. `budget_ratio=0.5`
+    # (세그먼트 2건 → quota 1)에서는 동점을 세그먼트 id 순으로 깬다 - `s0`이
+    # 선별되고 남은 `s1`(index=1)이 회색지대라 거기에 Tier 1이 붙는다.
+    messages: list[str] = []
+    try:
+        risks = triage_with_tier1(
+            segments,
+            ctx,
+            budget_ratio=0.5,
+            provider=provider,
+            max_ratio=1.0,
+            warn=messages.append,
+            samples=3,
+            temperature=1.0,
+            cache_dir=tmp_path,
+            identity=provider.cache_identity,
+        )
+    finally:
+        # 직접 만든 클라이언트라 우리가 닫는다. 안 닫으면 세션 끝까지
+        # 소켓이 남는다(기존 live 테스트와 같은 이유).
+        provider.close()
+
+    names = {s.name for r in risks for s in r.signals}
+    # 이 파일의 관례대로 `-s`로 읽는다. 통과한 실행에서도 값이 보여야 한다.
+    print(f"\n신호: {sorted(names)}")
+    print(f"진단(warn): {messages}")
+    assert "llm.self_consistency" in names

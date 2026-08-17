@@ -20,7 +20,7 @@
 
 | 구분 | 내용 |
 | --- | --- |
-| **포함** | FR-4.1 자가일관성(`llm.self_consistency`) · FR-4.3 적용 상한 · Tier 1 실행 격리 · `CacheRequest.attempt` · 문자 단위 유사도 · 문서 정정 6건 |
+| **포함** | FR-4.1 자가일관성(`llm.self_consistency`) · FR-4.3 적용 상한 · Tier 1 실행 격리 · `CacheRequest.attempt` · 문자 단위 유사도 · 문서 정정 9건(§12 표 — 실행 중 3건 추가됐다) |
 | **산출물** | `src/cuesift/signals/llm.py` 신규 · `src/cuesift/signals/similarity.py` 신규 · `src/cuesift/tier1.py` 신규 · `signals/base.py`·`triage/policy.py`·`store/cache.py`·`store/provider.py`·`risk/fuse.py` 수정 · `tests/test_similarity.py` · `tests/test_signals_llm.py` · `tests/test_tier1.py` |
 | **완료 판정** | §11 |
 | **비범위** | FR-4.2 역번역 · `llm.retranslation_gap`(§3.2에서 보류) · CLI 배선(WP8b) · 벤치마크에 Tier 1 태우기 · Tier 2 QE |
@@ -453,7 +453,7 @@ collect_all(segments, ctx) 실행
 | A3 | `temperature=0`이 조용히 통과하지 않는다 | `ValueError` 테스트 |
 | A4 | 실제 엔드포인트로 신호가 나온다 | `-m live` 1건, score가 0.0이 아님을 확인 |
 | A5 | 기존 테스트가 전부 통과한다 | `pytest --cov=cuesift` — **수집 개수를 읽는다** |
-| A6 | 문서 정정 6건이 반영됐다 | §12 표 |
+| A6 | 문서 정정 **9건**(§12 표 — 착수 시점 6건에서 Task 4·5·6이 각 1건씩 추가했다)이 반영됐다 | §12 표 |
 | A7 | 게이트 6종 통과 | `ruff check .` · `ruff format --check .` · `pytest` · `check_links.py` · `markdownlint-cli2` · 3.11 문법 |
 
 **"통과했나"가 아니라 "무엇을 대상으로 통과했나"를 읽는다.** `pytest`의 수집
