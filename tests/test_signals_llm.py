@@ -103,13 +103,19 @@ def test_temperature가_프로바이더까지_간다(signal_ctx):
     항상 0.0이 된다 - 신호가 죽었는데 '판정했고 안전하다'로 보고된다
     (Q3 무음 열화). `Tier1Context.__post_init__`의 `temperature > 0`
     검사는 **요청값**만 보고 도달 여부는 못 보므로, 이 저장소의 유일한
-    방어가 정확히 이 배선에서 끊긴다."""
+    방어가 정확히 이 배선에서 끊긴다.
+
+    **일부러 기본값이 아닌 0.7을 쓴다.** `temperature=1.0`으로 시험하면
+    `_retranslate`가 실제로 `ctx.temperature`를 넘기는지와 코드가
+    "그냥 상수 1.0을 쓰는지"가 구분되지 않는다 - 1.0은 이 파일의 다른
+    모든 테스트가 쓰는 값이라 상수 하드코딩 변이가 전부 생존했다
+    (2라운드 리뷰 지적)."""
     providers = [EchoProvider() for _ in range(3)]
     ctx = Tier1Context(
-        signal=signal_ctx, provider_for=lambda a: providers[a], samples=3, temperature=1.0
+        signal=signal_ctx, provider_for=lambda a: providers[a], samples=3, temperature=0.7
     )
     SelfConsistency().collect_tier1(_seg(), ctx)
-    assert [p.kwargs for p in providers] == [[(1.0, None)]] * 3
+    assert [p.kwargs for p in providers] == [[(0.7, None)]] * 3
 
 
 def test_점수는_쌍별_유사도의_평균이다(signal_ctx):
@@ -154,6 +160,25 @@ def test_성공분이_2개_미만이면_None이다(signal_ctx):
     assert SelfConsistency().collect_tier1(_seg(), ctx) is None
 
 
+def test_성공분이_0개면_None이다(signal_ctx):
+    """**표본 교체가 아니라 추가다.** 위 테스트가 성공분 1개를 시험하도록
+    바뀌면서 성공분 0개(프로바이더 전량 장애) 경로가 리포에서 사라질
+    뻔했다(2라운드 리뷰 지적) - `< 2`를 `== 1`로 좁히는 변이는 성공분
+    1개는 여전히 `None`으로 잡지만, 성공분 0개는 가드를 통과시켜
+    `combinations([], 2)` → `sum([])/len([])` → `ZeroDivisionError`를
+    낸다. `collect_tier1`이 예외를 안 잡으므로 앞선 세그먼트 신호까지
+    통째로 날아가고, 전량 실패는 401·네트워크 단절에서 1개 실패보다
+    오히려 흔한 시나리오다."""
+    providers = [EchoProvider(garbage=True) for _ in range(3)]
+    ctx = Tier1Context(
+        signal=signal_ctx,
+        provider_for=lambda attempt: providers[attempt],
+        samples=3,
+        temperature=1.0,
+    )
+    assert SelfConsistency().collect_tier1(_seg(), ctx) is None
+
+
 def test_번역문이_없으면_None이다(signal_ctx):
     """번역 실패분은 검수 대상이 아니라 재실행 대상이다
     (TranslationResult 독스트링)."""
@@ -181,6 +206,49 @@ def test_시도마다_다른_프로바이더를_받는다(signal_ctx):
     ctx = Tier1Context(signal=signal_ctx, provider_for=provider_for, samples=3, temperature=1.0)
     SelfConsistency().collect_tier1(_seg(), ctx)
     assert seen == [0, 1, 2]
+
+
+def test_samples가_호출_횟수를_정한다(signal_ctx):
+    """`range(ctx.samples)`가 상수 `range(3)`으로 굳어도, 이 파일의 다른
+    테스트는 전부 `samples=3`이라 못 잡는다(2라운드 리뷰 지적 - 변이
+    실측: 상수로 바꿔도 전부 통과). `samples=5`로 호출해 실제 호출
+    횟수·`attempt` 순서가 요청값을 그대로 따르는지 확인한다. Tier 1은
+    이 저장소의 유일한 유료 계층이라 이 배선이 새면 사용자가 설정한
+    예산이 조용히 다른 값으로 실행된다."""
+    seen: list[int] = []
+    providers = [EchoProvider() for _ in range(5)]
+
+    def provider_for(attempt: int):
+        seen.append(attempt)
+        return providers[attempt]
+
+    ctx = Tier1Context(signal=signal_ctx, provider_for=provider_for, samples=5, temperature=1.0)
+    SelfConsistency().collect_tier1(_seg(), ctx)
+    assert seen == [0, 1, 2, 3, 4]
+
+
+def test_detail이_실제_요청값을_담는다(signal_ctx):
+    """`detail["temperature"]`·`detail["requested_samples"]`가 상수로
+    새거나 `len(samples)`로 새는 변이를, 이 파일의 다른 테스트는 전부
+    `temperature=1.0`·전량 성공(`len(samples) == ctx.samples`)이라 못
+    잡는다(2라운드 리뷰 지적). 기본값이 아닌 `temperature=0.6`을 쓰고,
+    `samples=4` 중 1개를 실패시켜 **성공분(3)이 요청값(4)보다 적은**
+    상태를 만든다 - 그래야 `requested_samples`가 `ctx.samples`가 아니라
+    `len(samples)`로 새는 변이까지 구속한다."""
+    same = "He did not come"
+    providers = [EchoProvider(transform=lambda _s, t=same: t) for _ in range(3)]
+    providers.append(EchoProvider(garbage=True))  # 4번째 시도만 실패시킨다
+    ctx = Tier1Context(
+        signal=signal_ctx,
+        provider_for=lambda attempt: providers[attempt],
+        samples=4,
+        temperature=0.6,
+    )
+    signal = SelfConsistency().collect_tier1(_seg(), ctx)
+    assert signal is not None
+    assert signal.detail["temperature"] == 0.6
+    assert signal.detail["requested_samples"] == 4
+    assert len(signal.detail["samples"]) == 3
 
 
 def test_패키지_임포트만으로_tier1이_등록된다():
