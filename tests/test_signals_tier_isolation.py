@@ -73,8 +73,20 @@ class _SpyTier2:
 
 @pytest.fixture
 def spy_registered():
-    """레지스트리를 저장·복원한다. 전역이라 오염되면 다른 테스트가 깨진다."""
+    """레지스트리를 저장·복원한다. 전역이라 오염되면 다른 테스트가 깨진다.
+
+    **등록 전에 기존 tier 1 수집기를 걷어낸다.** `llm.self_consistency`
+    (Task 5)가 전역·영구 등록되면서 `collect_tier1(enabled=None)`이
+    이 스파이만이 아니라 그것까지 함께 돌리게 됐다 - 이 파일의 세그먼트가
+    실제 `target_text`를 갖고 있어 `_retranslate`까지 들어가 버려,
+    `ScriptedProvider`의 짧은 대본이 소진되거나 `result`에 이름이
+    섞여 단언이 깨진다. tier 0은 남긴다 - `collect_all`을 부르는 테스트와
+    `struct.untranslated` 같은 실제 tier 0 이름을 쓰는 테스트가 있다.
+    """
     saved = dict(registry())
+    for name, existing in list(registry().items()):
+        if existing.tier == 1:
+            del registry()[name]
     collector = _SpyTier1()
     register(collector)
     yield collector
@@ -89,8 +101,16 @@ def tier2_spy_registered():
     `spy_registered`(tier 1)와 합치지 않는 이유는, 두 스파이가 같은
     테스트에 섞이면 실패 시 "어느 tier가 새었는가"가 바로 드러나지
     않기 때문이다.
+
+    `spy_registered`와 같은 이유로 등록 전에 기존 tier 1 수집기를
+    걷어낸다 - `test_collect_all과_collect_tier1_모두_tier2를_부르지_않는다`가
+    `collect_tier1(enabled=None)`을 불러 `llm.self_consistency`까지
+    함께 돌 뻔했다.
     """
     saved = dict(registry())
+    for name, existing in list(registry().items()):
+        if existing.tier == 1:
+            del registry()[name]
     collector = _SpyTier2()
     register(collector)
     yield collector
