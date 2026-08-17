@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from cuesift import cli
+from cuesift import __version__, cli
 from cuesift.cli import _discard_stream, _echo, _is_closed_output, run
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
@@ -149,6 +149,39 @@ def test_the_console_script_is_wired_to_run_not_app():
     assert scripts.get("cuesift") == "cuesift.cli:run", (
         f"진입점이 {scripts.get('cuesift')!r}다. `pip install -e .`를 다시 돌렸는지 확인한다"
     )
+
+
+def test_python_dash_m_cuesift_is_wired():
+    """`python -m cuesift`가 동작하는지 (WP7b Task 4 리뷰 라운드 2).
+
+    `src/cuesift/__main__.py`가 없으면 `No module named cuesift.__main__`으로
+    죽는다(실측). Task 7의 live 테스트가 이 경로에 기대지만 `-m live`는
+    `addopts`의 `-m "not live"` 기본값 때문에 CI에서 돌지 않는다 - 즉 이
+    테스트가 빠지면 `__main__.py`는 **CI 관점에서 무방비**다.
+
+    `--version`을 쓰는 이유는 그것이 `is_eager=True` 콜백이라 그룹 콜백보다도
+    먼저 실행되고 네트워크를 타지 않은 채 즉시 종료하기 때문이다 - 프로바이더도
+    안 만들고 파일도 안 읽어 CI에서 안전하게 돈다.
+
+    `sys.executable`을 쓰는 것은 `.venv/Scripts/python.exe`를 하드코딩하면
+    CI(Ubuntu, 다른 경로)에서 죽기 때문이다. `encoding="utf-8"`을 명시하는
+    것은 이 저장소가 cp949 기본 로케일에 여러 번 물린 이력이 있어서다
+    (`_harden_output_streams` 독스트링 참고) - 명시하지 않으면 Windows
+    로컬에서 자식 프로세스의 출력 디코딩이 로케일에 좌우된다.
+
+    버전 문자열은 `cuesift.__version__`과 대조한다 - 하드코딩하면 버전이
+    올라갈 때마다 이 테스트가 거짓으로 낡는다.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "cuesift", "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert __version__ in result.stdout
 
 
 def test_closed_pipe_is_recognised_on_both_platforms():
