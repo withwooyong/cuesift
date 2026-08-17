@@ -233,3 +233,42 @@ def test_collect_tier1은_tier0_이름을_enabled에_넣으면_거부한다(sign
     )
     with pytest.raises(ValueError, match="tier 1만"):
         collect_tier1([], t1, enabled=["struct.untranslated"])
+
+
+def test_collect_tier1은_등록되지_않은_이름을_거부한다(signal_ctx):
+    """2라운드 리뷰 지적(B2) — `non_tier1` 거부는 6개 테스트로 이미
+    덮였지만 `unknown` 거부(base.py의 `if unknown: raise ValueError(...)`)는
+    무방비였다. 실측: 그 블록을 통째로 지워도 지정 6파일이 전부 통과했고,
+    대신 `collect_tier1([], t1, enabled=["typo.does_not_exist"])`가 자기설명적인
+    `ValueError`가 아니라 raw `KeyError: 'typo.does_not_exist'`를 던지는
+    회귀가 생겼다 - `collect_all` 쪽은 `tests/test_signals_base.py::
+    test_enabled_with_unknown_name_raises`가 이미 덮고 있어 비대칭이었다."""
+    t1 = Tier1Context(
+        signal=signal_ctx, provider_for=lambda attempt: None, samples=3, temperature=1.0
+    )
+    with pytest.raises(ValueError, match="등록되지 않은 신호"):
+        collect_tier1([], t1, enabled=["typo.does_not_exist"])
+
+
+def test_register는_tier_속성이_없으면_거부한다():
+    """2라운드 리뷰 지적(C1) — `register()`의 `tier` 검사(base.py:137-138)는
+    동작하지만 이 파일이 그것을 단언한 적이 없었다. 실측: 그 검사를
+    통째로 지워도 지정 6파일이 전부 통과했다 - "게이트를 만들면 반드시
+    실패시켜 봐야 한다"는 이 저장소의 규율에 미달했다.
+
+    등록에 **실패**하는 경로라 `_REGISTRY`가 오염되지 않지만, 실패 도중
+    잠깐이라도 들어갔다가 예외로 되돌아가는 경로가 아님을 신뢰하지 않고
+    `spy_registered`와 같은 저장·복원 패턴을 그대로 따른다.
+    """
+
+    class _NoTier:
+        name = "test.no_tier"
+
+    saved = dict(registry())
+    try:
+        with pytest.raises(ValueError, match="tier"):
+            register(_NoTier())
+        assert "test.no_tier" not in registry()
+    finally:
+        registry().clear()
+        registry().update(saved)
