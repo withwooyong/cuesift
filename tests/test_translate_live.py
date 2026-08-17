@@ -171,6 +171,13 @@ def test_cli가_실제_프로세스로_동작한다(tmp_path: Path) -> None:
         **os.environ,
         "CUESIFT_BASE_URL": base_url,
         "CUESIFT_MODEL": model,
+        # 자식 프로세스의 stdout 인코딩을 명시한다(판정 P14). 한국어 로케일
+        # Windows에서 자식의 실제 콘솔 코드페이지는 cp949인데 아래
+        # `subprocess.run(..., encoding="utf-8")`은 그것을 utf-8로
+        # 디코드한다고 가정한다 - 없으면 `UnicodeDecodeError: 'utf-8'
+        # codec can't decode byte 0xb0`로 죽는다(실측). 부모 프로세스의
+        # 환경변수만으로는 자식에게 전달되지 않으므로 여기서 명시해야 한다.
+        "PYTHONIOENCODING": "utf-8",
     }
     proc = subprocess.run(  # noqa: S603
         [
@@ -295,7 +302,15 @@ def test_자가일관성이_실제_엔드포인트에서_신호를_낸다(tmp_pa
         provider.close()
 
     names = {s.name for r in risks for s in r.signals}
+    scores = [s.score for r in risks for s in r.signals if s.name == "llm.self_consistency"]
     # 이 파일의 관례대로 `-s`로 읽는다. 통과한 실행에서도 값이 보여야 한다.
+    # score는 **출력만 하고 단정하지 않는다**(설계 §11 A4, 판정 P15) -
+    # temperature=1.0은 변이를 보장하지 않으므로 재번역 3개가 우연히 같으면
+    # score가 정확히 0.0이 되고, 그것도 "판정했고 일관됨"이라는 유효한
+    # 결과다. `assert score > 0.0`을 달면 그 정상 케이스에서 간헐적으로
+    # 빨개진다 - 이 파일이 호출 횟수·score 크기를 단정하지 않는 것과 같은
+    # 이유다.
     print(f"\n신호: {sorted(names)}")
+    print(f"score: {scores}")
     print(f"진단(warn): {messages}")
     assert "llm.self_consistency" in names

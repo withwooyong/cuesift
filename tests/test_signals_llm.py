@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 import pytest
-from tests.fakes.provider import EchoProvider
+from tests.fakes.provider import AlwaysZeroProvider, EchoProvider
 
 from cuesift.segment import Segment
 from cuesift.signals.base import SignalContext, Tier1Context
@@ -244,6 +244,46 @@ def test_전역_index_대신_로컬_0으로_보낸다(signal_ctx):
         prompt = p.calls[0][-1].content
         assert "[0] " in prompt
         assert "[7] " not in prompt
+
+
+def test_증상_게이트_index가_0이_아니어도_AlwaysZeroProvider에서_신호가_난다(signal_ctx):
+    """Ruling P13의 **증상** 게이트다 (최종 브랜치 리뷰 A4/A10).
+
+    위 `test_전역_index_대신_로컬_0으로_보낸다`는 **메커니즘**(프롬프트에
+    실제로 `[0]`이 실리는가)만 본다 - `EchoProvider`는 요청받은 id를
+    그대로 채우는 가짜라 재번호가 없어도 항상 성공하므로, 재번호 배선이
+    빠져도 그 테스트는 통과한 채로 남는다(증상이 드러나지 않는다).
+
+    `AlwaysZeroProvider`는 실물 `qwen2.5:3b`의 실측된 실패 양식(요청받은
+    id를 무시하고 항상 `id: 0`으로 답한다)을 그대로 흉내 낸다. 재번호가
+    살아 있으면 로컬 `index=0`으로 보낸 요청의 기대 id도 0이라 응답의
+    `id: 0`과 맞아떨어져 **성공한다.** 재번호가 없으면 원본 index(7)를
+    기대하는데 응답은 항상 0이라 **파싱이 거부돼 재번역이 전부 실패하고
+    `collect_tier1`이 `None`을 반환한다** - 이것이 신호가 조용히 사라지던
+    실제 결함이다.
+
+    **되돌려서 확인했다**(이 저장소의 규율 - 게이트는 실패시켜 본 뒤에야
+    게이트다): `signals/llm.py`의 `local_seg = replace(seg, index=0)`을
+    `local_seg = seg`로 되돌리면 이 테스트가 `assert signal is not None`에서
+    **AssertionError로 죽는다.** 확인 후 원상 복구했다.
+    """
+    seg = Segment(
+        id="1",
+        index=7,
+        start_ms=0,
+        end_ms=2000,
+        source_text="그는 오지 않았다",
+        target_text="He did not come",
+    )
+    providers = [AlwaysZeroProvider() for _ in range(3)]
+    ctx = Tier1Context(
+        signal=signal_ctx, provider_for=lambda a: providers[a], samples=3, temperature=1.0
+    )
+
+    signal = SelfConsistency().collect_tier1(seg, ctx)
+
+    assert signal is not None, "재번호가 빠지면 재번역이 전부 실패해 신호가 조용히 None이 된다"
+    assert signal.name == "llm.self_consistency"
 
 
 def test_samples가_호출_횟수를_정한다(signal_ctx):
