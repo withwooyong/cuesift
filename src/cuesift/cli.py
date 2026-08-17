@@ -453,7 +453,13 @@ def translate(
         Path | None, typer.Option("--cache-dir", help="캐시 디렉터리. 기본 .cuesift/cache")
     ] = None,
     no_cache: Annotated[
-        bool, typer.Option("--no-cache", help="캐시를 읽지도 쓰지도 않는다")
+        bool,
+        typer.Option(
+            "--no-cache",
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="캐시를 읽지도 쓰지도 않는다. 형식을 어긴 응답도 캐시되므로 "
+            "같은 명령을 다시 쳐도 안 나아지면 이걸 쓴다",
+        ),
     ] = False,
     review_budget: Annotated[
         str | None,

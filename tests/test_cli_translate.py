@@ -753,6 +753,36 @@ def test_용어집_targets가_dict가_아니면_exit_66이다(
     assert result.exit_code == 66
 
 
+def test_dry_run과_실제_실행의_용어집_오류_종료코드가_같다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # [최종 리뷰 C2] `translate()`의 dry-run 분기(위 upfront 검사)가
+    # `except Exception`으로 넓게 잡는 것은 옳다 - 문제는 그 넓이를
+    # 지키는 게이트가 없었다는 것이다(실측: `(OSError, ValueError)`로
+    # 좁히는 변이가 이 파일 975개 중 0킬). 좁혀진 상태로 돌리면 위 네
+    # 테스트가 실제 실행에서 이미 exit_66으로 고정한 바로 그 용어집
+    # 결함이 dry-run에서는 예외가 커맨드 본문을 빠져나가 exit 1(이
+    # 저장소에서 1은 "규격 위반 발견")로 오보된다 - dry-run을 CI
+    # 사전 점검으로 쓰면 "규격 위반"과 "용어집이 깨졌다"가 뒤섞인다.
+    defects = [
+        ("미종료 스칼라", 'entries:\n  - source: "안녕\n'),
+        ("탭 들여쓰기", "entries:\n\t- source: 안녕\n"),
+        ("entries가 리스트가 아님", "entries: 5\n"),
+        ("targets가 dict가 아님", "entries:\n  - source: 안녕\n    targets: Hello\n"),
+    ]
+    _patch_provider(monkeypatch, EchoProvider())
+
+    for i, (name, content) in enumerate(defects):
+        glossary = tmp_path / f"g{i}.yaml"
+        glossary.write_text(content, encoding="utf-8")
+
+        dry = runner.invoke(app, _args(tmp_path, "--glossary", str(glossary), "--dry-run"))
+        real = runner.invoke(app, _args(tmp_path, "--glossary", str(glossary)))
+
+        assert dry.exit_code == 66, (name, "dry-run", dry.output)
+        assert real.exit_code == 66, (name, "실제 실행", real.output)
+
+
 # ── 리뷰 라운드 1 (Critical 3) — write_subtitle 예외 누수 2종 ──────────
 
 

@@ -252,6 +252,35 @@ def test_max_tokens_필드가_없으면_미스다(tmp_path: Path) -> None:
     assert load(tmp_path, request) is None
 
 
+def test_최상위가_dict가_아니면_미스다(tmp_path: Path) -> None:
+    # [최종 리뷰 C1] 캐시 파일 최상위가 리스트로 손상되면 `_matches`의
+    # `raw.get(...)`이 AttributeError를 낸다 - 리스트에는 `.get`이 없다.
+    # `AttributeError`는 `CachingProvider`의 `CACHE_IO_ERRORS`(OSError·
+    # ValueError·TypeError)에도 `ProviderError` 계열에도 없어 이 가드가
+    # 없으면 번역 루프 한가운데로 그대로 샌다.
+    request = _request()
+    store(tmp_path, request, _completion())
+    path = tmp_path / f"{request.key}.json"
+    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    assert load(tmp_path, request) is None
+
+
+def test_usage_하위_키가_없으면_미스다(tmp_path: Path) -> None:
+    # [최종 리뷰 C1] 헤더 필드(identity·temperature·max_tokens·messages_sha)는
+    # 멀쩡해 `_matches`를 통과하는데 `usage` 하위 키 하나(`calls`)가 빠지면
+    # `usage["calls"]`가 KeyError를 낸다. `KeyError`도 CACHE_IO_ERRORS에 없어
+    # 이 except가 없으면 같은 경로로 샌다.
+    request = _request()
+    store(tmp_path, request, _completion())
+    path = tmp_path / f"{request.key}.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["usage"]["calls"]
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    assert load(tmp_path, request) is None
+
+
 def test_디렉터리가_없어도_저장이_만든다(tmp_path: Path) -> None:
     target = tmp_path / "없는" / "깊은" / "경로"
     request = _request()
