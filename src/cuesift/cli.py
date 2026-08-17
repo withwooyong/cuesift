@@ -519,21 +519,31 @@ def translate(
 
     if dry_run:
         if glossary is not None:
-            # 실패 여부만 미리 확인한다. YAML 파싱과 항목 구조 검사는
-            # target_lang을 보지 않으므로(`load_glossary`), 대상 언어 중
-            # 아무거나로 시도해도 같은 성패가 난다 - 대응어 필터링만 언어마다
-            # 달라 그 내용은 `_dry_run_report`가 언어별로 다시 읽는다(그
-            # 함수의 독스트링 참고). `_translate_one`과 같은 이유로
-            # `except Exception`까지 넓힌다 - `entries: 5`(TypeError)·
-            # `targets: Hello`(AttributeError)는 `(OSError, ValueError)`를
+            # **모든 대상 언어에 대해 검사한다 - `targets[0]` 하나만 보지
+            # 않는다.** `load_glossary`는 대응어 값의 **타입 검사**를
+            # target_lang별로 한다(`(item.get("targets") or {}).get(target_lang)`
+            # 이 리스트가 아니면 거부) - `targets: {en: [Hi], ja: "문자열"}`처럼
+            # 언어마다 값의 타입이 다르면 en으로는 통과하고 ja로는 실패한다
+            # (실측: WP7b Task 6 리뷰 라운드 1). `targets[0]`만 보면
+            # `--to en,ja`는 통과하고 `--to ja,en`은 실패해 **종료 코드가
+            # `--to`에 쓴 순서에 좌우되는** 사고가 난다 - 이 저장소가 1급으로
+            # 금지한 "검사하지 않고 통과하는 게이트"다. `_translate_one`과
+            # 같은 이유로 `except Exception`까지 넓힌다 - `entries: 5`
+            # (TypeError)·`targets: Hello`(item 자체가 dict가 아닌 경우,
+            # AttributeError)는 언어 무관 실패라 `(OSError, ValueError)`를
             # 지나쳐 그대로 샌다(실측: WP7b Task 4 리뷰 라운드 1). 이 upfront
             # 검사를 좁게 두면 실제 번역(`_translate_one`)은 exit 66으로
-            # 막는 바로 그 입력을 dry-run만 트레이스백으로 죽인다.
-            try:
-                load_glossary(glossary, targets[0])
-            except Exception as exc:
-                _echo(f"{glossary}: 용어집을 읽지 못했다 - {type(exc).__name__}: {exc}", err=True)
-                raise typer.Exit(EXIT_BAD_INPUT) from exc
+            # 막는 바로 그 입력을 dry-run만 통과(또는 트레이스백으로 죽음)
+            # 시킨다.
+            for target in targets:
+                try:
+                    load_glossary(glossary, target)
+                except Exception as exc:
+                    _echo(
+                        f"{glossary}: 용어집을 읽지 못했다 - {type(exc).__name__}: {exc}",
+                        err=True,
+                    )
+                    raise typer.Exit(EXIT_BAD_INPUT) from exc
 
         # identity는 `_cache_identity(provider)`로 얻는다 — **손으로 다시
         # 조립하지 않는다.** `_build_provider()`가 이미 `provider`를 만들었고
@@ -543,6 +553,14 @@ def translate(
         # 않는다(WP7b Task 6 리뷰가 지목한 위험 - 상세 근거는
         # `_dry_run_report`의 독스트링).
         identity = _cache_identity(provider)
+        if identity is None and not no_cache:
+            # 실제 실행(`_translate_one`)의 같은 경고와 짝을 맞춘다 - 없으면
+            # 사용자는 "캐시 히트 0개"만 보고 캐시가 꺼진 이유(신원 모름)를
+            # 실행 후에야 안다. `[target_lang]` 라벨을 붙이지 않는 것은
+            # `_translate_one`의 경고와 달리 **언어별로 다시 계산되는 값이
+            # 아니라서**다 - provider 하나에서 한 번만 얻으므로 모든 대상
+            # 언어에 똑같이 적용된다.
+            _echo(f"경고: {provider.name}이 cache_identity를 제공하지 않아 캐시를 끈다", err=True)
         # dry-run은 `provider.complete()`를 부르지 않으므로 연결 풀이
         # 쓰이지 않은 채로 남는다 - 정리해도 실행에는 영향이 없다.
         # `getattr`로 읽는 것은 `Provider` 프로토콜에 `close`가 없어서다
@@ -557,7 +575,12 @@ def translate(
             out_dir=out,
             source_lang=source_lang,
             targets=targets,
-            base_url=resolved_base,
+            # `rstrip("/")`한다 - `OpenAICompatibleProvider.__init__`이
+            # 실제로 쓰는 값과 같게 보여야 한다. 안 하면 `--base-url
+            # http://h/v1/`을 줬을 때 헤더는 끝 슬래시가 붙은 채로 보이는데
+            # identity와 실제 엔드포인트는 슬래시 없는 값이라 화면이 서로
+            # 다른 URL을 말한다(실측: WP7b Task 6 리뷰 라운드 1 Minor d).
+            base_url=resolved_base.rstrip("/"),
             model=resolved_model,
             identity=None if no_cache else identity,
             glossary_path=None if glossary is None else glossary,
@@ -654,10 +677,23 @@ def _dry_run_report(
     채운 `Glossary`를 ja 배치 조립에 그대로 쓰면 프롬프트 문자 수뿐 아니라
     캐시 재료(`messages_sha`)까지 실제 실행과 달라진다 - `_translate_one`도
     언어 루프 안에서 매번 `load_glossary(glossary_path, target_lang)`를 새로
-    부르는 것과 같은 이유다. 호출자가 `targets[0]`로 한 번 읽어 성공을
-    확인해 두므로(YAML 파싱과 항목 구조 검사는 target_lang을 보지 않아 어느
-    언어로 시도해도 같은 성패가 난다) 여기서 다시 실패할 일은 없지만, 그
+    부르는 것과 같은 이유다. 호출자(`translate()`)가 **대상 언어 전부**에
+    대해 한 번씩 미리 읽어 성공을 확인해 두므로(§WP7b Task 6 리뷰 라운드 1
+    Important 1 - `load_glossary`의 대응어 타입 검사는 `target_lang`마다
+    다른 값을 보므로 언어별로 성패가 갈릴 수 있다. `targets[0]`만 검사하면
+    `--to en,ja`는 통과하고 `--to ja,en`은 실패하는, 종료 코드가 명령줄
+    순서에 좌우되는 사고가 실측됐다) 여기서 다시 실패할 일은 없지만, 그
     전제가 깨져도 트레이스백 대신 이 언어의 보고만 생략한다.
+
+    ## "호출 필요 N개"는 하한이다 (WP7b Task 6 리뷰 라운드 1 Important 2)
+
+    FR-2.6 배치 폴백(응답이 형식을 어기면 세그먼트별 개별 재호출로 강등)과
+    재시도가 발동하면 실제 호출은 배치 수보다 몇 배로 는다(실측: 12세그먼트·
+    2배치에서 "호출 필요 2개"였지만 실제 실행은 14회를 불렀다). 이 함수는
+    배치가 **한 번에 성공한다고 가정한 하한**만 낼 수 있다 - 모델이 형식을
+    지킬지는 실행 전에 알 방법이 없다(정확한 수를 내려 들면 그 자체가
+    출처 없는 추정이 되어 요구사항정의서 §11 R8을 어긴다). 그래서 아래
+    출력은 "N개"가 아니라 "N개 이상"이라고 정직하게 말한다.
 
     ## temperature·max_tokens는 여전히 손으로 맞춘다 (남은 한계)
 
@@ -667,12 +703,27 @@ def _dry_run_report(
     상수가 아니라 함수 시그니처의 기본 인자값이고, `max_tokens=None`은
     `translate/engine.py`의 `_call_with_retry` 본문에 직접 박혀 있어(참조할
     수 있는 이름조차 없다) 이 태스크가 손대지 않는 `translate/` 밖에서는
-    가져올 방법이 없다. **어긋나면 dry-run이 "호출 필요 82개"라 해 놓고
-    실행은 0개를 부른다.** 이 어긋남을 직접 겨냥한 단위 테스트는 없고,
-    `tests/test_cli_translate.py::test_dry_run이_캐시_히트를_센다`가 실행
-    결과(캐시 파일이 실제로 히트하는가)로 두 값을 **간접** 고정한다 - 둘 중
-    하나라도 어긋나면 캐시 파일 이름이 달라져 "히트 1개"가 "히트 0개"로
-    떨어진다.
+    가져올 방법이 없다. **어긋나면 dry-run이 "호출 필요 82개 이상"이라 해
+    놓고 실행은 0개를 부른다.** 이 어긋남을 직접 겨냥한 단위 테스트는 없지만
+    **간접 게이트는 실측으로 작동을 확인했다** - `temperature`를 0.0→0.7로,
+    `max_tokens`를 None→4096으로 각각 변이하면 캐시 파일 이름이 달라져
+    `test_dry_run이_캐시_히트를_센다`·`test_dry_run의_identity가_실제와_같다`·
+    `test_dry_run이_다배치_다국어_용어집_맥락에서_실제_실행과_일치한다`
+    (`tests/test_cli_translate.py`) 3개가 매번 죽는다(WP7b Task 6 리뷰
+    라운드 1에서 2개로 보고됐으나 라운드 1 수정에서 추가된 세 번째 테스트로
+    재확인하면 3개다).
+
+    ## 캐시 손상은 감지하지 못한다 (WP7b Task 6 리뷰 라운드 1 Minor b)
+
+    아래 캐시 히트 판정은 `(cache_dir / f"{key}.json").exists()`뿐이다.
+    실제 실행이 캐시를 읽을 때 쓰는 `cache.load()`는 파일 존재를 넘어
+    JSON 파싱·필드 타입·`_matches()`까지 확인해 손상된 캐시를 **미스**로
+    떨어뜨린다(`store/cache.py`: "캐시는 최적화이지 정확성의 근거가
+    아니다"). 이 함수는 그 깊이까지 확인하지 않으므로, 캐시 파일이 손상돼
+    있으면 dry-run은 "히트"라 하고 실제 실행은 미스로 다시 부른다 - 설계가
+    "파일 존재만 확인"을 택한 결과이지 이 함수의 스펙 위반은 아니다. 정상
+    운영에서 캐시 파일은 이 프로세스가 원자적으로 쓰므로(`cache.store()`의
+    `os.replace`) 손상될 경로가 거의 없다.
     """
     lines = [
         f"입력   {input_path} ({result.format}) · {len(result.segments)} 세그먼트",
@@ -729,7 +780,9 @@ def _dry_run_report(
                 "",
                 f"[{target}] {_output_path(input_path, out_dir, source_lang, target)}",
                 f"  배치 {batches}개 (size={DEFAULT_BATCH_SIZE}, context_window={context_window})",
-                f"  캐시 히트 {hits}개 · 호출 필요 {batches - hits}개",
+                # "이상"을 뺄 수 없다 - 위 독스트링 참고. 배치 폴백·재시도가
+                # 발동하면 실제 호출은 이 수의 몇 배가 될 수 있다.
+                f"  캐시 히트 {hits}개 · 호출 필요 {batches - hits}개 이상",
                 f"  프롬프트 문자 system {system_chars:,} + user {user_chars:,}",
             ]
         )

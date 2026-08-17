@@ -540,6 +540,159 @@ def test_캐시_경고에_언어_라벨이_있고_summary_line이_속지_않는�
     assert "세그먼트 2개" in _summary_line(result.output, "en")  # (B): 진짜 헤더를 찾는다
 
 
+# ── Task 6 리뷰 라운드 1 ─────────────────────────────────────────────────
+
+
+def test_대상_언어_순서와_무관하게_용어집_실패를_잡는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # [Important 1] `load_glossary`의 대응어 타입 검사는 언어마다 다른 값을
+    # 본다 - ja 대응어만 리스트가 아니면 target_lang="ja"로는 실패하고
+    # target_lang="en"으로는 통과한다(실측: 리뷰어). upfront 검사가
+    # `targets[0]`만 보면 `--to en,ja`(en이 먼저라 통과)와
+    # `--to ja,en`(ja가 먼저라 실패)이 **같은 파일에 다른 종료 코드**를
+    # 낸다 - dry-run을 CI 사전 점검으로 쓰면 실제 실행이 66으로 거절하는
+    # 용어집에 순서 하나로 0을 돌려줄 수 있다.
+    glossary = tmp_path / "g.yaml"
+    glossary.write_text(
+        "entries:\n  - source: 안녕\n    targets:\n      en: [Hello]\n      ja: 리스트가_아니다\n",
+        encoding="utf-8",
+    )
+    _patch_provider(monkeypatch, EchoProvider())
+
+    codes = {}
+    for order in ("en,ja", "ja,en"):
+        result = runner.invoke(
+            app,
+            [
+                "translate",
+                str(_FIXTURES / "minimal.srt"),
+                "--to",
+                order,
+                "--out",
+                str(tmp_path),
+                "--base-url",
+                "http://h/v1",
+                "--model",
+                "m1",
+                "--glossary",
+                str(glossary),
+                "--dry-run",
+            ],
+        )
+        codes[order] = result.exit_code
+
+    assert codes["en,ja"] == codes["ja,en"] == 66, codes
+
+
+def test_호출_필요_수는_하한임을_표시한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # [Important 2] "호출 필요 N개"는 배치가 그대로 성공할 때의 하한이다.
+    # FR-2.6 배치 폴백(형식 위반 시 세그먼트별 개별 재호출)과 재시도가
+    # 발동하면 실제 호출은 이보다 몇 배로 는다(리뷰어 실측: 12세그먼트·
+    # 2배치에서 dry-run "2개" vs 실제 14회, 7배). "이상"을 붙여 하한임을
+    # 드러낸다 - 정확한 수를 내려 들지 않는다(§11 R8, 출처 없는 추정 금지).
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, [*_args(tmp_path), "--dry-run"])
+
+    assert "호출 필요 1개 이상" in result.output
+
+
+def test_dry_run은_파일도_캐시도_쓰지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # [Minor a] 기존 "파일을 만들지 않는다" 테스트는 출력 자막 파일 하나만
+    # 본다 - 쓰기 계열 자체가 아니라 "특정 파일 하나가 없다"만 지켜서
+    # cache_dir.mkdir() 같은 다른 쓰기가 섞여도 잡지 못했다(리뷰어 변이
+    # F9, 0킬). 이 저장소가 실제로 쓰는 두 지점 - 출력 자막
+    # (`cuesift.cli.write_subtitle`)과 캐시 저장(`cuesift.store.provider`가
+    # 참조하는 `store`) - 을 직접 계측해 "불리면 죽는다"로 막는다.
+    def _forbidden(*_a: object, **_kw: object) -> None:
+        raise AssertionError("dry-run에서 쓰기 함수가 불렸다")
+
+    monkeypatch.setattr("cuesift.cli.write_subtitle", _forbidden)
+    monkeypatch.setattr("cuesift.store.provider.store", _forbidden)
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, [*_args(tmp_path), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_dry_run이_다배치_다국어_용어집_맥락에서_실제_실행과_일치한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # [Important 3+4] 기존 dry-run 테스트 7개가 전부 minimal.srt(2세그먼트=
+    # 1배치)·단일 언어·용어집 없음·work_context 없음 조합이었다. 배치
+    # 크기·context_window·work_context·용어집 넷 중 하나를 dry-run만 다르게
+    # 계산해도(리뷰어 변이 F6b·F11·F12·F13, 용어집을 targets[0]로만 읽는
+    # F8) 어느 것도 안 죽었다 - 배치가 항상 1개라 배치 수 계산이 무엇이든
+    # 1이 나왔고, 나머지 셋이 항상 기본값이라 dry-run이 빠뜨려도 결과가
+    # 같았다(4번째로 "테스트 데이터가 미탐을 만든" 사례).
+    #
+    # large.srt(26세그먼트=3배치, size=10) · --to en,ja(대응어가 다른
+    # 용어집) · --work-context로 넷을 한 번에 겨눈다. 한 번 실제로 돌려
+    # en·ja 둘 다(각자의 대응어로) 캐시를 3배치씩 정확히 채운 뒤, dry-run이
+    # "히트 3개 · 필요 0개 이상"을 예고하는지, 그리고 그 예고가 실제
+    # 재실행의 "히트 3개 · 실제 호출 0개"와 같은지 확인한다.
+    glossary = tmp_path / "g.yaml"
+    glossary.write_text(
+        "entries:\n"
+        "  - source: 안녕\n"
+        "    targets:\n"
+        "      en: [Hi]\n"
+        "      ja: [반갑습니다이것은아주긴대응어예시문장입니다]\n",
+        encoding="utf-8",
+    )
+    _patch_provider(monkeypatch, EchoProvider())
+    cache_dir = tmp_path / "cache"
+
+    def _args_large(*, to: str) -> list[str]:
+        return [
+            "translate",
+            str(_FIXTURES / "large.srt"),
+            "--to",
+            to,
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--glossary",
+            str(glossary),
+            "--work-context",
+            "다큐멘터리",
+            "--cache-dir",
+            str(cache_dir),
+        ]
+
+    # 1) 두 언어를 한 번 실제로 돌려 3배치 × 2언어 캐시를 전부 채운다 - en·ja
+    #    각자 자기 언어의 대응어로 채워진 올바른 캐시다.
+    first = runner.invoke(app, _args_large(to="en,ja"))
+    assert first.exit_code == 0, first.output
+
+    # 2) 같은 조건으로 dry-run - 둘 다 3배치 전부 히트여야 한다.
+    dry = runner.invoke(app, [*_args_large(to="en,ja"), "--dry-run"])
+    assert dry.exit_code == 0, dry.output
+    for lang in ("en", "ja"):
+        assert "배치 3개" in _dry_run_line(dry.output, lang), (lang, dry.output)
+        assert "캐시 히트 3개 · 호출 필요 0개 이상" in _dry_run_line(dry.output, lang, offset=2), (
+            lang,
+            dry.output,
+        )
+
+    # 3) 실제로 다시 돌려 dry-run이 예고한 수와 같은지 확인한다 - 이것이
+    #    이 테스트의 핵심 단언이다.
+    second = runner.invoke(app, _args_large(to="en,ja"))
+    assert second.exit_code == 0, second.output
+    for lang in ("en", "ja"):
+        assert "캐시 히트 3개 · 실제 호출 0개" in _summary_line(second.output, lang, offset=2), (
+            lang,
+            second.output,
+        )
+
+
 # ── 리뷰 라운드 1 (Critical 2) — 용어집 예외 누수 4종 ──────────────────
 
 
@@ -891,8 +1044,13 @@ class _FirstLanguageFails:
         return target.complete(messages, temperature=temperature, max_tokens=max_tokens)
 
 
-def _summary_line(output: str, lang: str) -> str:
-    """`_format_translate_summary`가 낸 `[lang]` 헤더 다음 줄(세그먼트 요약)을 뽑는다.
+def _summary_line(output: str, lang: str, offset: int = 1) -> str:
+    """`_format_translate_summary`가 낸 `[lang]` 헤더 기준 `offset`번째 뒤 줄을 뽑는다.
+
+    기본값 `offset=1`은 세그먼트 요약 줄이다. `offset=2`는 캐시 줄
+    (`  캐시 히트 N개 · 실제 호출 M개`)을 뽑을 때 쓴다(WP7b Task 6 리뷰
+    라운드 1 Important 3+4 - dry-run의 예고와 실제 실행의 결과를 나란히
+    비교하려면 이 줄이 필요하다).
 
     리뷰 라운드 1 Important 1 - `exit_code == 1`만으로는 "en 실패·ja 성공"과
     "en·ja 둘 다 실패"를 구별하지 못한다(둘 다 exit 1). 언어별 요약 줄을
@@ -914,7 +1072,25 @@ def _summary_line(output: str, lang: str) -> str:
         and i + 1 < len(lines)
         and lines[i + 1].startswith("  세그먼트 ")
     )
-    return lines[header + 1]
+    return lines[header + offset]
+
+
+def _dry_run_line(output: str, lang: str, offset: int = 1) -> str:
+    """`_dry_run_report`가 낸 `[lang]` 헤더 기준 `offset`번째 뒤 줄을 뽑는다.
+
+    `_summary_line`과 짝이지만 다음 줄 형태가 다르다 - dry-run 헤더 다음
+    줄은 `"  배치 "`로 시작한다(실제 실행의 `"  세그먼트 "`와 다르다).
+    `offset=1`은 배치 줄, `offset=2`는 캐시 히트/호출 필요 줄이다.
+    """
+    lines = output.splitlines()
+    header = next(
+        i
+        for i, line in enumerate(lines)
+        if line.startswith(f"[{lang}]")
+        and i + 1 < len(lines)
+        and lines[i + 1].startswith("  배치 ")
+    )
+    return lines[header + offset]
 
 
 def test_종료_코드는_가장_나쁜_것이다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
