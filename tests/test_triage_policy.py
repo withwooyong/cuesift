@@ -200,7 +200,7 @@ def test_상한의_분모는_전체다():
     risks = [_t1_risk("a", 0.9, selected=True)] + [
         _t1_risk(str(i), 0.5 - i * 0.01) for i in range(9)
     ]
-    # 전체 10건 × 0.2 = 2건 (올림)
+    # 전체 10건(selected 1건 포함) × 0.2 = 2건. 분모가 회색지대 9건이 아니다.
     assert len(select_tier1_candidates(risks, 0.2)) == 2
 
 
@@ -236,5 +236,17 @@ def test_상한이_0이면_아무도_안_고른다():
 def test_잘못된_상한을_거부한다(bad):
     """select_by_budget과 같은 방어다. NaN을 비교 연산의 우연에 맡기면
     리팩터링 한 번에 조용히 깨진다."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="max_ratio"):
         select_tier1_candidates([_t1_risk("a", 0.5)], bad)
+
+
+@pytest.mark.parametrize("n,ratio", [(1, 0.5), (3, 0.7), (10, 0.2), (7, 0.3), (4, 0.25)])
+def test_상한은_절대_초과하지_않는다(n, ratio):
+    """FR-4.3 보증: Tier 1 후보 비율이 max_ratio를 절대 초과하지 않는다.
+
+    이 테스트가 없으면 ceil로 되돌릴 때 정렬 버그로 오독할 수 있다."""
+    risks = [_t1_risk(str(i), 0.9 - i * 0.01) for i in range(n)]
+    result = select_tier1_candidates(risks, ratio)
+    # selected 필드가 없으므로 비율은 단순히 len(result) / len(risks)
+    actual_ratio = len(result) / len(risks) if risks else 0.0
+    assert actual_ratio <= ratio + 1e-9  # 부동소수 오차 허용
