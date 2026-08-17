@@ -35,6 +35,10 @@ EXPECTED = (
     # 의도적으로 파싱한다(`substation.py`의 `# handle negative timestamps`).
     # json 픽스처만 두면 다음 사람이 "json만 조심하면 된다"는 틀린 지도를 받는다.
     "negative_timecode.ass",
+    # WP7b Task 6 리뷰 라운드 1 (Important 3+4) - minimal.srt(2세그먼트=1배치)만
+    # 쓰던 dry-run 테스트가 배치 크기·context_window 드리프트를 하나도 못
+    # 잡았다. 26세그먼트(size=10에서 3배치)로 여러 배치·맥락 윈도우를 만든다.
+    "large.srt",
 )
 
 

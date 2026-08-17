@@ -65,6 +65,9 @@ JSON도 구조도 개수도 순서도 맞았고 어긋난 것은 타입 하나�
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -141,3 +144,83 @@ def test_실제_엔드포인트로_한_배치를_왕복한다() -> None:
     # 폴백 발동 여부를 눈으로 읽는 자리다. 위 독스트링 "호출 횟수를 단정하지
     # 않는 이유"를 참고할 것.
     print(f"\n[live] calls={result.usage.calls} usage={result.usage}")
+
+
+@pytest.mark.live
+def test_cli가_실제_프로세스로_동작한다(tmp_path: Path) -> None:
+    """`typer.Exit`이 실제 프로세스 종료 코드가 되는지는 CliRunner가
+    완전히 증명하지 못한다. 진짜로 돌려 본다.
+
+    **`-m live`로만 돈다.** CI에는 엔드포인트가 없다.
+
+    `CUESIFT_LIVE_*` 접두사는 이 파일이 이미 쓰는 예약어이고
+    `test_translate_api.py`의 게이트가 그 문자열로 live 마커 누락을
+    판정한다. CLI가 실제로 읽는 것은 접두사 없는 `CUESIFT_BASE_URL`·
+    `CUESIFT_MODEL`이므로 서브프로세스 환경에 변환해 넘긴다.
+    """
+    base_url = os.environ.get("CUESIFT_LIVE_BASE_URL")
+    model = os.environ.get("CUESIFT_LIVE_MODEL")
+    if not base_url or not model:
+        pytest.skip("CUESIFT_LIVE_BASE_URL / CUESIFT_LIVE_MODEL이 없다")
+
+    fixture = Path(__file__).parent / "fixtures" / "ingest" / "minimal.srt"
+    env = {
+        **os.environ,
+        "CUESIFT_BASE_URL": base_url,
+        "CUESIFT_MODEL": model,
+    }
+    proc = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-m",
+            "cuesift",
+            "translate",
+            str(fixture),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        encoding="utf-8",
+    )
+
+    assert proc.returncode in (0, 1), proc.stderr
+    assert (tmp_path / "minimal.en.srt").exists()
+
+    # 2회차는 캐시 히트라 실제 호출이 0이어야 한다 - 재개의 실물 증거다.
+    again = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-m",
+            "cuesift",
+            "translate",
+            str(fixture),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        encoding="utf-8",
+    )
+
+    assert "실제 호출 0개" in again.stdout, again.stdout
+    # [리뷰 라운드 1 Important 4] "캐시 히트 = 재개 성공"이 아니다 - `CachingProvider`는
+    # 형식을 어긴 응답도 저장한다(README "형식을 어긴 응답도 캐시됩니다" 참고, 의도된
+    # 설계다). 그래서 위 단언 하나만으로는 "재개가 쓰레기를 재사용하는 상태"와
+    # "재개가 동작하는 상태"가 구분되지 않는다 - 리뷰어가 모든 응답을 형식 위반으로
+    # 내는 가짜 엔드포인트로 재현했다: 1회차 실패 2/2·exit 1, 2회차 캐시 히트 2개·
+    # 실제 호출 0개·**여전히 실패 2/2**·exit 1인데 위 단언까지는 전부 통과했다.
+    # 2회차의 종료 코드와 실패 수까지 단언해야 "캐시를 재사용했다"가 아니라
+    # "번역이 성공한 채로 재개됐다"를 증명한다.
+    assert again.returncode == 0, again.stderr
+    assert "실패 0개" in again.stdout, again.stdout

@@ -1,17 +1,18 @@
 """cuesift CLI 진입점.
 
 요구사항정의서 §8.1(FR-8.1~8.5)의 커맨드 표면을 정의한다.
-`check`는 배선이 끝나 실제로 동작한다. `translate`·`transcribe`는 아직
+`check`·`translate`는 배선이 끝나 실제로 동작한다. `transcribe`는 아직
 인자 스키마만 확정한 골격이라 EXIT_NOT_IMPLEMENTED로 종료한다.
 
-**종료 코드 다섯이 서로 겹치지 않는 것이 이 파일의 계약이다.**
+**종료 코드 여섯이 서로 겹치지 않는 것이 이 파일의 계약이다.**
 
 | 코드 | 언제 | 근거 |
 | --- | --- | --- |
 | 0 | 위반 없음, 또는 `--fail-on none` | |
-| 1 | 규격 위반 발견 | FR-7.5 |
-| 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패) | typer 관행 |
-| 66 | 파일 내용이 틀림 (자막 아님·utf-8 아님·읽을 수 없음) | `sysexits.h` EX_NOINPUT |
+| 1 | 규격 위반 발견, 또는 번역 일부 세그먼트 실패(원문 유지) | FR-7.5, FR-2.6 |
+| 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패·출력 경로 충돌) | typer 관행 |
+| 66 | 파일 사정 (자막·용어집 파싱 실패, utf-8 아님, 읽거나 쓰지 못함) | `sysexits.h` EX_NOINPUT |
+| 69 | 외부 서비스(LLM 프로바이더)가 요청을 거부함 | `sysexits.h` EX_UNAVAILABLE |
 | 70 | 미구현 | |
 
 **1을 진단 실패에 쓰지 않는 것이 핵심이다.** 1은 "규격 위반 발견"이므로
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
@@ -32,7 +34,8 @@ from typing import IO, Annotated
 import typer
 
 from cuesift import __version__
-from cuesift.ingest import IngestError, load_subtitle
+from cuesift.glossary import Glossary, load_glossary
+from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
 from cuesift.spec import (
     SpecProfile,
     SpecViolation,
@@ -41,14 +44,48 @@ from cuesift.spec import (
     load_builtin,
     load_profile,
 )
+from cuesift.store import CacheRequest, CachingProvider
+from cuesift.translate import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_CONTEXT_WINDOW,
+    FatalProviderError,
+    OpenAICompatibleProvider,
+    Provider,
+    ProviderError,
+    TranslationResult,
+    build_messages,
+    iter_batches,
+    translate_segments,
+)
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
-# `check`는 이제 1을 쓰므로(FR-7.5) 70은 남은 두 골격 커맨드의 표식이다.
+# `translate`가 배선된 뒤로 70은 `transcribe` 하나의 표식이다.
 EXIT_NOT_IMPLEMENTED = 70
 
 # sysexits.h EX_NOINPUT — 파일 내용이 틀렸다는 뜻이다. 명령줄이 틀린 2와 구분한다.
 # CI가 둘을 구분하지 못하면 "경로 오타"와 "자막이 깨졌다"에 같은 대응을 하게 된다.
 EXIT_BAD_INPUT = 66
+
+# sysexits.h EX_UNAVAILABLE — 외부 서비스가 요청을 거부했다는 뜻이다.
+# 70("미구현·내부 오류")과 나누는 이유는 CI가 "아직 안 만든 기능"과
+# "LLM 서버가 401을 냈다"에 같은 대응을 하면 안 되기 때문이다.
+EXIT_UNAVAILABLE = 69
+
+# 기본 캐시 위치. 프로젝트 디렉터리 안에 두는 것은 `.gitignore`에 한 줄로
+# 넣을 수 있고 작업물과 함께 옮겨지기 때문이다.
+DEFAULT_CACHE_DIR = Path(".cuesift/cache")
+
+# BCP 47의 실용적 부분집합. `--to` 값은 검증 없이 `_output_path`를 거쳐
+# 그대로 파일 시스템 경로 조각이 된다 - 실측(WP7b Task 4 리뷰 라운드 1):
+# `--to 'e:n'`은 Windows NTFS 대체 데이터 스트림으로 해석돼 디렉터리엔
+# `minimal.e`(0바이트)만 보이고 내용은 숨은 `:n.srt` 스트림에 실리는데
+# 도구는 "성공"을 보고한다. `--to '../pwned'`는 `--out` 밖에 쓰거나
+# `FileNotFoundError`가 새어 exit 1로 오보된다. 완전한 BCP 47 파서 대신
+# "영문자로 시작하고 경로 구분자·콜론을 포함하지 않는다"는 최소 계약만
+# 강제한다 - Q2가 초기 언어쌍을 ko→en/ja로 정했지만 §8.1 예시 호출 형태는
+# en,ja,th,vi이고 `zh-Hans` 같은 서브태그도 받아야 하므로 2~3자 1개로
+# 좁히지 않는다.
+_LANG_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]+)*$")
 
 app = typer.Typer(
     name="cuesift",
@@ -307,21 +344,670 @@ def main(
         )
 
 
+def _resolve_llm(base_url: str | None, model: str | None) -> tuple[str, str, str | None]:
+    """LLM 접속 설정을 해결한다 (설계 §6.3).
+
+    우선순위는 **CLI 옵션 > 환경변수**다. FR-8.4(`cuesift.yaml`)가 오면
+    환경변수 아래에 한 칸이 더 낀다.
+
+    **기본값을 넣지 않는다.** `localhost:11434`를 기본으로 두면 Ollama가
+    없는 사람이 연결 실패를 받는데, 그것은 "설정을 안 했다"보다 진단이
+    훨씬 어렵다.
+
+    `api_key`를 명령줄로 받지 않는 이유는 셸 히스토리와 `ps` 출력에
+    남기 때문이다.
+
+    환경변수 이름에 `CUESIFT_LIVE_` 접두사를 쓰지 않는 것이 중요하다 —
+    그것은 테스트 전용으로 예약돼 있고 `tests/test_translate_api.py`의
+    게이트가 그 문자열로 live 마커 누락을 판정한다.
+    """
+    resolved_base = base_url or os.environ.get("CUESIFT_BASE_URL")
+    resolved_model = model or os.environ.get("CUESIFT_MODEL")
+    missing = [
+        name
+        for name, value in (("--base-url", resolved_base), ("--model", resolved_model))
+        if not value
+    ]
+    if missing:
+        _echo(
+            f"{', '.join(missing)}가 없다. 옵션으로 주거나 "
+            f"CUESIFT_BASE_URL·CUESIFT_MODEL 환경변수를 설정한다.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return resolved_base, resolved_model, os.environ.get("CUESIFT_API_KEY")
+
+
+def _build_provider(*, base_url: str, model: str, api_key: str | None) -> Provider:
+    """프로바이더를 만든다. **테스트가 monkeypatch하는 지점이다.**
+
+    본문에서 `OpenAICompatibleProvider(...)`를 직접 만들면 CLI 테스트가
+    네트워크를 타거나 `httpx` 내부를 패치해야 한다. 함수 하나로 빼면
+    가짜를 꽂는 것이 한 줄이 된다.
+    """
+    return OpenAICompatibleProvider(base_url=base_url, model=model, api_key=api_key)
+
+
+def _output_path(
+    input_path: Path, out_dir: Path | None, source_lang: str, target_lang: str
+) -> Path:
+    """출력 경로를 정한다 (FR-7.1 · 설계 §5.1).
+
+    stem이 `.{source_lang}`으로 끝나면 **치환**하고 아니면 **덧붙인다.**
+    치환하지 않으면 `ep01.ko.srt`가 `ep01.ko.en.srt`가 되어 언어 태그가
+    둘이 된다.
+
+    **판정만 `casefold()`하고 원본 stem은 그대로 쓴다.** Windows는 파일명
+    대소문자를 구분하지 않아 `ep01.KO.srt`가 정상인 파일명이고 이 프로젝트의
+    개발 플랫폼이 Windows인데, `endswith`는 대소문자를 구분해 `ep01.KO.srt
+    --source-lang ko`가 치환되지 않고 `ep01.KO.en.srt`라는 이중 태그를
+    낸다(실측: WP7b Task 4 리뷰 라운드 1) - 이 함수가 막겠다고 선언한 바로
+    그 사고다. `_resolve_profile`이 `--spec`의 확장자를 가를 때 같은 이유로
+    같은 처리를 한다.
+    """
+    stem = input_path.stem
+    suffix = f".{source_lang}"
+    if stem.casefold().endswith(suffix.casefold()):
+        stem = stem[: -len(suffix)]
+    directory = out_dir if out_dir is not None else input_path.parent
+    return directory / f"{stem}.{target_lang}{input_path.suffix}"
+
+
 @app.command()
 def translate(
-    input: Annotated[Path, typer.Argument(help="자막 파일(.srt/.vtt/...) 또는 영상 파일")],
-    to: Annotated[str, typer.Option("--to", help="대상 언어 (쉼표 구분, 예: en,ja,th,vi)")],
-    source_lang: Annotated[str | None, typer.Option("--source-lang", help="원문 언어")] = None,
+    input: Annotated[
+        Path,
+        # `readable=False`는 `check`와 같은 이유다 — 읽기 가능 판정을
+        # 인제스트 한 곳으로 모아 플랫폼마다 다른 코드가 나오지 않게 한다.
+        typer.Argument(exists=True, dir_okay=False, readable=False, help="번역할 자막 파일"),
+    ],
+    to: Annotated[str, typer.Option("--to", help="대상 언어 (쉼표 구분, 예: en,ja)")],
+    out: Annotated[
+        Path | None,
+        # `file_okay=False`는 `--out`이 이미 존재하는 **파일**을 가리키는 흔한
+        # 사고(디렉터리 자리에 파일 경로를 잘못 줌)를 본문 전에 exit 2로 거른다
+        # (실측: WP7b Task 4 리뷰 라운드 1 - 이전에는 `write_subtitle`의
+        # `mkdir(parents=True, exist_ok=True)`가 `FileExistsError`를 그대로
+        # 흘려 exit 1로 오보됐다). `exists=True`는 걸지 않는다 - `--out`은
+        # 보통 아직 없는 디렉터리이고, 없으면 `write_subtitle`이 만든다.
+        typer.Option("--out", file_okay=False, help="출력 디렉터리. 기본은 입력 파일과 같은 곳"),
+    ] = None,
+    source_lang: Annotated[str, typer.Option("--source-lang", help="원문 언어")] = "ko",
+    base_url: Annotated[
+        str | None,
+        typer.Option("--base-url", help="OpenAI 호환 엔드포인트. 없으면 CUESIFT_BASE_URL"),
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="모델 이름. 없으면 CUESIFT_MODEL")
+    ] = None,
+    glossary: Annotated[
+        Path | None, typer.Option("--glossary", help="용어집 YAML (FR-2.3)")
+    ] = None,
+    work_context: Annotated[
+        str | None, typer.Option("--work-context", help="작품 맥락 (FR-2.8)")
+    ] = None,
+    context_window: Annotated[
+        int, typer.Option("--context-window", min=0, help="앞뒤 맥락 세그먼트 수")
+    ] = DEFAULT_CONTEXT_WINDOW,
+    cache_dir: Annotated[
+        Path | None, typer.Option("--cache-dir", help="캐시 디렉터리. 기본 .cuesift/cache")
+    ] = None,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="캐시를 읽지도 쓰지도 않는다. 형식을 어긴 응답도 캐시되므로 "
+            "같은 명령을 다시 쳐도 안 나아지면 이걸 쓴다",
+        ),
+    ] = False,
     review_budget: Annotated[
         str | None,
-        typer.Option("--review-budget", help="사람이 검수할 상위 비율 (예: 10%)"),
+        typer.Option("--review-budget", help="사람이 검수할 상위 비율. 아직 구현되지 않았다"),
     ] = None,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="실행하지 않고 비용만 추정합니다.")
+        bool,
+        # Task 4까지는 "경고 후 무시"(--review-budget과 같은 임시 처리)였다
+        # (실측: WP7b Task 4 리뷰 라운드 1 - 본문이 `dry_run`을 한 번도 읽지
+        # 않아 프로바이더를 그대로 호출하고 파일을 그대로 썼다). Task 6이
+        # `_dry_run_report`로 그 자리를 교체했다 - 지금은 실제로 아무 것도
+        # 호출·기록하지 않는다.
+        typer.Option(
+            "--dry-run",
+            help="실행하지 않고 배치 수·캐시 히트·호출 필요 수를 추정합니다 (NFR-2).",
+        ),
     ] = False,
 ) -> None:
-    """FR-8.1: 번역·검수 전 파이프라인을 실행합니다."""
-    _not_implemented("translate")
+    """FR-8.1: 자막을 번역해 언어별 파일로 냅니다."""
+    if no_cache and cache_dir is not None:
+        _echo("--no-cache와 --cache-dir을 함께 줄 수 없다", err=True)
+        raise typer.Exit(2)
+    if review_budget is not None:
+        # 설계 D12와 같은 판단 — 조용한 무시는 사용자가 트리아지가 됐다고
+        # 믿게 만든다. `--config`가 이미 같은 방식이다.
+        _echo(
+            f"경고: --review-budget은 아직 구현되지 않았습니다 (WP5). "
+            f"지정한 '{review_budget}'는 무시됩니다.",
+            err=True,
+        )
+    resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
+    targets = [lang.strip() for lang in to.split(",") if lang.strip()]
+    if not targets:
+        _echo("--to에 대상 언어가 없다", err=True)
+        raise typer.Exit(2)
+    invalid = [t for t in targets if not _LANG_TAG_RE.match(t)]
+    if invalid:
+        # `_LANG_TAG_RE` 주석 참고 - 여기서 막지 않으면 `_output_path`가
+        # 검증되지 않은 문자열을 파일 경로 조각으로 그대로 쓴다.
+        _echo(f"--to에 유효하지 않은 언어 태그가 있다: {', '.join(invalid)}", err=True)
+        raise typer.Exit(2)
+
+    try:
+        result = load_subtitle(input, source_lang=source_lang)
+    except IngestError as exc:
+        _echo(str(exc), err=True)
+        raise typer.Exit(EXIT_BAD_INPUT) from exc
+
+    for target in targets:
+        out_path = _output_path(input, out, source_lang, target)
+        if out_path.resolve() == input.resolve():
+            # 이것이 없으면 원본이 번역문으로 덮여 되돌릴 수 없다.
+            _echo(f"출력 경로가 입력과 같다: {out_path}", err=True)
+            raise typer.Exit(2)
+
+    try:
+        provider = _build_provider(base_url=resolved_base, model=resolved_model, api_key=api_key)
+    except ValueError as exc:
+        # 생성자의 ValueError는 ProviderError가 **아니다** — 설정 오류이지
+        # 호출 실패가 아니다. 명령줄이 틀린 것이므로 2다.
+        _echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    if dry_run:
+        if glossary is not None:
+            # **모든 대상 언어에 대해 검사한다 - `targets[0]` 하나만 보지
+            # 않는다.** `load_glossary`는 대응어 값의 **타입 검사**를
+            # target_lang별로 한다(`(item.get("targets") or {}).get(target_lang)`
+            # 이 리스트가 아니면 거부) - `targets: {en: [Hi], ja: "문자열"}`처럼
+            # 언어마다 값의 타입이 다르면 en으로는 통과하고 ja로는 실패한다
+            # (실측: WP7b Task 6 리뷰 라운드 1). `targets[0]`만 보면
+            # `--to en,ja`는 통과하고 `--to ja,en`은 실패해 **종료 코드가
+            # `--to`에 쓴 순서에 좌우되는** 사고가 난다 - 이 저장소가 1급으로
+            # 금지한 "검사하지 않고 통과하는 게이트"다. `_translate_one`과
+            # 같은 이유로 `except Exception`까지 넓힌다 - `entries: 5`
+            # (TypeError)·`targets: Hello`(item 자체가 dict가 아닌 경우,
+            # AttributeError)는 언어 무관 실패라 `(OSError, ValueError)`를
+            # 지나쳐 그대로 샌다(실측: WP7b Task 4 리뷰 라운드 1). 이 upfront
+            # 검사를 좁게 두면 실제 번역(`_translate_one`)은 exit 66으로
+            # 막는 바로 그 입력을 dry-run만 통과(또는 트레이스백으로 죽음)
+            # 시킨다.
+            for target in targets:
+                try:
+                    load_glossary(glossary, target)
+                except Exception as exc:
+                    _echo(
+                        f"{glossary}: 용어집을 읽지 못했다 - {type(exc).__name__}: {exc}",
+                        err=True,
+                    )
+                    raise typer.Exit(EXIT_BAD_INPUT) from exc
+
+        # identity는 `_cache_identity(provider)`로 얻는다 — **손으로 다시
+        # 조립하지 않는다.** `_build_provider()`가 이미 `provider`를 만들었고
+        # (바로 위), `_translate_one`도 캐시를 켤 때 같은 함수로 같은 값을
+        # 얻는다 - 실행 경로 하나를 공유하므로 "dry-run의 identity 계산이
+        # 실제 실행과 어긋난다"는 실패 모드 자체가 구조적으로 성립하지
+        # 않는다(WP7b Task 6 리뷰가 지목한 위험 - 상세 근거는
+        # `_dry_run_report`의 독스트링).
+        identity = _cache_identity(provider)
+        if identity is None and not no_cache:
+            # 실제 실행(`_translate_one`)의 같은 경고와 짝을 맞춘다 - 없으면
+            # 사용자는 "캐시 히트 0개"만 보고 캐시가 꺼진 이유(신원 모름)를
+            # 실행 후에야 안다. `[target_lang]` 라벨을 붙이지 않는 것은
+            # `_translate_one`의 경고와 달리 **언어별로 다시 계산되는 값이
+            # 아니라서**다 - provider 하나에서 한 번만 얻으므로 모든 대상
+            # 언어에 똑같이 적용된다.
+            _echo(f"경고: {provider.name}이 cache_identity를 제공하지 않아 캐시를 끈다", err=True)
+        # dry-run은 `provider.complete()`를 부르지 않으므로 연결 풀이
+        # 쓰이지 않은 채로 남는다 - 정리해도 실행에는 영향이 없다.
+        # `getattr`로 읽는 것은 `Provider` 프로토콜에 `close`가 없어서다
+        # (테스트 가짜에는 없는 경우가 흔하다).
+        close = getattr(provider, "close", None)
+        if close is not None:
+            close()
+
+        for line in _dry_run_report(
+            result=result,
+            input_path=input,
+            out_dir=out,
+            source_lang=source_lang,
+            targets=targets,
+            # `rstrip("/")`한다 - `OpenAICompatibleProvider.__init__`이
+            # 실제로 쓰는 값과 같게 보여야 한다. 안 하면 `--base-url
+            # http://h/v1/`을 줬을 때 헤더는 끝 슬래시가 붙은 채로 보이는데
+            # identity와 실제 엔드포인트는 슬래시 없는 값이라 화면이 서로
+            # 다른 URL을 말한다(실측: WP7b Task 6 리뷰 라운드 1 Minor d).
+            base_url=resolved_base.rstrip("/"),
+            model=resolved_model,
+            identity=None if no_cache else identity,
+            glossary_path=None if glossary is None else glossary,
+            work_context=work_context,
+            context_window=context_window,
+            cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+        ):
+            _echo(line)
+        return
+
+    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69
+    # (설계 §6.6 표의 6종 중 70을 뺀 5종 - `_translate_one`은 70을 내지
+    # 않는다). 이 성질이 깨지면 아래 max()가 틀린 코드를 낸다 - 새 코드를
+    # 추가할 때 반드시 확인한다.
+    worst = 0
+    for i, target in enumerate(targets):
+        code = _translate_one(
+            result=result,
+            input_path=input,
+            out_dir=out,
+            source_lang=source_lang,
+            target_lang=target,
+            provider=provider,
+            glossary_path=glossary,
+            work_context=work_context,
+            context_window=context_window,
+            cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+        )
+        worst = max(worst, code)
+        if code == EXIT_UNAVAILABLE:
+            # 인증·모델 오류는 다음 언어에서도 같다. 반복하면 진짜 원인이
+            # 실패 더미 아래 묻히고 호출만 언어 수만큼 는다 (설계 §6.4).
+            remaining = targets[i + 1 :]
+            if remaining:
+                # **여기서 말하지 않으면 "중단됐다"와 "애초에 안 시켰다"가
+                # 화면에서 구별되지 않는다.** `--to en,ja,th`에서 en만 성공하고
+                # 멈추면 디렉터리엔 `en.srt`만 남는데, 그것은 `--to en`만 친
+                # 결과와 바이트 단위로 같다. 어느 언어까지 됐는지는 위
+                # `_translate_one`의 `[target_lang]` 라벨이 말하고, 그 뒤로
+                # 뭐가 안 됐는지는 이 줄이 말한다(리뷰 라운드 1 Important 2).
+                _echo(
+                    f"중단: 남은 대상 언어 {', '.join(remaining)}는 시도하지 않았다",
+                    err=True,
+                )
+            break
+    if worst:
+        raise typer.Exit(worst)
+
+
+def _dry_run_report(
+    *,
+    result: IngestResult,
+    input_path: Path,
+    out_dir: Path | None,
+    source_lang: str,
+    targets: Sequence[str],
+    base_url: str,
+    model: str,
+    identity: str | None,
+    glossary_path: Path | None,
+    work_context: str | None,
+    context_window: int,
+    cache_dir: Path | None,
+) -> list[str]:
+    """실행하지 않고 추정치를 낸다 (NFR-2 · 설계 §7).
+
+    **실측할 수 있는 것만 낸다.** 배치 수와 문자 수는 `build_messages`를 실제로
+    불러 정확히 세고, 캐시 히트는 키를 계산해 파일 존재만 확인한다. 토큰과
+    비용은 내지 않는다 - 문자에서 토큰으로 가는 계수가 모델마다 다르고
+    우리에게 출처가 없다(요구사항정의서 §11 R8).
+
+    **네트워크를 타지 않는다.** 이 함수는 프로바이더를 참조하지 않는다 -
+    호출자(`translate()`)가 `_cache_identity(provider)`로 이미 뽑아 둔
+    `identity` 문자열만 받는다. `build_messages`·`iter_batches`·
+    `load_glossary` 셋 다 순수 함수이거나 로컬 파일만 읽으므로 이 함수
+    자체는 구조적으로 네트워크에 닿을 수 없다.
+
+    ## identity는 손으로 다시 조립하지 않는다
+
+    `OpenAICompatibleProvider.cache_identity`(translate/openai_compat.py)와
+    글자 그대로 같아야 할 값이라 손으로 베끼면 어긋날 위험이 있다 - 실제로
+    "호출자가 `_cache_identity(provider)`를 한 번 부르고 그 결과를 넘긴다"는
+    계약으로 이 위험을 없앴다(호출부 `translate()` 참고). 프로바이더를
+    만들면(`OpenAICompatibleProvider(...)`) 생성자가 `httpx.Client()`를 실제로
+    여는 것은 확인했지만(openai_compat.py:124), **생성 자체는 네트워크 I/O가
+    아니다** - httpx의 연결 풀은 지연 생성이라 소켓은 첫 요청까지 열리지
+    않는다(실측: 존재하지 않는 IP로 만들어도 생성이 0.1초 미만). 위험한 것은
+    `provider.complete()`를 부르는 것이고, 이 함수도 호출자도 그것을 부르지
+    않는다.
+
+    ## 용어집은 대상 언어마다 다시 읽는다
+
+    `load_glossary`가 대상 언어의 대응어만 걸러 담으므로(용어집 모듈), en으로
+    채운 `Glossary`를 ja 배치 조립에 그대로 쓰면 프롬프트 문자 수뿐 아니라
+    캐시 재료(`messages_sha`)까지 실제 실행과 달라진다 - `_translate_one`도
+    언어 루프 안에서 매번 `load_glossary(glossary_path, target_lang)`를 새로
+    부르는 것과 같은 이유다. 호출자(`translate()`)가 **대상 언어 전부**에
+    대해 한 번씩 미리 읽어 성공을 확인해 두므로(§WP7b Task 6 리뷰 라운드 1
+    Important 1 - `load_glossary`의 대응어 타입 검사는 `target_lang`마다
+    다른 값을 보므로 언어별로 성패가 갈릴 수 있다. `targets[0]`만 검사하면
+    `--to en,ja`는 통과하고 `--to ja,en`은 실패하는, 종료 코드가 명령줄
+    순서에 좌우되는 사고가 실측됐다) 여기서 다시 실패할 일은 없지만, 그
+    전제가 깨져도 트레이스백 대신 이 언어의 보고만 생략한다.
+
+    ## "호출 필요 N개"는 하한이다 (WP7b Task 6 리뷰 라운드 1 Important 2)
+
+    FR-2.6 배치 폴백(응답이 형식을 어기면 세그먼트별 개별 재호출로 강등)과
+    재시도가 발동하면 실제 호출은 배치 수보다 몇 배로 는다(실측: 12세그먼트·
+    2배치에서 "호출 필요 2개"였지만 실제 실행은 14회를 불렀다). 이 함수는
+    배치가 **한 번에 성공한다고 가정한 하한**만 낼 수 있다 - 모델이 형식을
+    지킬지는 실행 전에 알 방법이 없다(정확한 수를 내려 들면 그 자체가
+    출처 없는 추정이 되어 요구사항정의서 §11 R8을 어긴다). 그래서 아래
+    출력은 "N개"가 아니라 "N개 이상"이라고 정직하게 말한다.
+
+    ## temperature·max_tokens는 여전히 손으로 맞춘다 (남은 한계)
+
+    아래 `CacheRequest`의 `temperature=0.0`·`max_tokens=None`은 각각
+    `translate_segments`의 기본값과 `_call_with_retry`의 리터럴을 손으로
+    베낀 것이다. `translate_segments`의 `temperature` 기본값은 이름 있는
+    상수가 아니라 함수 시그니처의 기본 인자값이고, `max_tokens=None`은
+    `translate/engine.py`의 `_call_with_retry` 본문에 직접 박혀 있어(참조할
+    수 있는 이름조차 없다) 이 태스크가 손대지 않는 `translate/` 밖에서는
+    가져올 방법이 없다. **어긋나면 dry-run이 "호출 필요 82개 이상"이라 해
+    놓고 실행은 0개를 부른다.** 이 어긋남을 직접 겨냥한 단위 테스트는 없지만
+    **간접 게이트는 실측으로 작동을 확인했다** - `temperature`를 0.0→0.7로,
+    `max_tokens`를 None→4096으로 각각 변이하면 캐시 파일 이름이 달라져
+    `test_dry_run이_캐시_히트를_센다`·`test_dry_run의_identity가_실제와_같다`·
+    `test_dry_run이_다배치_다국어_용어집_맥락에서_실제_실행과_일치한다`
+    (`tests/test_cli_translate.py`) 3개가 매번 죽는다(WP7b Task 6 리뷰
+    라운드 1에서 2개로 보고됐으나 라운드 1 수정에서 추가된 세 번째 테스트로
+    재확인하면 3개다).
+
+    ## 캐시 손상은 감지하지 못한다 (WP7b Task 6 리뷰 라운드 1 Minor b)
+
+    아래 캐시 히트 판정은 `(cache_dir / f"{key}.json").exists()`뿐이다.
+    실제 실행이 캐시를 읽을 때 쓰는 `cache.load()`는 파일 존재를 넘어
+    JSON 파싱·필드 타입·`_matches()`까지 확인해 손상된 캐시를 **미스**로
+    떨어뜨린다(`store/cache.py`: "캐시는 최적화이지 정확성의 근거가
+    아니다"). 이 함수는 그 깊이까지 확인하지 않으므로, 캐시 파일이 손상돼
+    있으면 dry-run은 "히트"라 하고 실제 실행은 미스로 다시 부른다 - 설계가
+    "파일 존재만 확인"을 택한 결과이지 이 함수의 스펙 위반은 아니다. 정상
+    운영에서 캐시 파일은 이 프로세스가 원자적으로 쓰므로(`cache.store()`의
+    `os.replace`) 손상될 경로가 거의 없다.
+    """
+    lines = [
+        f"입력   {input_path} ({result.format}) · {len(result.segments)} 세그먼트",
+        f"모델   {model} @ {base_url}",
+    ]
+    for target in targets:
+        glossary: Glossary | None = None
+        if glossary_path is not None:
+            try:
+                glossary = load_glossary(glossary_path, target)
+            except Exception as exc:
+                lines.extend(
+                    [
+                        "",
+                        f"[{target}] 용어집을 다시 읽지 못했다 - {type(exc).__name__}: {exc}",
+                    ]
+                )
+                continue
+
+        batches = 0
+        hits = 0
+        system_chars = 0
+        user_chars = 0
+        for window in iter_batches(
+            result.segments, size=DEFAULT_BATCH_SIZE, context_window=context_window
+        ):
+            batches += 1
+            # `build_messages`는 `BatchWindow`를 받지 않는다. batch·before·after를
+            # 따로 받는다(`prompt.py`) - 통째로 넘기면 TypeError다.
+            messages = build_messages(
+                window.batch,
+                source_lang=source_lang,
+                target_lang=target,
+                before=window.before,
+                after=window.after,
+                glossary=glossary,
+                work_context=work_context,
+            )
+            system_chars += sum(len(m.content) for m in messages if m.role == "system")
+            user_chars += sum(len(m.content) for m in messages if m.role == "user")
+            if cache_dir is not None and identity is not None:
+                request = CacheRequest(
+                    identity=identity,
+                    # 위 독스트링 "temperature·max_tokens는 여전히 손으로
+                    # 맞춘다" 참고 - 엔진이 실제로 쓰는 값과 같아야 한다.
+                    temperature=0.0,
+                    max_tokens=None,
+                    messages=tuple(messages),
+                )
+                if (cache_dir / f"{request.key}.json").exists():
+                    hits += 1
+        lines.extend(
+            [
+                "",
+                f"[{target}] {_output_path(input_path, out_dir, source_lang, target)}",
+                f"  배치 {batches}개 (size={DEFAULT_BATCH_SIZE}, context_window={context_window})",
+                # "이상"을 뺄 수 없다 - 위 독스트링 참고. 배치 폴백·재시도가
+                # 발동하면 실제 호출은 이 수의 몇 배가 될 수 있다.
+                f"  캐시 히트 {hits}개 · 호출 필요 {batches - hits}개 이상",
+                f"  프롬프트 문자 system {system_chars:,} + user {user_chars:,}",
+            ]
+        )
+    lines.append("")
+    lines.append("(토큰·비용은 내지 않는다 - 문자에서 토큰으로 가는 계수의 출처가 없다)")
+    return lines
+
+
+def _translate_one(
+    *,
+    result: IngestResult,
+    input_path: Path,
+    out_dir: Path | None,
+    source_lang: str,
+    target_lang: str,
+    provider: Provider,
+    glossary_path: Path | None,
+    work_context: str | None,
+    context_window: int,
+    cache_dir: Path | None,
+) -> int:
+    """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
+
+    **예외를 여기서 잡아 코드로 바꾼다.** 새어 나가면 미처리 traceback이
+    되어 exit 1("부분 실패")로 오보된다 (설계 §8).
+
+    **`result.segments`를 사본 없이 그대로 넘긴다.** `engine.py`가
+    `replace(s, target_text=...)`로 **새 튜플**을 만들어 돌려주므로 원본은
+    변형되지 않는다 - 여러 언어를 돌아도 앞 언어의 번역문이 남지 않는다.
+    방어적 사본을 넣으면 그 사실이 코드에서 사라져 나중에 엔진 쪽 계약이
+    깨져도 드러나지 않는다.
+    """
+    glossary = None
+    if glossary_path is not None:
+        # **이 try는 호출 하나(`load_glossary`)로 유지해야 한다.** 아래
+        # `except Exception`은 `typer.Exit`까지 삼킨다 - `issubclass(typer.Exit,
+        # Exception)`이 `True`다(`RuntimeError` 경유, 실측: WP7b Task 4 리뷰
+        # 라운드 3). 오늘은 try 안에 호출이 하나뿐이라 도달 불가하지만, 누가
+        # 여기 줄을 보태 그 안에서 `typer.Exit(2)`를 던지면 **조용히 66으로
+        # 바뀐다.** `KeyboardInterrupt`·`SystemExit`은 `BaseException`이라
+        # 이 catch가 삼키지 않는다 - Ctrl+C는 정상 동작한다.
+        try:
+            glossary = load_glossary(glossary_path, target_lang)
+        except Exception as exc:
+            # **`Exception`까지 넓힌다.** `load_glossary`는 자기 실패를
+            # 정규화하지 않는다 - `yaml.safe_load`의 `yaml.YAMLError`
+            # (`ValueError`도 `OSError`도 아니다. 미종료 스칼라·탭 들여쓰기가
+            # 여기로 온다)와 형식이 어긋난 YAML의 `TypeError`(`entries: 5` →
+            # `enumerate(5)`)·`AttributeError`(`targets: "Hello"` → 문자열에
+            # `.get`)가 전부 `(OSError, ValueError)`를 지나쳐 그대로 샜다
+            # (실측: WP7b Task 4 리뷰 라운드 1, 넷 다 exit 1). 용어집은
+            # 사용자가 준 파일이고 어떤 실패든 "파일 내용이 틀림"(66)이지
+            # 이 프로세스가 잘못 짜인 것(1, traceback)이 아니다.
+            #
+            # **"모든 실패가 66이 된다"는 열린 집합에 대한 단언이라 테스트로
+            # 완결할 수 없다** - 넓은 catch가 유일하게 구성상(by construction)
+            # 참인 선택이다(리뷰어 판정, WP7b Task 4 리뷰 라운드 3). `glossary/`
+            # 자체는 고치지 않는다 - 이번 태스크 범위 밖이고, `ingest.load_subtitle`
+            # 처럼 자기 실패를 `GlossaryError`로 모으게 바꾸면 이 태스크가 모르는
+            # 다른 호출부(WP5)의 계약이 바뀐다. 이 사실을 여기 남겨 두는 것은,
+            # 나중에 `glossary/`가 정규화를 갖추면 "CLI가 이미 넓게 잡고 있으니
+            # 좁혀도 안전하다"는 근거가 되게 하기 위해서다.
+            #
+            # **예외 타입명을 메시지에 넣는다.** `{exc}`만 찍으면
+            # `ParserError`(YAML을 고쳐야 함)와 `NameError`(버그를 신고해야 함)가
+            # 사용자에게 같은 모양으로 보인다(실측: WP7b Task 4 리뷰 라운드 3 -
+            # `NameError`를 주입하면 "name 'entrise' is not defined"만 찍히고
+            # 타입이 안 보였다). 넓은 catch를 택한 대가를 이 한 줄이 줄인다.
+            _echo(
+                f"[{target_lang}] {glossary_path}: 용어집을 읽지 못했다 - "
+                f"{type(exc).__name__}: {exc}",
+                err=True,
+            )
+            return EXIT_BAD_INPUT
+
+    if cache_dir is not None:
+        identity = _cache_identity(provider)
+        if identity is None:
+            # 신원을 모르는 프로바이더에 캐시를 걸면 다른 모델의 응답이
+            # 히트한다. 끄는 쪽이 안전하고, **조용히 끄지는 않는다** —
+            # 사용자는 재개가 되는 줄 안다.
+            _echo(
+                f"[{target_lang}] 경고: {provider.name}이 cache_identity를 제공하지 "
+                f"않아 캐시를 끈다",
+                err=True,
+            )
+        else:
+            provider = CachingProvider(
+                provider,
+                identity=identity,
+                cache_dir=cache_dir,
+                # **라벨을 붙인다.** 이 함수의 다른 `_echo` 다섯 곳이 전부
+                # `[target_lang]`을 붙이는데 여기만 빠져 있었다 - 캐시 쓰기
+                # 실패 경고가 언어 수만큼 무라벨로 반복돼 어느 언어의 경고인지
+                # 구별할 수 없었다(리뷰어 실측 3회, WP7b Task 5 리뷰가 넘김).
+                # `CachingProvider`는 언어마다 새로 만들어지므로 인스턴스당
+                # 1회로 막는 `_warn_once`도 이 반복을 막지 못한다.
+                warn=lambda message: _echo(f"[{target_lang}] {message}", err=True),
+            )
+
+    try:
+        translated = translate_segments(
+            result.segments,
+            provider=provider,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            glossary=glossary,
+            work_context=work_context,
+            context_window=context_window,
+        )
+    except FatalProviderError as exc:
+        _echo(f"[{target_lang}] 프로바이더가 요청을 거부했다: {exc}", err=True)
+        return EXIT_UNAVAILABLE
+    except ProviderError as exc:
+        # **마지막 그물이다.** 오늘은 도달 불가하다 - `openai_compat.py`는
+        # `FatalProviderError`·`RetryableProviderError` 둘 중 하나만 던지고
+        # engine의 재시도 루프도 그 둘만 잡는다(실측: WP7b Task 4 리뷰
+        # 라운드 1). 그래도 §12 Q3가 "로컬 LLM 백엔드 능력이 균일하지 않다"를
+        # 전제하고 NFR-5가 "코드 수정 없이 프로바이더 추가"를 요구하므로,
+        # 계약(`Provider.complete`의 "맨 `ProviderError`를 던지면 안 된다")을
+        # 어기는 서드파티 구현이 traceback으로 파이프라인을 죽이는 것보다는
+        # 69로 막고 원인을 알리는 편이 낫다. `FatalProviderError` 절보다
+        # **뒤에** 와야 한다 - 그 절이 자손을 먼저 잡지 않으면 이 절이
+        # 죽은 코드가 된다.
+        _echo(f"[{target_lang}] 프로바이더가 요청을 거부했다: {exc}", err=True)
+        return EXIT_UNAVAILABLE
+    except ValueError as exc:
+        # 배치·맥락 조립이 틀린 것이므로 명령줄 오류다.
+        _echo(f"[{target_lang}] {exc}", err=True)
+        return 2
+
+    out_path = _output_path(input_path, out_dir, source_lang, target_lang)
+    try:
+        write_subtitle(result, translated.segments, out_path)
+    except OSError as exc:
+        # `write_subtitle`의 `mkdir(parents=True, exist_ok=True)`와
+        # `subs.save(...)`는 자기 방어가 없다(Task 3 리뷰가 넘긴 경고) - 출력
+        # 경로 자리에 이미 파일이 있으면 `FileExistsError`, 이미 디렉터리가
+        # 있으면 `PermissionError`가 그대로 샌다(실측: WP7b Task 4 리뷰
+        # 라운드 1, 둘 다 exit 1). 디스크 상태의 문제이지 명령줄이 틀린 게
+        # 아니므로 66이다. `--out`에 `file_okay=False`를 걸어 `--out` 자체가
+        # 파일인 흔한 사고는 typer가 먼저 exit 2로 거르지만, 언어별 파일
+        # 이름(`_output_path`가 만든 것)이 우연히 기존 디렉터리와 겹치는
+        # 경우까지는 명령줄 시점에 알 수 없어 이 try가 마지막 방어선이다.
+        _echo(f"{out_path}: 출력 파일을 쓰지 못했다 - {exc}", err=True)
+        return EXIT_BAD_INPUT
+
+    # `cache_dir`이 `None`이면(--no-cache 또는 신원 없음 경고) provider는
+    # CachingProvider로 감싸이지 않아 hits·misses 속성 자체가 없다. 그때
+    # `getattr(..., 0)`으로 읽으면 "0개"가 되는데, `_format_translate_summary`가
+    # 요구 정정 3에 따라 그것을 "0개 호출"과 구별해야 하므로 캐시가 실제로
+    # 붙었는지 여부를 별도 플래그로 넘긴다.
+    cached = isinstance(provider, CachingProvider)
+    hits = provider.hits if cached else 0
+    misses = provider.misses if cached else 0
+    for line in _format_translate_summary(
+        target_lang=target_lang,
+        out_path=out_path,
+        result=translated,
+        cache_enabled=cached,
+        hits=hits,
+        misses=misses,
+    ):
+        _echo(line)
+
+    return 1 if translated.failures else 0
+
+
+def _cache_identity(provider: Provider) -> str | None:
+    """프로바이더가 자기 신원을 말하게 한다 (설계 §3.2). 없으면 `None`.
+
+    `getattr`로 읽는 이유는 `Provider` 프로토콜에 이 속성이 **없기**
+    때문이다 — 표면을 최소로 두는 [번역 엔진 설계] §4.1의 결정을 유지한다.
+
+    **예외를 던지지 않고 `None`을 돌려주는 것이 요점이다.** 캐시를 못 켜는
+    것은 실행이 불가능한 상태가 아니다 — 호출자가 경고하고 캐시 없이 돈다.
+    """
+    identity = getattr(provider, "cache_identity", None)
+    return str(identity) if identity else None
+
+
+def _format_translate_summary(
+    *,
+    target_lang: str,
+    out_path: Path,
+    result: TranslationResult,
+    cache_enabled: bool,
+    hits: int,
+    misses: int,
+) -> list[str]:
+    """언어 하나의 결과를 요약한다 (설계 §4.3·§5.3).
+
+    **캐시 히트를 항상 낸다.** 캐시가 곧 재개이므로 이 숫자가 "재개됐다"의
+    유일한 증거다. 없으면 사용자는 네트워크를 탔는지 알 수 없다.
+
+    **"0개"와 "꺼져 있음"을 구별한다.** `--no-cache`이거나 프로바이더가
+    `cache_identity`를 제공하지 않으면 `CachingProvider`가 끼지 않아
+    hits·misses를 셀 수단 자체가 없다. 그것을 "실제 호출 0개"로 찍으면
+    네트워크를 여러 번 타고도 화면은 "안 탔다"고 거짓말한다 — 설계 §4.3이
+    캐시 히트 수를 재개의 유일한 증거로 선언한 바로 그 줄이 거짓을 말하게
+    되는 것이다.
+
+    **실패는 개수만이 아니라 ID를 나열한다.** 원문이 남은 자막은 겉보기에
+    정상인 파일이라, 개수만 보고 넘기면 미번역 자막이 그대로 배포된다.
+    """
+    total = len(result.segments)
+    failed = len(result.failures)
+    cache_line = f"  캐시 히트 {hits}개 · 실제 호출 {misses}개" if cache_enabled else "  캐시 꺼짐"
+    lines = [
+        f"[{target_lang}] {out_path}",
+        f"  세그먼트 {total}개 · 성공 {total - failed}개 · 실패 {failed}개",
+        cache_line,
+        f"  토큰 prompt {result.usage.prompt_tokens} · completion "
+        f"{result.usage.completion_tokens} · calls {result.usage.calls}",
+    ]
+    if result.failures:
+        ids = ", ".join(f.segment_id for f in result.failures)
+        lines.append(f"  실패 세그먼트(원문 유지): {ids}")
+    return lines
 
 
 def _resolve_profile(spec: str) -> tuple[SpecProfile, str]:

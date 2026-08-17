@@ -27,6 +27,9 @@ class ScriptedProvider:
     """
 
     name = "scripted"
+    # WP7b 캐시가 프로바이더에게 신원을 묻는다(설계 §3.2). 없으면 CLI가
+    # 캐시를 끄므로 재개 경로가 테스트에서 한 번도 실행되지 않는다.
+    cache_identity = "scripted|fake|v1"
 
     def __init__(self, responses: Sequence[str | ProviderError]) -> None:
         self._responses = list(responses)
@@ -67,6 +70,7 @@ class EchoProvider:
     """
 
     name = "echo"
+    cache_identity = "echo|fake|v1"
 
     def __init__(
         self,
