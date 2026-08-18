@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
-from tests.fakes.provider import EchoProvider
+from tests.fakes.provider import EchoProvider, ScriptedProvider
 from typer.testing import CliRunner
 
 from cuesift.cli import _parse_review_budget, app
@@ -179,11 +180,10 @@ def test_프로파일이_없는_언어는_경고하고_건너뛴다(
     assert "사용 가능" in result.output
     assert "[fr] 경고" in result.output
     # 프로파일이 있는 언어는 걸러지지 않는다 - 이것이 전량 거부와 갈리는 지점이다.
-    # **경고 유무만으로는 en이 실제로 처리됐는지 알 수 없어** 산출 파일까지 본다.
-    #
-    # **이 단언은 Task 2 범위에서 약화된 것이다.** 트리아지 출력 라인은 Task 3이
-    # 만든다(설계 §7.1). Task 3 Step 3a가 이 단언을 `"[en] 트리아지"`로 되돌린다 -
-    # 되돌리지 않으면 약화된 채 남아 "검사하지 않고 통과하는 게이트"가 된다.
+    # **경고 유무만으로는 en이 실제로 처리됐는지 알 수 없어** 트리아지 출력과
+    # 산출 파일을 함께 본다. 양성 단언(`"[en] 트리아지" in`)이 핵심이다 -
+    # 부정 단언만으로는 en의 트리아지가 통째로 빠져도 통과한다.
+    assert "[en] 트리아지" in result.output
     assert "[en] 경고: 규격 프로파일이 없어" not in result.output
     assert (tmp_path / "minimal.en.srt").exists()
     # 건너뛴 것은 트리아지이지 번역이 아니다 - "그 언어를 통째로 드롭"과 갈린다.
@@ -361,3 +361,164 @@ def test_정책이_없으면_기존_동작이다(tmp_path: Path, monkeypatch: py
 
     assert result.exit_code == 0, result.output
     assert "트리아지" not in result.output
+
+
+def _blank_at(indices: set[int], count: int) -> ScriptedProvider:
+    """지정한 인덱스만 **공백 번역**으로 답하는 가짜.
+
+    공백 번역은 `engine.py:419`가 `reason="empty_translation"`으로 실패
+    처리한다 - 응답 형식은 올바르므로 개별 폴백이 개입하지 않아 호출이
+    배치 1회로 끝난다. `EchoProvider(drop_last=True)`는 이 목적에 쓸 수
+    없다: 배치가 개수 불일치로 실패하면 폴백이 개별 호출로 재시도하고
+    거기서는 `len(items) > 1`이 거짓이라 **전부 성공한다**.
+    """
+    items = [{"id": i, "text": "   " if i in indices else f"EN{i}"} for i in range(count)]
+    return ScriptedProvider([json.dumps({"translations": items}, ensure_ascii=False)])
+
+
+def test_번역_실패분은_트리아지에서_빠진다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """설계 §3.6·D12 — 라이브러리가 계약으로 요구한다.
+
+    산수(세그먼트 10건 · 실패 3건 · 예산 10%):
+
+    | 구현 | 대상 | quota | hard fail | 선별 | 실제 비율 |
+    | --- | --- | --- | --- | --- | --- |
+    | 올바름 | 7 | ceil(0.7)=1 | 0 | 1 | **14.3%** |
+    | 틀림 | 10 | ceil(1.0)=1 | 3 | 3 | **30.0%** |
+
+    틀린 구현에서는 `struct.empty`가 quota를 소진한다
+    (`remaining = max(0, 1-3) = 0`). 실측으로는 실패 20건에서 Recall@10%가
+    0%까지 떨어진다(`TranslationResult` 독스트링).
+    """
+    _patch_provider(monkeypatch, _blank_at({2, 5, 9}, 10))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
+
+    assert result.exit_code == 1, result.output  # 번역 실패가 있으면 1이다 (FR-2.6)
+    assert "대상 세그먼트 7개 (번역 실패 3건 제외)" in result.output
+    assert "실제 14.3%" in result.output
+    # **실패분이 애초에 안 들어왔다의 직접 증거다.** 비율만 보면 세그먼트
+    # 수가 우연히 맞는 데이터에서 통과할 수 있다.
+    assert "struct.empty" not in result.output
+
+
+def test_전량_실패면_건너뛴다고_말한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "검수 대상 0개"와 "판정 자체를 못 했다"는 다르다.
+
+    전량 실패에서 `review_ratio`는 빈 목록 가드로 0.0을 내므로, 그냥 요약을
+    찍으면 `대상 세그먼트 0개 / 검수 대상 0개 (실제 0.0%)`가 나온다 - 검수할
+    것이 없다는 뜻으로 읽히지만 실제로는 **아무것도 판정하지 못한 것**이고
+    처방이 정반대다(재검수가 아니라 재실행이다).
+    """
+    _patch_provider(monkeypatch, _blank_at(set(range(10)), 10))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
+
+    assert result.exit_code == 1, result.output
+    assert "번역된 세그먼트가 없어 건너뛴다 (전량 10건 실패)" in result.output
+    # 0.0%를 찍으면 "볼 것이 없다"로 오독된다 - 그 문구가 나오지 않는 것이 요점이다.
+    assert "실제 0.0%" not in result.output
+
+
+def test_요청_예산과_실제_비율이_어긋난다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """설계 D8·§9.3 — `ceil` 하나로 어긋난다. hard fail이 필요하지 않다.
+
+    `large.srt`는 세그먼트 26개다. 예산 10% → `quota = ceil(2.6) = 3` →
+    실제 `3/26 = 11.5%`. 위험도가 전부 0.0이어도 `select_by_budget`은 정렬 후
+    상위 3건을 선별한다(동점은 세그먼트 ID 순, `policy.py:52`).
+
+    **`EchoProvider`의 기본 transform(`f"EN:{s}"`)을 쓸 수 없다.** 원문
+    한글이 그대로 남아 `struct.untranslated`가 **26건 전부 hard fail**을
+    내고, hard fail은 예산을 우회하므로 실제 비율이 100%가 된다(실측).
+    그러면 이 테스트가 재려는 `ceil` 효과가 hard fail에 완전히 가려진다.
+    `large.srt`의 원문은 `안녕하세요 N번째 대사입니다`라 숫자를 담고 있어
+    번역문에 그 숫자를 남기지 않으면 `struct.number_missing`이 두 자리
+    구간(10~26번)에서 hard fail 17건을 낸다(실측). 그래서 transform이
+    **숫자를 보존한다** - 이 조합에서만 신호 0건·hard fail 0건이 된다.
+    """
+    _patch_provider(
+        monkeypatch,
+        EchoProvider(
+            transform=lambda s: f"Line {''.join(c for c in s if c.isdigit())} of the talk"
+        ),
+    )
+
+    result = runner.invoke(app, _args(tmp_path, "large.srt", "--review-budget", "10%"))
+
+    assert result.exit_code == 0, result.output
+    assert "예산 10%" in result.output
+    assert "실제 11.5%" in result.output
+    # **전제를 함께 단언한다.** 새 Tier 0 신호가 이 번역문에 발화하기
+    # 시작하면 위 비율 단언이 먼저 깨지는데, 그것만으로는 "ceil이 틀렸다"와
+    # "hard fail이 끼어들었다"가 구별되지 않는다.
+    assert "hard fail 0개" in result.output
+
+
+def test_배치_신호가_발화한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """설계 §9.1 — 최우선 게이트.
+
+    `spec.overlap`은 `BatchCollector`라 트랙 전체를 봐야 판정된다
+    (`spec/check.py:100-127`이 정렬 후 누적 `run_end`와 비교한다).
+    `collect_all`에 세그먼트를 하나씩 넘기면 **신호가 발화하지 않고
+    프로그램은 정상 종료한다** - 조용한 실패다.
+
+    `overlap.vtt`는 큐 2개가 3000~4000ms에서 겹친다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "overlap.vtt", "--review-budget", "50%"))
+
+    assert result.exit_code == 0, result.output
+    assert "spec.overlap" in result.output
+
+
+def test_실패가_없으면_제외_괄호를_내지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
+
+    assert result.exit_code == 0, result.output
+    assert "대상 세그먼트 10개" in result.output
+    # **괄호까지 포함해 단언한다.** `_format_translate_summary`가 바로 위에서
+    # "성공 10개 · 실패 0개"를 내므로 `"번역 실패"`만으로는 우연에 기댄다.
+    assert "(번역 실패" not in result.output
+
+
+def test_임계값_방식이_동작한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FR-6.3 ② — `select_by_threshold`를 부른다."""
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-threshold", "0.7"))
+
+    assert result.exit_code == 0, result.output
+    assert "임계값 0.7" in result.output
+    assert "대상 세그먼트 10개" in result.output
+
+
+def test_언어별로_트리아지가_돈다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "ten_cues.srt"),
+            "--to",
+            "en,ja",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            "--review-budget",
+            "10%",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[en] 트리아지" in result.output
+    assert "[ja] 트리아지" in result.output

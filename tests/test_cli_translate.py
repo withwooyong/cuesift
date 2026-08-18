@@ -336,12 +336,9 @@ def test_review_budget은_더_이상_미구현_경고를_내지_않는다(
     result = runner.invoke(app, [*_args(tmp_path), "--review-budget", "10%"])
 
     assert result.exit_code == 0, result.output
-    # **이 단언은 Task 2 범위에서 약화된 것이다.** 트리아지 출력 라인은 Task 3이
-    # 만든다(설계 §7.1). Task 3 Step 3a가 이 단언을 `"[en] 트리아지"`로 되돌린다 -
-    # 되돌리지 않으면 약화된 채 남아 "검사하지 않고 통과하는 게이트"가 된다.
-    #
-    # **이름은 Task 3에서 다시 바꾸지 않는다** - 두 번 바뀌면 git 히스토리에서
-    # 추적이 끊긴다. Task 3은 단언만 강화한다.
+    # **양성 단언이 먼저다.** 부정 단언 둘만 두면 옵션이 통째로 무시돼도
+    # 통과한다 - 경고가 사라진 것과 동작이 생긴 것을 구별하지 못한다.
+    assert "트리아지" in result.output
     assert "아직 구현되지 않았" not in result.output
     assert "무시됩니다" not in result.output
 
