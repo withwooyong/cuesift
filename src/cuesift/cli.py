@@ -67,10 +67,13 @@ from cuesift.triage import select_by_budget, select_by_threshold
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
 #
 # **발신처가 둘이다.** `transcribe`(미구현)와 `_translate_one`이 `write_review`의
-# `TypeError`(직렬화 불가)를 받는 자리다 - review.json 배선(FR-7.2)이 둘째를
-# 더했다. 따라서 CI는 "아직 안 만든 명령"과 "리포트 직렬화가 죽었다"를 **종료
-# 코드만으로는 구별하지 못한다**. 구별이 필요하면 stderr 메시지를 봐야 한다.
-# 이 사실이 여기 없으면 아무 데도 없다.
+# 직렬화·쓰기 실패를 받는 자리다 - review.json 배선(FR-7.2)이 둘째를 더했다.
+# 따라서 CI는 "아직 안 만든 명령"과 "리포트 직렬화가 죽었다"를 **종료 코드만으로는
+# 구별하지 못한다**. 구별이 필요하면 stderr 메시지를 봐야 한다 - 그쪽은 예외
+# 타입명을 병기한다. 이 사실이 여기 없으면 아무 데도 없다.
+#
+# **둘째 발신처는 `TypeError` 하나가 아니다.** `json.dumps`의 실패는 열린
+# 집합이라 그 자리는 `except Exception`으로 받는다 - 근거는 그 주석에 있다.
 #
 # **둘이 같은 코드인 것이 옳다.** `sysexits.h`의 EX_SOFTWARE는 "internal
 # software error"라 둘을 함께 덮는다 - 사용자가 입력이나 설정을 고쳐도 사라지지
@@ -1232,13 +1235,29 @@ def _translate_one(
             # **전량 실패도 파일을 낸다 - 조건을 달지 않는다.** 그때
             # `segments`가 비고 `excluded_failures`가 사실을 말한다. 파일이
             # 아예 없으면 소비자는 "실행이 안 됐다"와 "번역이 전량
-            # 실패했다"를 구분하지 못한다(설계 D8). `outcome.risks or
-            # outcome.excluded_failures`로 감싸는 형태를 쓰지 않은 이유는
-            # 그 조건이 **여기서 언제나 참**이기 때문이다: 둘 다 거짓이려면
-            # 트랙의 세그먼트가 0개여야 하는데 `load_subtitle`이 그것을
-            # `IngestError("empty")`로 이미 거부한다(`ingest/loader.py:67-72`).
-            # 항상 참인 `if`는 거짓 가지를 어떤 테스트도 밟지 못해
-            # "검사하지 않고 통과하는 게이트"가 된다.
+            # 실패했다"를 구분하지 못한다(설계 D8).
+            #
+            # `outcome.risks or outcome.excluded_failures`로 감싸는 형태를 쓰지
+            # 않은 이유는 그 조건이 **여기서 언제나 참**이기 때문이다. 항상 참인
+            # `if`는 거짓 가지를 어떤 테스트도 밟지 못하고, `pyproject.toml`에
+            # branch coverage 설정이 없어 커버리지에도 안 잡혀 "검사하지 않고
+            # 통과하는 게이트"가 된다.
+            #
+            # **증명 사슬은 네 고리다. 하나라도 끊기면 이 주석이 거짓이 된다** -
+            # 넷 중 셋이 이 파일 밖에 있으므로 그쪽을 고치는 사람이 여기가
+            # 자기 변경의 영향권임을 알아야 한다(실측: Task 6 리뷰 계약 축).
+            #
+            # 1. `select_by_*`가 **전체 목록**을 반환한다(`triage/policy.py:95`·`:114`).
+            #    선별분만 반환하도록 바뀌면 `risks`가 비고 `excluded_failures`가
+            #    0인 조합이 생긴다.
+            # 2. `translate_segments`가 **길이를 보존**한다(`translate/engine.py:197`).
+            #    실패분을 `segments`에서 빼도록 바뀌면 `translated.segments`가 빈다.
+            # 3. 1·2에서 `risks`가 빈다 ⟺ `kept`가 빈다 ⟺ 전량 실패이거나 트랙이 0개다.
+            # 4. 트랙 0개는 `load_subtitle`이 `IngestError("empty")`로 거부한다
+            #    (`ingest/loader.py:68-73`). 이것이 없으면 0큐 트랙이 여기까지 온다.
+            #
+            # 사슬이 끊겨도 **동작은 안전하다** - 조건이 거짓이어도 리포트를 내는
+            # 것이 설계 의도다. 깨지는 것은 이 주석의 주장이지 동작이 아니다.
             #
             # **트리아지를 돌린 언어만 여기 온다.** 프로파일이 없어 건너뛴
             # 언어는 바깥 `if triage_profile is not None`에서 이미 걸러졌다 -
@@ -1253,12 +1272,42 @@ def _translate_one(
                 # LLM 호출을 통째로 다시 쓴다.
                 _echo(f"{review_path}: 검수 리포트를 쓰지 못했다 - {exc}", err=True)
                 return EXIT_BAD_INPUT
-            except TypeError as exc:
-                # `detail`에 직렬화 불가값이 들어왔다. **exit 1로 새면 내부
-                # 결함이 "규격 위반 발견"으로 오보되고** 사용자는 멀쩡한
-                # 자막을 고치려 든다. 66도 안 된다 - 66은 "사용자가 준 파일이
-                # 틀렸다"이고 이것은 우리 코드가 틀린 것이다.
-                _echo(f"{review_path}: 검수 리포트를 직렬화하지 못했다 - {exc}", err=True)
+            except Exception as exc:
+                # **`Exception`까지 넓힌다 - `TypeError` 하나로는 그물이 샌다.**
+                # `json.dumps`의 실패는 열린 집합이다(실측, Task 6 리뷰 계약 축 I1):
+                # 순환 참조는 **`ValueError`**("Circular reference detected")이고
+                # 깊은 중첩은 `RecursionError`, `write_text`의 서로게이트는
+                # `UnicodeEncodeError`(= `ValueError` 하위)다. `TypeError`만 잡으면
+                # 셋 다 미처리 traceback이 되어 **exit 1**로 나간다.
+                #
+                # **exit 1이 최악인 이유가 바로 여기 있다.** 이 CLI에서 1은 "규격
+                # 위반 발견 또는 번역 일부 실패"라, 번역 실패가 함께 있는 흔한
+                # 실행에서는 **정상 종료와 종료 코드가 완전히 같아진다**(실측:
+                # 대조군도 exit 1). CI는 번역을 재시도하고 리포트는 영영 안 나온다.
+                # 66도 안 된다 - 66은 "사용자가 준 파일이 틀렸다"이고 이것은 우리
+                # 코드가 틀린 것이다.
+                #
+                # **"모든 직렬화 실패가 70이 된다"는 열린 집합에 대한 단언이라
+                # 테스트로 완결할 수 없다** - 넓은 catch가 유일하게 구성상
+                # (by construction) 참인 선택이다. 이 파일의 `load_glossary` 그물
+                # (위쪽 `except Exception`)이 같은 판정을 이미 내려 두었고 여기는
+                # 그 형제다.
+                #
+                # **삼킬 위험 둘을 확인했다.** `KeyboardInterrupt`·`SystemExit`은
+                # `BaseException`이라 이 catch가 잡지 않는다 - Ctrl+C는 정상
+                # 동작한다. `typer.Exit`은 `Exception` 하위라 삼킬 수 있지만
+                # `try` 안의 호출이 `write_review` 하나뿐이고 `json_report.py`는
+                # typer를 import하지 않는다(`json`·`pathlib`·`typing`·`cuesift.*`뿐).
+                # **여기 줄을 보태면 그 전제가 깨진다.**
+                #
+                # **예외 타입명을 병기한다.** `{exc}`만 찍으면 `ValueError`(리포트
+                # 구조에 순환이 생겼다)와 `NameError`(버그를 신고해야 한다)가
+                # 사용자에게 같은 모양으로 보인다. 넓은 catch를 택한 대가를 이 한
+                # 줄이 줄인다 - `load_glossary` 그물이 같은 이유로 같은 형식을 쓴다.
+                _echo(
+                    f"{review_path}: 검수 리포트를 직렬화하지 못했다 - {type(exc).__name__}: {exc}",
+                    err=True,
+                )
                 return EXIT_NOT_IMPLEMENTED
             _echo(f"  리포트 {review_path}")
 

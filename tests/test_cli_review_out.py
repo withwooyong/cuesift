@@ -16,10 +16,10 @@ import json
 from pathlib import Path
 
 import pytest
-from tests.fakes.provider import EchoProvider, ScriptedProvider
+from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
-from conftest import normalize_rich_message
+from conftest import blank_at, normalize_rich_message, scripted_at
 from cuesift.cli import _review_path, app
 
 runner = CliRunner()
@@ -288,40 +288,54 @@ def _read_review(tmp_path: Path, name: str = "minimal.en.review.json") -> dict:
     return json.loads((tmp_path / "reports" / name).read_text(encoding="utf-8"))
 
 
-def _blank_at(indices: set[int], count: int) -> ScriptedProvider:
-    """지정한 인덱스만 **공백 번역**으로 답하는 가짜 (`test_cli_triage.py:459`에서 옮김).
-
-    공백 번역은 `engine.py:419`가 `reason="empty_translation"`으로 실패 처리한다 -
-    응답 형식은 올바르므로 개별 폴백이 개입하지 않아 호출이 배치 1회로 끝난다.
-    `EchoProvider(drop_last=True)`는 이 목적에 쓸 수 없다: 배치가 개수 불일치로
-    실패하면 폴백이 개별 호출로 재시도하고 거기서는 `len(items) > 1`이 거짓이라
-    **전부 성공한다.**
-    """
-    items = [{"id": i, "text": "   " if i in indices else f"EN{i}"} for i in range(count)]
-    return ScriptedProvider([json.dumps({"translations": items}, ensure_ascii=False)])
+# 한글이 그대로 남고 **줄이 셋**인 번역문. 두 신호를 동시에 낸다 -
+# `struct.untranslated`(hard fail)와 `spec.violation`(줄 수 초과).
+# 한 줄짜리 한글은 `spec.violation`을 내지 않으므로 이 둘을 가르는 것이
+# **여러 줄이라는 성질**이다(실측: 아래 두 테스트의 `signal_hits` 비교).
+_KO_MULTILINE = "첫째 줄입니다\n둘째 줄입니다\n셋째 줄입니다"
 
 
 def test_화면_요약과_파일_수치가_일치한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """**이 설계에서 가장 조용한 실패다** (D8 · 게이트 10.1).
 
-    **Task 4의 Step 7b가 못 잡는 것을 여기가 잡는다.** 그 grep 게이트는
-    `len(outcome.risks)`·리스트 컴프리헨션 같은 재도입 형태를 통과시킨다(실측:
-    변이 둘이 게이트와 전 스위트를 모두 빠져나갔다). 화면과 파일이 한 실행에
-    함께 존재하는 이 자리라야 값을 직접 대조할 수 있다.
+    화면과 파일이 갈라져도 프로그램은 정상 종료하고 파일도 정상이며 종료 코드도
+    바뀌지 않는다. 두 값을 **한 실행 안에서** 대조하는 것만이 이것을 잡고, 화면과
+    파일이 함께 존재하는 자리는 여기뿐이다.
 
-    갈라져도 프로그램은 정상 종료하고 파일도 정상이며 종료 코드도 0이다.
-    화면에서 파싱한 값과 `summary`를 대조하는 것만이 이것을 잡는다.
+    **무엇을 잡고 무엇을 못 잡는지 정확히 적는다** (Task 6 실측 · 계획서 정정본).
 
-    **`_blank_at`을 쓰는 것이 이 게이트의 핵심이다** (사전 스캔 발견 A).
-    기본 `EchoProvider()`는 한글 원문을 남겨 `struct.untranslated`가 **전량
-    hard fail**을 내고, 그러면 `selected == triaged`가 되어 두 값을 뒤바꾸는
-    변이가 **같은 값을 내며 통과한다** - 게이트가 통과하면서 아무것도 재지
-    못하는 상태다. `_blank_at({2,5,9}, 10)`이면 `triaged=7`이고 예산 10%에서
-    `quota=ceil(7*0.1)=1`이라 `selected=1 != triaged=7`로 갈린다.
+    - **잡는다** — 화면이 **다른 프로퍼티**를 찍는 형태
+      (`total_segments`·`selected`·`hard fail`을 서로 뒤바꾸기). 값이 실제로
+      달라지므로 대조가 어긋난다.
+    - **못 잡는다** — `total = len(outcome.risks)`. `triaged_segments`의 정의가
+      **글자 그대로 `return len(self.risks)`**다(`report/models.py:85`).
+    - **못 잡는다** — `selected = len([r for r in outcome.risks if r.selected])`.
+      `selected_for_review`가 같은 식이다(`models.py:100`·`:104`).
 
-    실패 3건이 있으므로 종료 코드는 **1**이다(FR-2.6). 리포트는 그보다 먼저 나간다.
+    뒤의 둘은 Task 4의 Step 7b(grep 게이트)도 통과한다. **두 게이트 모두
+    못 잡는 것이 맞다** - 오늘의 동작이 동일하기 때문이다. Step 7b가 지키는 것은
+    "프로퍼티 정의가 나중에 바뀌면 굳어 있는 사본이 조용히 갈라진다"는 **미래의**
+    위험이고(`models.py:91-93`이 "두 값이 지금 같다는 것은 우연이지 보장이
+    아니다"라고 적어 두었다), 이 테스트가 지키는 것은 **오늘의** 갈라짐이다.
+    둘은 보완 관계이지 대체 관계가 아니다 - **이 테스트를 근거로 Step 7b를
+    지우면 안 된다.**
+
+    **픽스처의 다섯 수치가 전부 다르다**(실측: total 10 · triaged 8 ·
+    excluded 2 · selected 3 · hard fail 1). 이것이 이 게이트의 핵심이다 -
+    브리프 ④의 "값이 서로 같다" 형태에 걸리면 두 값을 뒤바꾸는 변이가 **같은
+    값을 내며 통과한다.** 실제로 초판은 hard fail이 0이라 `hard = 0` 변이가
+    전 스위트를 빠져나갔다(리뷰 축B I2).
+
+    수치가 이렇게 나오는 근거:
+
+    - 빈칸 2건(`{2, 5}`)이 `empty_translation`으로 실패 -> excluded 2 · triaged 8
+    - 한글 잔류 1건(`{0}`)이 `struct.untranslated`로 hard fail -> hard 1
+    - 예산 30%에서 `quota = ceil(8 * 0.3) = 3`이고 hard 1이 quota를 소진하므로
+      `selected = max(3, 1) = 3` (`policy.py:88-92`)
+
+    실패 2건이 있으므로 종료 코드는 **1**이다(FR-2.6). 리포트는 그보다 먼저 나간다.
     """
-    _patch_provider(monkeypatch, _blank_at({2, 5, 9}, 10))
+    _patch_provider(monkeypatch, scripted_at({0: _KO_MULTILINE, 2: "   ", 5: "   "}, 10))
 
     result = runner.invoke(
         app,
@@ -329,7 +343,7 @@ def test_화면_요약과_파일_수치가_일치한다(tmp_path: Path, monkeypa
             tmp_path,
             "ten_cues.srt",
             "--review-budget",
-            "10%",
+            "30%",
             "--review-out",
             str(tmp_path / "reports"),
         ),
@@ -338,10 +352,22 @@ def test_화면_요약과_파일_수치가_일치한다(tmp_path: Path, monkeypa
     assert result.exit_code == 1, result.output
     summary = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]
 
-    assert summary["triaged_segments"] == 7
-    assert summary["selected_for_review"] != summary["triaged_segments"], (
-        "두 값이 같으면 이 게이트가 아무것도 재지 못한다"
+    # **반-퇴화 가드가 먼저다.** 아래 세 대조는 값이 서로 다를 때만 무언가를
+    # 잰다 - 픽스처가 흘러가 값이 겹치면 대조가 `N == N`이 되어 조용히
+    # 무력해진다. 그 상태를 게이트가 스스로 잡게 한다.
+    counted = [
+        summary["total_segments"],
+        summary["triaged_segments"],
+        summary["excluded_failures"],
+        summary["selected_for_review"],
+        summary["hard_fail_count"],
+    ]
+    assert len(set(counted)) == len(counted), (
+        f"다섯 수치 중 겹치는 것이 있으면 뒤바꾸기 변이가 통과한다: {counted}"
     )
+    assert summary["hard_fail_count"] > 0, "hard fail이 0이면 그 대조가 0 == 0이다"
+
+    assert summary["triaged_segments"] == 8
     assert f"  대상 세그먼트 {summary['triaged_segments']}개" in result.output
     assert f"  검수 대상 {summary['selected_for_review']}개" in result.output
     assert f"  hard fail {summary['hard_fail_count']}개" in result.output
@@ -350,14 +376,34 @@ def test_화면_요약과_파일_수치가_일치한다(tmp_path: Path, monkeypa
 def test_신호별_적발_집계가_화면과_일치한다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """게이트 10.1의 나머지 절반 — `signal_hits` 대조는 집계가 비지 않아야 한다.
+    """게이트 10.1의 나머지 절반 — `signal_hits`는 **개수와 순서**를 함께 본다.
 
-    **여기서는 기본 `EchoProvider()`를 일부러 쓴다.** 한글 원문이 남아
-    `struct.untranslated`가 전량 hard fail을 내므로 `signal_hits`가 채워진다.
-    위 테스트의 `_blank_at`은 번역문이 `EN0`·`EN1`이라 신호가 적거나 없을 수
-    있고, 집계가 비면 아래 루프가 **한 번도 돌지 않아 아무것도 재지 못한다.**
+    **순서가 계약인 이유.** `signal_hits`는 `dict(sorted(...))`로 정렬해
+    반환하고(`report/models.py:126`) 그 근거가 NFR-3 재현성이다 - `Counter`의
+    순서는 삽입 순이라 세그먼트 순서가 바뀌면 화면과 파일이 달라진다.
+    `cli.py`의 `_format_triage_summary`도 "정렬을 여기서 다시 하지 않는다"고
+    적어 두 곳이 같은 출처를 쓴다. **그런데 그 계약을 어디서도 단언하지
+    않았다** - 화면 신호 순서를 뒤집는 변이가 전 스위트를 빠져나갔다
+    (리뷰 축B M1).
+
+    **신호가 2종 이상이어야 순서가 존재한다.** 이전 픽스처(`EchoProvider()`)는
+    `struct.untranslated` 1종뿐이라 루프가 정확히 한 번 돌았고, 그때 순서
+    단언은 항상 참이다. 그래서 한글을 **여러 줄로** 남기는 번역문 하나와
+    **한 줄로** 남기는 번역문 하나를 심는다:
+
+    | 인덱스 | 번역문 | 나오는 신호 |
+    | --- | --- | --- |
+    | 0 | 한글 3줄 | `struct.untranslated` · `spec.violation` · `length.ratio` |
+    | 1 | 한글 1줄 | `struct.untranslated` · `length.ratio` |
+    | 나머지 | `EN{i}` | 없음 |
+
+    실측 결과가 `{'length.ratio': 2, 'spec.violation': 1, 'struct.untranslated': 2}`다 -
+    **3종이고 개수가 전부 같지도 않다.** 개수까지 모두 같으면 이름과 개수를
+    뒤섞는 변이가 통과한다(브리프 ④ "값이 서로 같다").
+
+    번역 실패가 없으므로 종료 코드는 **0**이다.
     """
-    _patch_provider(monkeypatch, EchoProvider())
+    _patch_provider(monkeypatch, scripted_at({0: _KO_MULTILINE, 1: "둘째 줄입니다"}, 10))
 
     result = runner.invoke(
         app,
@@ -373,10 +419,19 @@ def test_신호별_적발_집계가_화면과_일치한다(
 
     assert result.exit_code == 0, result.output
     summary = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]
+    hits = summary["signal_hits"]
 
-    assert summary["signal_hits"], "집계가 비면 아래 루프가 아무것도 재지 못한다"
-    for name, count in summary["signal_hits"].items():
-        assert f"    {name} {count}개" in result.output
+    # 반-퇴화 가드 둘. 아래 순서 대조는 신호가 2종 이상일 때만 무언가를 재고,
+    # 개수 대조는 개수가 전부 같지 않을 때만 무언가를 잰다.
+    assert len(hits) >= 2, f"신호가 1종이면 순서 대조가 항상 참이다: {hits}"
+    assert len(set(hits.values())) > 1, f"개수가 전부 같으면 뒤섞기 변이가 통과한다: {hits}"
+
+    # **순서까지 대조한다 - `in`으로 하나씩 찾으면 순서가 안 잡힌다.**
+    # 화면의 신호 줄은 머리글 바로 아래에 연속으로 온다.
+    lines = [line.rstrip() for line in result.output.splitlines()]
+    head = lines.index("  신호별 적발")
+    expected = [f"    {name} {count}개" for name, count in hits.items()]
+    assert lines[head + 1 : head + 1 + len(expected)] == expected
 
 
 def test_total이_triaged와_excluded의_합이다(
@@ -385,10 +440,16 @@ def test_total이_triaged와_excluded의_합이다(
     """게이트 10.2 — 분모가 조용히 바뀌면 README 배수가 무너진다.
 
     **`excluded`가 0이면 `total == triaged + 0`이 항등식이 되어 아무것도 재지
-    못한다** (사전 스캔 발견 B). `_blank_at`으로 실패 3건을 만들어야 검산이
+    못한다** (사전 스캔 발견 B). `blank_at`으로 실패 3건을 만들어야 검산이
     성립한다.
+
+    **실제 게이트는 하드코딩한 두 값(`== 3`·`== 10`)이다.** 셋째 단언은
+    `total_segments`가 `return self.triaged_segments + self.excluded_failures`
+    (`report/models.py:95`)라 모델 수준에서 자동으로 참이다 - 그 줄이 CLI
+    경로에서도 유지되는지를 보는 회귀 확인이지 독립 게이트가 아니다
+    (리뷰 축B M4).
     """
-    _patch_provider(monkeypatch, _blank_at({2, 5, 9}, 10))
+    _patch_provider(monkeypatch, blank_at({2, 5, 9}, 10))
 
     result = runner.invoke(
         app,
@@ -429,7 +490,23 @@ def test_입력이_둘이면_파일이_서로를_지우지_않는다(
 
 
 def test_dry_run은_파일을_쓰지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """D11 — dry-run은 트리아지를 돌리지 않으므로 낼 것이 없다."""
+    """D11 — dry-run은 트리아지를 돌리지 않으므로 낼 것이 없다.
+
+    **이 테스트는 구조적으로 고립된 증거를 가질 수 없다** (리뷰 축B M3 실측).
+    dry-run 경로를 깨는 변이(조기 `return` 제거)를 넣으면 이 테스트가 죽지만
+    `test_cli_translate.py`·`test_cli_triage.py`의 dry-run 테스트 4개가 함께
+    죽는다 - 살해자가 5개라 "리포트가 안 나온다"만 재는 단독 증거가 되지
+    않는다.
+
+    **양성 단언을 더해도 나아지지 않는다.** `assert "리포트" not in
+    result.output`을 붙여도 살해자가 그대로 5개다 - `_echo(f"  리포트 ...")`가
+    `write_review` 성공 뒤에만 나오므로 dry-run에서는 **파일 부재와 화면 부재가
+    같은 `return` 하나에 막힌다.** 두 관측이 독립이 아니라서 무엇을 더해도
+    분리되지 않는다.
+
+    그래도 지운 게이트는 아니다 - "dry-run이 리포트를 쓰지 않는다"를 이름으로
+    선언하는 자리가 여기뿐이고, 그 계약이 깨지면 살해자 명단에 반드시 들어온다.
+    """
     _patch_provider(monkeypatch, EchoProvider())
     reports = tmp_path / "reports"
 
@@ -479,12 +556,44 @@ def test_쓰기_실패는_exit_66이다(tmp_path: Path, monkeypatch: pytest.Monk
     assert (tmp_path / "subs" / "minimal.en.srt").exists(), "번역까지 잃었다"
 
 
-def test_직렬화_실패는_exit_70이다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """설계 §8 — exit 1("규격 위반 발견")로 새면 내부 결함이 자막 결함으로 오보된다."""
+@pytest.mark.parametrize(
+    ("exc", "label"),
+    [
+        # `json.dumps`가 직렬화 불가 객체·`set`·tuple 키에서 내는 것.
+        (TypeError("Object of type object is not JSON serializable"), "TypeError"),
+        # **순환 참조의 실제 타입이다** - `TypeError`가 아니다(실측).
+        # 이 케이스가 없으면 `except Exception`을 `except TypeError`로
+        # 좁히는 변이가 살아남는다: 위 한 줄만으로는 넓은 catch와 좁은 catch가
+        # 구별되지 않는다.
+        (ValueError("Circular reference detected"), "ValueError"),
+        # 깊은 중첩. `RecursionError`는 `RuntimeError` 하위라 `ValueError`
+        # 계열을 추가로 열거하는 식의 부분 수정도 여기서 걸린다.
+        (RecursionError("maximum recursion depth exceeded"), "RecursionError"),
+    ],
+)
+def test_직렬화_실패는_예외_타입과_무관하게_exit_70이다(
+    exc: Exception, label: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설계 §8 — exit 1("규격 위반 발견")로 새면 내부 결함이 자막 결함으로 오보된다.
+
+    **exit 1이 최악인 이유는 "구별되지 않는다"이다** (리뷰 계약 축 I1 실측).
+    번역 실패가 함께 있는 흔한 실행에서는 정상 종료도 exit 1이라, 새어 나간
+    내부 결함이 "번역 일부 실패"와 **종료 코드로 구별되지 않는다.** CI는 번역을
+    재시도하고 리포트는 영영 안 나온다.
+
+    **세 타입을 모두 도는 것이 이 게이트의 핵심이다.** `TypeError` 하나만 보면
+    `except Exception`을 `except TypeError`로 되돌리는 변이가 통과한다 -
+    실측으로 `ValueError`(순환 참조)·`RecursionError`(깊은 중첩)·
+    `UnicodeEncodeError`가 전부 그 그물을 빠져나가 exit 1 + traceback이 됐다.
+
+    **traceback이 없다는 것도 함께 본다.** 미처리 예외로 죽으면 종료 코드가
+    맞아도 사용자는 스택트레이스를 본다 - 그것은 "이 도구가 깨졌다"는 신호이지
+    "리포트를 못 냈다"는 진단이 아니다.
+    """
     _patch_provider(monkeypatch, EchoProvider())
 
     def boom(*_args: object, **_kwargs: object) -> None:
-        raise TypeError("Object of type object is not JSON serializable")
+        raise exc
 
     monkeypatch.setattr("cuesift.cli.write_review", boom)
 
@@ -501,6 +610,13 @@ def test_직렬화_실패는_exit_70이다(tmp_path: Path, monkeypatch: pytest.M
     )
 
     assert result.exit_code == 70, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"미처리 예외가 샜다: {result.exception!r}"
+    )
+    # **예외 타입명을 메시지에 넣는 계약**(넓은 catch를 택한 대가를 줄인다).
+    # 없으면 `ValueError`(리포트 구조에 순환이 생겼다)와 `NameError`(버그를
+    # 신고해야 한다)가 사용자에게 같은 모양으로 보인다.
+    assert label in result.output, "예외 타입명이 없으면 진단을 구별할 수 없다"
 
 
 def test_언어별로_파일이_나오고_프로파일이_각각_다르다(
@@ -587,5 +703,14 @@ def test_프로파일_없는_언어는_리포트도_내지_않는다(
     result = runner.invoke(app, args)
 
     assert result.exit_code == 0, result.output
-    assert "th" in result.output, "프로파일이 없다는 경고가 나가야 한다"
+    # **`"th" in output`으로는 아무것도 재지 못한다** (리뷰 축B I1 실측).
+    # th는 번역이 되므로 `[th] ...\minimal.th.srt` 줄이 **경고와 무관하게 항상**
+    # 있다 - 경고에서 언어 이름을 지우는 변이가 이 테스트를 그대로 통과했다.
+    # 경고 **문구**를 봐야 한다. `normalize_rich_message`를 통과시키는 것은
+    # 이 메시지가 언젠가 rich 경로로 옮겨질 때를 대비한 것이고(같은 파일의
+    # `--review-out` 단언과 같은 이유), 그 함수가 공백을 전부 지우므로
+    # **needle도 공백 없는 형태여야 한다.**
+    assert "규격프로파일이없어" in normalize_rich_message(result.output), (
+        "프로파일이 없다는 경고가 나가야 한다"
+    )
     assert sorted(p.name for p in reports.glob("*.review.json")) == ["minimal.en.review.json"]

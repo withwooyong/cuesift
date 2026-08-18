@@ -64,10 +64,24 @@ def build_review(outcome: TriageOutcome) -> dict[str, Any]:
 def write_review(outcome: TriageOutcome, path: Path) -> None:
     """`review.json`을 쓴다 (FR-7.2 · 설계 §5.2).
 
-    **예외를 잡지 않는다.** `OSError`는 디스크 상태의 문제이고 `TypeError`
-    (직렬화 불가)는 내부 결함이라 성격이 다르다 - **호출자가 각각을 종료
-    코드로 바꾼다.** 여기서 삼키면 파일이 없는데 종료 코드가 0이 되어 다음
-    단계(배포 스크립트·CI)가 빈손으로 진행한다.
+    **예외를 잡지 않는다.** `OSError`는 디스크 상태의 문제이고 직렬화 실패는
+    내부 결함이라 성격이 다르다 - **호출자가 각각을 종료 코드로 바꾼다.**
+    여기서 삼키면 파일이 없는데 종료 코드가 0이 되어 다음 단계(배포 스크립트·CI)가
+    빈손으로 진행한다.
+
+    **직렬화 실패를 `TypeError` 하나로 적으면 안 된다** (실측, Task 6 리뷰 계약 축).
+    `json.dumps`가 내는 것은 열린 집합이다.
+
+    | 입력 | 예외 |
+    | --- | --- |
+    | 직렬화 불가 객체 · `set` · tuple 키 | `TypeError` |
+    | **순환 참조** | **`ValueError`** ("Circular reference detected") |
+    | 깊은 중첩 | `RecursionError` |
+    | 서로게이트(`\\ud800`)가 섞인 문자열 | `UnicodeEncodeError` (아래 `write_text`에서) |
+
+    이 표가 이전 판에 없어서 호출자가 `except TypeError` 하나로 그물을 짰고,
+    나머지 셋이 미처리 traceback으로 샜다. **호출자는 넓게 잡아야 한다** -
+    어느 타입이 나올지는 `detail`에 실리는 값에 달렸고 그것은 신호 구현이 정한다.
 
     **종료 코드 숫자는 여기 적지 않는다.** 이 모듈은 라이브러리이고 코드
     정책은 `cli.py`가 갖는다 - 숫자를 양쪽에 적으면 CLI가 정책을 바꿀 때

@@ -6,14 +6,13 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-from tests.fakes.provider import EchoProvider, ScriptedProvider
+from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
-from conftest import normalize_rich_message
+from conftest import blank_at, normalize_rich_message
 from cuesift.cli import _format_triage_summary, _parse_review_budget, app
 from cuesift.report import TriageOutcome
 from cuesift.segment import Segment, SegmentRisk
@@ -456,19 +455,6 @@ def test_dry_run에서도_프로파일_검증은_돈다(
     assert provider.calls == []
 
 
-def _blank_at(indices: set[int], count: int) -> ScriptedProvider:
-    """지정한 인덱스만 **공백 번역**으로 답하는 가짜.
-
-    공백 번역은 `engine.py:419`가 `reason="empty_translation"`으로 실패
-    처리한다 - 응답 형식은 올바르므로 개별 폴백이 개입하지 않아 호출이
-    배치 1회로 끝난다. `EchoProvider(drop_last=True)`는 이 목적에 쓸 수
-    없다: 배치가 개수 불일치로 실패하면 폴백이 개별 호출로 재시도하고
-    거기서는 `len(items) > 1`이 거짓이라 **전부 성공한다**.
-    """
-    items = [{"id": i, "text": "   " if i in indices else f"EN{i}"} for i in range(count)]
-    return ScriptedProvider([json.dumps({"translations": items}, ensure_ascii=False)])
-
-
 def _risk_free(source: str) -> str:
     """Tier 0 신호를 **하나도** 내지 않는 번역문을 만든다.
 
@@ -514,7 +500,7 @@ def test_번역_실패분은_트리아지에서_빠진다(tmp_path: Path, monkey
     (`remaining = max(0, 1-3) = 0`). 실측으로는 실패 20건에서 Recall@10%가
     0%까지 떨어진다(`TranslationResult` 독스트링).
     """
-    _patch_provider(monkeypatch, _blank_at({2, 5, 9}, 10))
+    _patch_provider(monkeypatch, blank_at({2, 5, 9}, 10))
 
     result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
 
@@ -534,7 +520,7 @@ def test_전량_실패면_건너뛴다고_말한다(tmp_path: Path, monkeypatch:
     것이 없다는 뜻으로 읽히지만 실제로는 **아무것도 판정하지 못한 것**이고
     처방이 정반대다(재검수가 아니라 재실행이다).
     """
-    _patch_provider(monkeypatch, _blank_at(set(range(10)), 10))
+    _patch_provider(monkeypatch, blank_at(set(range(10)), 10))
 
     result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
 
@@ -617,7 +603,7 @@ def test_실패분_제외가_배치_신호를_눈멀게_하지_않는다(
     **겹침 자체는 산출 파일에 그대로 남아 출고된다.** 요약만 침묵하고 exit는
     0이라 종료 코드로는 알 수 없다.
     """
-    _patch_provider(monkeypatch, _blank_at({0}, 2))
+    _patch_provider(monkeypatch, blank_at({0}, 2))
 
     result = runner.invoke(app, _args(tmp_path, "overlap.vtt", "--review-budget", "50%"))
 

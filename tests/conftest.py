@@ -6,7 +6,8 @@
 | 무엇 | 어디 | 왜 여기 있나 |
 | --- | --- | --- |
 | **`live` 마커 게이트** (`_check_on_import` · `pytest_configure`) | 위쪽 | 아래 참조 |
-| rich 렌더링 정규화 (`strip_rich_decoration` · `normalize_rich_message`) | 아래쪽 | 원래의 용도 |
+| rich 렌더링 정규화 (`strip_rich_decoration` · `normalize_rich_message`) | 가운데 | 원래의 용도 |
+| 번역 대본 헬퍼 (`scripted_at` · `blank_at`) | 아래쪽 | 두 파일이 공유한다 |
 
 **게이트를 별도 모듈로 빼지 않는다.** 뺀다면 conftest가 그것을 임포트해야
 하는데, **그 임포트문이 곧 새로운 무력화 지점**이 된다 - 지우면 게이트가
@@ -44,12 +45,15 @@ CI에서는 정확히 반대였다.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import shlex
 import tomllib
+from collections.abc import Iterable, Mapping
 
 import pytest
+from tests.fakes.provider import ScriptedProvider
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -237,3 +241,34 @@ def normalize_rich_message(text: str) -> str:
     의존하던 이전 단언이 **내용이 맞아도 실패**해서 계약을 검증하지 못했다.
     """
     return re.sub(r"\s+", "", strip_rich_decoration(text))
+
+
+def scripted_at(texts: Mapping[int, str], count: int) -> ScriptedProvider:
+    """인덱스별 번역문을 지정한 배치 응답 하나를 내는 가짜.
+
+    지정하지 않은 인덱스는 `EN{i}`로 답한다 - 한글이 남지 않고 짧아
+    Tier 0 신호를 하나도 내지 않는 "깨끗한" 번역문이다. 그래서 신호를
+    **일부러 심은 인덱스만** 걸린다.
+
+    **응답이 하나뿐인 것은 배치 1회로 끝난다는 전제다.** `DEFAULT_BATCH_SIZE`가
+    10이므로 `count <= 10`에서만 성립한다 - 넘기면 `ScriptedProvider`가
+    "대본이 소진됐다"로 죽는다(조용히 통과하지 않는다).
+    """
+    items = [{"id": i, "text": texts.get(i, f"EN{i}")} for i in range(count)]
+    return ScriptedProvider([json.dumps({"translations": items}, ensure_ascii=False)])
+
+
+def blank_at(indices: Iterable[int], count: int) -> ScriptedProvider:
+    """지정한 인덱스만 **공백 번역**으로 답하는 가짜.
+
+    공백 번역은 `engine.py:419`가 `reason="empty_translation"`으로 실패
+    처리한다 - 응답 형식은 올바르므로 개별 폴백이 개입하지 않아 호출이
+    배치 1회로 끝난다. `EchoProvider(drop_last=True)`는 이 목적에 쓸 수
+    없다: 배치가 개수 불일치로 실패하면 폴백이 개별 호출로 재시도하고
+    거기서는 `len(items) > 1`이 거짓이라 **전부 성공한다**.
+
+    **`test_cli_triage.py`와 `test_cli_review_out.py`가 이것을 공유한다.**
+    두 파일에 복제돼 있던 것을 여기로 모았다 - 한쪽만 고쳐지면 두 테스트가
+    조용히 다른 것을 재게 된다. 실제로 복제된 상태였고 리뷰가 잡았다.
+    """
+    return scripted_at(dict.fromkeys(indices, "   "), count)
