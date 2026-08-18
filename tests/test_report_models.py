@@ -189,6 +189,36 @@ def test_segments와_risks의_길이가_다르면_거부한다() -> None:
         )
 
 
+def test_segments와_risks의_id가_다르면_거부한다() -> None:
+    """**길이가 같아도** id가 어긋나면 거부한다.
+
+    길이만 보는 검증은 이 입력을 통과시킨다. 그러면 리포트 생성기가
+    `{s.id: s for s in segments}`를 `risk.segment_id`로 찾는 순간 KeyError가
+    나는데, 그 시점은 파일을 쓰는 도중이라 어느 조합이 어긋났는지 스택에 없다.
+    """
+    with pytest.raises(ValueError, match="집합이 다르다"):
+        _outcome(
+            risks=(_risk("00000"), _risk("00001")),
+            segments=(_segment("00000"), _segment("99999", index=1)),
+        )
+
+
+def test_순서만_다른_것은_통과한다() -> None:
+    """`risks`는 위험도 내림차순, `segments`는 트랙 원본 순서라 **순서가 다른 것이 정상이다.**
+
+    검증을 순서까지 고정하면(`tuple(...)` 비교) 이 정상 입력이 `ValueError`로
+    거부돼 트리아지 경로가 통째로 죽는다. 그 회귀를 막는 것이 이 테스트다 -
+    "더 엄격하게" 조이는 변경은 게이트가 없으면 아무 소리도 내지 않는다.
+    """
+    outcome = _outcome(
+        risks=(_risk("00001"), _risk("00000")),
+        segments=(_segment("00000"), _segment("00001", index=1)),
+    )
+
+    assert outcome.triaged_segments == 2
+    assert [r.segment_id for r in outcome.risks] == ["00001", "00000"]
+
+
 def test_excluded_failures가_음수면_거부한다() -> None:
     """음수는 `total_segments`를 `triaged_segments`보다 작게 만들어 화면이
     "2개 중 5개 검수"라는 불가능한 요약을 낸다. 프로그램은 정상 종료하고 종료

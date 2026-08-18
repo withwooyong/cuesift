@@ -46,12 +46,32 @@ class TriageOutcome:
 
     def __post_init__(self) -> None:
         # 형제 모델 넷(`Span`·`Segment`·`Signal`·`SegmentRisk`)과 같은 자리의 방어다.
-        # 둘이 어긋나면 리포트 생성기의 `by_id[risk.segment_id]`가 KeyError로 죽는데,
-        # 그 시점은 파일을 쓰는 도중이라 **어느 조합이 어긋났는지가 스택에 없다.**
-        # 여기서 막으면 실패가 생성 시점으로 앞당겨진다.
+        #
+        # **아래 두 검사는 서로를 대신하지 못한다.** 길이만 보면 개수가 같고 id만
+        # 어긋난 입력(`['00000','00001']` vs `['00000','99999']`)이 통과하고,
+        # 집합만 보면 id가 중복될 때 개수 차이를 놓친다(`risks` 2개가 같은 id면
+        # 집합은 1개라 `segments` 1개와 같아진다). 후자를 놓치면
+        # `triaged_segments`와 `len(segments)`가 갈라져 §6.2의 검산식이 깨진다.
         if len(self.segments) != len(self.risks):
             raise ValueError(
                 f"segments({len(self.segments)})와 risks({len(self.risks)})의 길이가 다르다"
+            )
+        # 리포트 생성기는 `{s.id: s for s in segments}` 표를 `risk.segment_id`로 찾는다.
+        # id가 어긋나면 그 조회가 KeyError로 죽는데, 그 시점은 파일을 쓰는 도중이라
+        # **어느 조합이 어긋났는지 스택에 남지 않는다.** 여기서 막아야 실패가 생성
+        # 시점으로 앞당겨진다.
+        #
+        # **순서는 보장하지 않는다 - 집합으로만 본다.** `risks`는 위험도 내림차순이고
+        # (`policy.py`의 `_sorted_desc`) `segments`는 트랙 원본 순서라 둘의 순서가
+        # 다른 것이 정상이다. 순서까지 고정하면 그 정상 입력이 거부돼 트리아지 경로가
+        # 통째로 죽는다.
+        seg_ids = {s.id for s in self.segments}
+        risk_ids = {r.segment_id for r in self.risks}
+        if seg_ids != risk_ids:
+            raise ValueError(
+                f"segments와 risks의 segment_id 집합이 다르다 - "
+                f"segments에만: {sorted(seg_ids - risk_ids)} · "
+                f"risks에만: {sorted(risk_ids - seg_ids)}"
             )
         # 음수면 `total_segments`가 `triaged_segments`보다 작아져 화면이 "2개 중
         # 5개 검수"라는 불가능한 요약을 낸다. 프로그램은 정상 종료하고 종료 코드도
