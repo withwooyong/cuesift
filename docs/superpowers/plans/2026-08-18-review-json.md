@@ -1346,11 +1346,30 @@ git commit -m "기능: --review-out 옵션과 조합 검증 (FR-7.2 · D2 · D10
 
 - [ ] **Step 2: 실패하는 테스트를 쓴다**
 
-`tests/test_cli_review_out.py`에 추가한다. 최우선 게이트가 첫 번째다.
+`tests/test_cli_review_out.py`에 추가한다. 먼저 import를 넓힌다 — `_blank_at`이 `ScriptedProvider`를 쓴다.
+
+```python
+from tests.fakes.provider import EchoProvider, ScriptedProvider
+```
+
+최우선 게이트가 첫 번째다.
 
 ```python
 def _read_review(tmp_path: Path, name: str = "minimal.en.review.json") -> dict:
     return json.loads((tmp_path / "reports" / name).read_text(encoding="utf-8"))
+
+
+def _blank_at(indices: set[int], count: int) -> ScriptedProvider:
+    """지정한 인덱스만 **공백 번역**으로 답하는 가짜 (`test_cli_triage.py:458`에서 옮김).
+
+    공백 번역은 `engine.py:419`가 `reason="empty_translation"`으로 실패 처리한다 -
+    응답 형식은 올바르므로 개별 폴백이 개입하지 않아 호출이 배치 1회로 끝난다.
+    `EchoProvider(drop_last=True)`는 이 목적에 쓸 수 없다: 배치가 개수 불일치로
+    실패하면 폴백이 개별 호출로 재시도하고 거기서는 `len(items) > 1`이 거짓이라
+    **전부 성공한다.**
+    """
+    items = [{"id": i, "text": "   " if i in indices else f"EN{i}"} for i in range(count)]
+    return ScriptedProvider([json.dumps({"translations": items}, ensure_ascii=False)])
 
 
 def test_화면_요약과_파일_수치가_일치한다(
@@ -1361,11 +1380,50 @@ def test_화면_요약과_파일_수치가_일치한다(
     갈라져도 프로그램은 정상 종료하고 파일도 정상이며 종료 코드도 0이다.
     화면에서 파싱한 값과 `summary`를 대조하는 것만이 이것을 잡는다.
 
-    **`EchoProvider`의 기본 transform(`f"EN:{s}"`)을 일부러 쓴다.** 한글 원문이
-    남아 `struct.untranslated`가 전량 hard fail을 내므로(실측:
-    `tests/test_cli_triage.py`의 `_risk_free` 독스트링) `signal_hits`가 비지
-    않는다. 집계가 비면 아래 대조 루프가 **한 번도 돌지 않아 아무것도 재지
-    못한다** - 위험도 0인 번역을 쓰면 게이트가 조용히 무력해진다.
+    **`_blank_at`을 쓰는 것이 이 게이트의 핵심이다** (사전 스캔 발견 A).
+    기본 `EchoProvider()`는 한글 원문을 남겨 `struct.untranslated`가 **전량
+    hard fail**을 내고, 그러면 `selected == triaged`가 되어 두 값을 뒤바꾸는
+    변이가 **같은 값을 내며 통과한다** - 게이트가 통과하면서 아무것도 재지
+    못하는 상태다. `_blank_at({2,5,9}, 10)`이면 `triaged=7`이고 예산 10%에서
+    `quota=ceil(7*0.1)=1`이라 `selected=1 != triaged=7`로 갈린다.
+
+    실패 3건이 있으므로 종료 코드는 **1**이다(FR-2.6). 리포트는 그보다 먼저 나간다.
+    """
+    _patch_provider(monkeypatch, _blank_at({2, 5, 9}, 10))
+
+    result = runner.invoke(
+        app,
+        _args(
+            tmp_path,
+            "ten_cues.srt",
+            "--review-budget",
+            "10%",
+            "--review-out",
+            str(tmp_path / "reports"),
+        ),
+    )
+
+    assert result.exit_code == 1, result.output
+    summary = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]
+
+    assert summary["triaged_segments"] == 7
+    assert summary["selected_for_review"] != summary["triaged_segments"], (
+        "두 값이 같으면 이 게이트가 아무것도 재지 못한다"
+    )
+    assert f"  대상 세그먼트 {summary['triaged_segments']}개" in result.output
+    assert f"  검수 대상 {summary['selected_for_review']}개" in result.output
+    assert f"  hard fail {summary['hard_fail_count']}개" in result.output
+
+
+def test_신호별_적발_집계가_화면과_일치한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """게이트 10.1의 나머지 절반 — `signal_hits` 대조는 집계가 비지 않아야 한다.
+
+    **여기서는 기본 `EchoProvider()`를 일부러 쓴다.** 한글 원문이 남아
+    `struct.untranslated`가 전량 hard fail을 내므로 `signal_hits`가 채워진다.
+    위 테스트의 `_blank_at`은 번역문이 `EN0`·`EN1`이라 신호가 적거나 없을 수
+    있고, 집계가 비면 아래 루프가 **한 번도 돌지 않아 아무것도 재지 못한다.**
     """
     _patch_provider(monkeypatch, EchoProvider())
 
@@ -1384,9 +1442,7 @@ def test_화면_요약과_파일_수치가_일치한다(
     assert result.exit_code == 0, result.output
     summary = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]
 
-    assert f"  대상 세그먼트 {summary['triaged_segments']}개" in result.output
-    assert f"  검수 대상 {summary['selected_for_review']}개" in result.output
-    assert f"  hard fail {summary['hard_fail_count']}개" in result.output
+    assert summary["signal_hits"], "집계가 비면 아래 루프가 아무것도 재지 못한다"
     for name, count in summary["signal_hits"].items():
         assert f"    {name} {count}개" in result.output
 
@@ -1394,8 +1450,13 @@ def test_화면_요약과_파일_수치가_일치한다(
 def test_total이_triaged와_excluded의_합이다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """게이트 10.2 — 분모가 조용히 바뀌면 README 배수가 무너진다."""
-    _patch_provider(monkeypatch, EchoProvider())
+    """게이트 10.2 — 분모가 조용히 바뀌면 README 배수가 무너진다.
+
+    **`excluded`가 0이면 `total == triaged + 0`이 항등식이 되어 아무것도 재지
+    못한다** (사전 스캔 발견 B). `_blank_at`으로 실패 3건을 만들어야 검산이
+    성립한다.
+    """
+    _patch_provider(monkeypatch, _blank_at({2, 5, 9}, 10))
 
     result = runner.invoke(
         app,
@@ -1403,14 +1464,16 @@ def test_total이_triaged와_excluded의_합이다(
             tmp_path,
             "ten_cues.srt",
             "--review-budget",
-            "30%",
+            "10%",
             "--review-out",
             str(tmp_path / "reports"),
         ),
     )
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     summary = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]
+    assert summary["excluded_failures"] == 3, "실패가 0이면 아래 검산이 항등식이 된다"
+    assert summary["total_segments"] == 10
     assert summary["total_segments"] == summary["triaged_segments"] + summary["excluded_failures"]
 
 
@@ -1620,7 +1683,7 @@ def test_전량_실패해도_파일이_사실을_말한다(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: `test_cli_review_out.py` **16 passed**, 전체 **1134 passed, 3 deselected**.
+기대: `test_cli_review_out.py` **17 passed**, 전체 **1135 passed, 3 deselected**.
 
 - [ ] **Step 8: 실물로 확인한다**
 
@@ -1657,8 +1720,9 @@ git commit -m "기능: review.json 배선 - translate가 검수 리포트를 낸
 
 | # | 변이 | 죽어야 할 테스트 |
 | --- | --- | --- |
-| 1 | `build_review`에서 `selected_for_review`를 `len(outcome.risks)`로 | `test_화면_요약과_파일_수치가_일치한다` |
-| 2 | `TriageOutcome.total_segments`를 `len(self.risks)`로 | `test_total은_triaged와_excluded의_합이다` · `test_세그먼트_수가_셋으로_나뉘고_검산된다` |
+| 1 | `build_review`에서 `selected_for_review`를 `len(outcome.risks)`로 | `test_화면_요약과_파일_수치가_일치한다` (`_blank_at`이라 selected=1 · triaged=7로 갈린다) |
+| 2 | `TriageOutcome.total_segments`를 `len(self.risks)`로 | `test_total은_triaged와_excluded의_합이다` · `test_세그먼트_수가_셋으로_나뉘고_검산된다` · `test_total이_triaged와_excluded의_합이다`(CLI) |
+| 2b | `signal_hits`를 `self.selected`에서 세도록 | `test_signal_hits는_선별되지_않은_것도_센다` |
 | 3 | `review_ratio` 프로퍼티의 인자를 `self.selected`로 | `test_review_ratio는_triaged를_분모로_쓴다` |
 | 4 | `_review_path`를 `review_dir / f"review.{target_lang}.json"`으로 | `test_stem_규칙이_자막_출력과_같다` · `test_입력이_둘이면_파일이_서로를_지우지_않는다` |
 | 5 | `build_review`의 `segments`를 `outcome.risks`로 | `test_segments에는_선별된_것만_담긴다` |
