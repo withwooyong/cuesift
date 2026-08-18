@@ -1371,6 +1371,8 @@ def _review_path(
 
 기대: **7 passed.**
 
+> **실제로는 12개 · 1141 passed로 끝났다.** 구현자가 브리프의 7개로는 변이 5종이 산다는 것을 실측해 3개를 더했고(조합 검증이 성공 케이스를 한 번도 만들지 않았다), 리뷰가 상수 고정 4종을 잡아 2개가 더 붙었다. 아래 예고값은 **1141을 기준선으로** 재산출한 것이다.
+
 - [ ] **Step 7: 게이트를 돌리고 커밋한다**
 
 ```bash
@@ -1381,7 +1383,7 @@ git add src/cuesift/cli.py tests/test_cli_review_out.py
 git commit -m "기능: --review-out 옵션과 조합 검증 (FR-7.2 · D2 · D10 · D11)"
 ```
 
-**1136 passed**(1129 + 7).
+**1141 passed**(1129 + 12 — 브리프 7 + 구현자 3 + 리뷰 2).
 
 ---
 
@@ -1820,7 +1822,7 @@ def test_프로파일_없는_언어는_리포트도_내지_않는다(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1145 passed, 3 deselected**.
+기대: `test_cli_review_out.py` **22 passed**(5의 12 + 6의 10), 전체 **1151 passed, 3 deselected**.
 
 - [ ] **Step 8: 실물로 확인한다**
 
@@ -1891,7 +1893,7 @@ git status --short   # 변경 0건이어야 한다
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1145 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
+기대: **1151 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
 
 - [ ] **Step 4: 확인 기록을 커밋한다**
 
