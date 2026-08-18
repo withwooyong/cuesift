@@ -15,7 +15,8 @@ from typer.testing import CliRunner
 
 from conftest import normalize_rich_message
 from cuesift.cli import _format_triage_summary, _parse_review_budget, app
-from cuesift.segment import SegmentRisk
+from cuesift.report import TriageOutcome
+from cuesift.segment import Segment, SegmentRisk
 from cuesift.spec import SpecProfile, available_builtins, load_builtin
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
@@ -720,6 +721,33 @@ def _risk(seg_id: str, *, selected: bool, reasons: list[str] | None = None) -> S
     )
 
 
+def _outcome(risks: list[SegmentRisk], *, policy_label: str, excluded: int = 0) -> TriageOutcome:
+    """`_format_triage_summary`가 받는 객체를 만든다.
+
+    포매터는 `risks`·`policy_label`·`profile_name`·`excluded_failures`만 읽으므로
+    나머지 필드는 이 테스트의 판정에 관여하지 않는다.
+    """
+    return TriageOutcome(
+        source_lang="ko",
+        target_lang="en",
+        profile_name="en",
+        policy_label=policy_label,
+        policy_kind="budget",
+        policy_value=0.1,
+        risks=tuple(risks),
+        # **`segments=()`를 쓸 수 없다.** 포매터는 이 필드를 읽지 않지만
+        # `__post_init__`이 `risks`와 같은 세그먼트 집합을 요구하므로
+        # (`report/models.py`) 빈 튜플은 `ValueError`로 거부된다.
+        # 대응하는 더미를 만든다 - 값은 판정에 관여하지 않는다.
+        segments=tuple(
+            Segment(id=r.segment_id, index=i, start_ms=0, end_ms=1000, source_text="원문")
+            for i, r in enumerate(risks)
+        ),
+        excluded_failures=excluded,
+        usage=None,
+    )
+
+
 def test_검수_대상이_있으면_0퍼센트로_보이지_않는다() -> None:
     """`_format_ratio` 재사용을 잠근다 (리뷰 축B 변이 C).
 
@@ -739,9 +767,7 @@ def test_검수_대상이_있으면_0퍼센트로_보이지_않는다() -> None:
     """
     risks = [_risk(f"{i:05d}", selected=(i == 0)) for i in range(2001)]
 
-    lines = _format_triage_summary(
-        target_lang="en", policy_label="예산 0.1%", profile_name="en", risks=risks, excluded=0
-    )
+    lines = _format_triage_summary(_outcome(risks, policy_label="예산 0.1%"))
 
     assert "  검수 대상 1개 (실제 <0.1%)" in lines
     # 이 단언이 실질이다 - 위 줄만 보면 문자열을 손으로 만든 구현도 통과한다.
@@ -764,9 +790,7 @@ def test_신호별_적발은_선별되지_않은_것도_센다() -> None:
         _risk("00001", selected=False, reasons=["struct.empty"]),
     ]
 
-    lines = _format_triage_summary(
-        target_lang="en", policy_label="예산 50%", profile_name="en", risks=risks, excluded=0
-    )
+    lines = _format_triage_summary(_outcome(risks, policy_label="예산 50%"))
 
     assert "    spec.violation 1개" in lines
     assert "    struct.empty 1개" in lines, "선별되지 않은 세그먼트의 신호가 집계에서 빠졌다"

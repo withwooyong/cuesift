@@ -27,7 +27,6 @@ import math
 import os
 import re
 import sys
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -38,8 +37,9 @@ import typer
 from cuesift import __version__
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
+from cuesift.report import TriageOutcome
 from cuesift.risk import fuse
-from cuesift.segment import SegmentRisk
+from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
 from cuesift.spec import (
     SpecProfile,
@@ -62,7 +62,7 @@ from cuesift.translate import (
     iter_batches,
     translate_segments,
 )
-from cuesift.triage import review_ratio, select_by_budget, select_by_threshold
+from cuesift.triage import select_by_budget, select_by_threshold
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
 # `translate`가 배선된 뒤로 70은 `transcribe` 하나의 표식이다.
@@ -1089,7 +1089,7 @@ def _translate_one(
         # 먼저 나열하고, 트리아지 요약은 그것이 분모에서 빠졌다고 말한다.
         # 순서가 뒤집히면 "3건 제외"가 무엇을 가리키는지 알 수 없다.
         try:
-            for line in _run_triage(
+            outcome = _run_triage(
                 target_lang=target_lang,
                 profile=triage_profile,
                 glossary=glossary,
@@ -1098,8 +1098,7 @@ def _translate_one(
                 budget_ratio=budget_ratio,
                 threshold=threshold,
                 policy_label=policy_label,
-            ):
-                _echo(line)
+            )
         except ValueError as exc:
             # **정책 오류가 exit 1로 새는 것을 막는다.** 이 파일 머리말의 표에서
             # 1은 "규격 위반 발견"이라, 잡지 않으면 미처리 traceback이 exit 1이
@@ -1111,10 +1110,31 @@ def _translate_one(
             # 검사, `_run_triage`의 "budget·threshold가 둘 다 None" 불변식.
             # 셋 다 **설정이 틀린 것**이지 자막이 틀린 것이 아니므로 2다.
             #
+            # 넷째로 `TriageOutcome`의 생성자 불변식(id 집합 불일치·음수
+            # `excluded_failures`)도 `ValueError`라 이 그물에 걸린다. 그것만은
+            # 설정이 아니라 **내부 결함**이라 2가 정확한 표식은 아니지만,
+            # `_run_triage`가 `risks`와 `segments`를 같은 `kept`에서 만들므로
+            # 도달 경로가 없다. 도달한다면 그때는 코드가 틀린 것이다.
+            #
             # 번역 파일은 이미 나갔다 - 트리아지만 못 돌린 것이고, 그 사실을
             # 말하지 않으면 사용자는 번역까지 실패한 줄 안다.
             _echo(f"[{target_lang}] 트리아지를 돌리지 못했다: {exc}", err=True)
             return 2
+
+        if not outcome.risks:
+            # **전량 실패를 화면에서 구별한다.** `review_ratio`는 이때 0.0을
+            # 내지만(빈 목록 가드, `policy.py:194-195`) "검수 대상 0개"는
+            # "볼 것이 없다"로 읽힌다 - 실제로는 **판정 자체를 못 한 것**이다.
+            # `_run_triage`가 아니라 여기서 만드는 것은, 결과 객체는 전량
+            # 실패에서도 나와야 `review.json`이 "왜 비었나"를 남길 수 있기
+            # 때문이다(설계 D8).
+            _echo(
+                f"[{target_lang}] 트리아지: 번역된 세그먼트가 없어 건너뛴다 "
+                f"(전량 {outcome.excluded_failures}건 실패)"
+            )
+        else:
+            for line in _format_triage_summary(outcome):
+                _echo(line)
 
     return 1 if translated.failures else 0
 
@@ -1172,45 +1192,39 @@ def _format_translate_summary(
     return lines
 
 
-def _format_triage_summary(
-    *,
-    target_lang: str,
-    policy_label: str,
-    profile_name: str,
-    risks: Sequence[SegmentRisk],
-    excluded: int,
-) -> list[str]:
+def _format_triage_summary(outcome: TriageOutcome) -> list[str]:
     """트리아지 결과를 요약한다 (FR-7.4 · 설계 §7.1).
 
-    **`risks`는 `select_by_*`가 돌려준 전체 목록이다.** 선별분만 넘기면
-    `review_ratio`가 언제나 1.0이 되고, 그 값이 스펙 §6.2의 "실제 검수
-    비율"이자 README 배수의 분모라 조용히 틀리면 프로젝트의 핵심 주장이
-    무너진다(`triage/policy.py` 모듈 독스트링).
+    **수치를 여기서 세지 않는다.** `TriageOutcome`의 프로퍼티를 읽는다 -
+    `review.json`이 같은 수치를 내는데 두 곳에서 각자 세면 화면과 파일이
+    갈라지고, 갈라져도 프로그램은 정상 종료하고 파일도 정상이라 종료 코드로는
+    알 수 없다(review.json 설계 D8). 이 함수가 세던 넷(대상 수·검수 대상
+    수·hard fail 수·신호별 집계)이 전부 그쪽 프로퍼티로 옮겨졌고, **"`risks`는
+    `select_by_*`가 돌려준 전체 목록이다"**라는 계약도 함께 옮겨졌다
+    (`report/models.py`의 `TriageOutcome` 독스트링 · `triage/policy.py`
+    모듈 독스트링). 선별분만 담으면 `review_ratio`가 언제나 1.0이 되고, 그
+    값이 스펙 §6.2의 "실제 검수 비율"이자 README 배수의 분모다.
 
     **요청 예산과 실제 비율을 함께 낸다.** hard fail이 quota를 소진하므로
     (`policy.py:92`) 둘은 정기적으로 어긋나고, `ceil` 하나로도 어긋난다
     (26건에 10%면 실제 11.5%). 요청만 찍으면 사용자가 배수를 틀린 분모로
     재계산한다.
 
-    `excluded`가 0이면 괄호를 내지 않는다 - 실패가 없는 정상 실행에서
-    "(번역 실패 0건 제외)"는 없는 문제를 있는 것처럼 보이게 한다. 실패 ID
-    자체는 `_format_translate_summary`가 바로 위에서 나열했으므로 여기서
-    반복하지 않는다(설계 §7.1).
+    `excluded_failures`가 0이면 괄호를 내지 않는다 - 실패가 없는 정상
+    실행에서 "(번역 실패 0건 제외)"는 없는 문제를 있는 것처럼 보이게 한다.
+    실패 ID 자체는 `_format_translate_summary`가 바로 위에서 나열했으므로
+    여기서 반복하지 않는다(설계 §7.1).
     """
-    total = len(risks)
-    selected = sum(1 for r in risks if r.selected)
-    hard = sum(1 for r in risks if r.hard_fail)
+    total = outcome.triaged_segments
+    selected = outcome.selected_for_review
+    hard = outcome.hard_fail_count
+    # `reasons`가 0점 신호를 담지 않으므로 이 집계가 곧 "적발 건수"라는 근거는
+    # `signal_hits` 프로퍼티의 독스트링에 있다(`report/models.py`).
+    counts = outcome.signal_hits
 
     scope = f"  대상 세그먼트 {total}개"
-    if excluded:
-        scope += f" (번역 실패 {excluded}건 제외)"
-
-    # `reasons`는 0점 신호를 담지 않는다(`fuse.py:73` - "0점 신호를 사유에
-    # 넣으면 리포트가 '이것 때문에 뽑혔다'고 거짓말한다"). 따라서 이 집계가
-    # 곧 "적발 건수"다.
-    counts: Counter[str] = Counter()
-    for risk in risks:
-        counts.update(risk.reasons)
+    if outcome.excluded_failures:
+        scope += f" (번역 실패 {outcome.excluded_failures}건 제외)"
 
     lines = [
         # **프로파일 이름을 낸다.** 이것이 없으면 `profiles[target]`에 **다른 언어의**
@@ -1218,7 +1232,8 @@ def _format_triage_summary(
         # `profiles[target] = load_builtin("ko")` 변이로 실측했다: 키 집합만 검증되고
         # 값은 검증되지 않아 전 스위트가 통과한다. 사용자에게도 "어느 규격으로
         # 검사했는가"가 필요한 정보다(FR-5.1이 규격을 언어별로 정의한다).
-        f"[{target_lang}] 트리아지 ({policy_label}, 프로파일 {profile_name})",
+        f"[{outcome.target_lang}] 트리아지 "
+        f"({outcome.policy_label}, 프로파일 {outcome.profile_name})",
         scope,
         # **`_format_ratio`를 재사용한다 - `f"{x:.1%}"`로 직접 찍지 않는다.**
         # 직접 찍으면 세그먼트 2001개 중 검수 대상 1개(0.05%)가 `"0.0%"`가 되는데,
@@ -1231,14 +1246,16 @@ def _format_triage_summary(
         # (`percent < 0.05`가 0.05%를 뜻한다) `review_ratio`는 0~1 **비율**을 낸다.
         # 빼먹으면 실제 10%가 `"0.1%"`로 찍히고 프로그램은 정상 종료한다 -
         # 종료 코드로는 알 수 없는 조용한 100배 축소다.
-        f"  검수 대상 {selected}개 (실제 {_format_ratio(review_ratio(risks) * 100)})",
+        f"  검수 대상 {selected}개 (실제 {_format_ratio(outcome.review_ratio * 100)})",
         f"  hard fail {hard}개",
     ]
     if counts:
         lines.append("  신호별 적발")
-        # 정렬은 NFR-3(재현성)이다 - Counter의 순서는 삽입 순이라 세그먼트
-        # 순서가 바뀌면 화면이 달라지고 테스트가 흔들린다.
-        lines.extend(f"    {name} {count}개" for name, count in sorted(counts.items()))
+        # **정렬을 여기서 다시 하지 않는다.** `signal_hits`가 이미 정렬해
+        # 반환한다(NFR-3 재현성 - Counter의 순서는 삽입 순이라 세그먼트 순서가
+        # 바뀌면 화면이 달라지고 테스트가 흔들린다). 정렬이 두 곳에 있으면
+        # 한쪽만 고쳐지고, 그때 화면과 `review.json`의 신호 순서가 갈라진다.
+        lines.extend(f"    {name} {count}개" for name, count in counts.items())
     return lines
 
 
@@ -1252,8 +1269,8 @@ def _run_triage(
     budget_ratio: float | None,
     threshold: float | None,
     policy_label: str,
-) -> list[str]:
-    """번역 결과를 트리아지해 요약 줄을 낸다 (FR-6.1~6.3 · 설계 §4).
+) -> TriageOutcome:
+    """번역 결과를 트리아지해 결과 객체를 낸다 (FR-6.1~6.3 · 설계 §4).
 
     **번역 실패분을 입력에서 뺀다.** `TranslationResult`가 독스트링으로
     요구하는 계약이다 - 실패분은 `segments`에 `target_text=None`으로 남아
@@ -1267,17 +1284,55 @@ def _run_triage(
     전체를 넘긴다 - `spec.overlap`이 `BatchCollector`라 이웃을 봐야 판정되고,
     실패분을 수집 단계에서 빼면 그것과 겹치는 **성공한** 큐의 겹침까지 함께
     사라진다. 본문의 두 층 주석을 참고할 것.
+
+    **전량 실패에서도 객체를 낸다.** 요약 문자열을 조기 반환하면 `review.json`이
+    "왜 비었나"를 말할 수 없다 - `risks=()`와 `excluded_failures=N`이 그 사실을
+    파일에 남긴다. 화면 문구는 호출자가 만든다(설계 D8).
     """
     failed_ids = {f.segment_id for f in translated.failures}
     kept = [seg for seg in translated.segments if seg.id not in failed_ids]
+
+    # **정책 판정이 전량 실패 검사보다 앞에 온다.** `TriageOutcome`은 전량
+    # 실패에서도 `policy_kind`/`policy_value`를 요구한다 - `review.json`이
+    # "무슨 정책으로 돌렸는데 비었나"를 말해야 하기 때문이다. 순서를 되돌리면
+    # 전량 실패 경로가 두 값이 정해지지 않은 채 객체를 만들게 된다.
+    if budget_ratio is not None:
+        policy_kind, policy_value = "budget", budget_ratio
+    elif threshold is not None:
+        policy_kind, policy_value = "threshold", threshold
+    else:
+        # 호출자가 트리아지를 요청하지 않았는데 여기 도달한 것이다.
+        # 조용히 빈 결과를 내면 "트리아지가 돌았고 아무것도 안 걸렸다"로
+        # 읽혀 미배선을 정상으로 오인한다.
+        raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
+
+    def _outcome(risks: tuple[SegmentRisk, ...], segments: tuple[Segment, ...]) -> TriageOutcome:
+        """두 반환 지점이 같은 필드 조합을 쓰게 묶는다.
+
+        전량 실패 경로와 정상 경로가 각자 생성자를 부르면 필드 하나가 한쪽에서만
+        채워져도 타입 검사와 화면 테스트를 모두 통과한다 - `usage`가 정확히 그런
+        필드다(화면은 읽지 않고 `review.json`만 읽는다).
+        """
+        return TriageOutcome(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            profile_name=profile.name,
+            policy_label=policy_label,
+            policy_kind=policy_kind,
+            policy_value=policy_value,
+            risks=risks,
+            segments=segments,
+            excluded_failures=len(failed_ids),
+            usage=translated.usage,
+        )
+
     if not kept:
         # 전량 실패에서 `review_ratio`는 0.0을 내지만(빈 목록 가드,
         # `policy.py:194-195`) "검수 대상 0개"는 "볼 것이 없다"로 읽힌다.
-        # 실제로는 **판정 자체를 못 한 것**이므로 구별해 말한다.
-        return [
-            f"[{target_lang}] 트리아지: 번역된 세그먼트가 없어 건너뛴다 "
-            f"(전량 {len(failed_ids)}건 실패)"
-        ]
+        # 실제로는 **판정 자체를 못 한 것**이라 화면은 그것을 구별해 말해야
+        # 하는데, 그 문구는 이제 호출자가 만든다 - 여기서는 `risks=()`로
+        # 사실만 남긴다.
+        return _outcome((), ())
 
     ctx = SignalContext(
         profile=profile,
@@ -1304,23 +1359,20 @@ def _run_triage(
     # (`signals/base.py`) - KeyError 없이 전량을 돌 수 있다는 보장이다.
     risks = [fuse(seg.id, signals[seg.id]) for seg in kept]
 
-    if budget_ratio is not None:
-        scored = select_by_budget(risks, budget_ratio)
-    elif threshold is not None:
-        scored = select_by_threshold(risks, threshold)
+    # **위에서 정한 `policy_kind`로 분기한다 - `budget_ratio`를 다시 보지
+    # 않는다.** 두 번 판정하면 `review.json`이 "budget으로 돌렸다"고 적어 둔
+    # 채 실제로는 임계값 선별이 도는 조합이 생길 수 있고, 그때 파일은 문법상
+    # 정상이라 어떤 게이트에도 걸리지 않는다.
+    if policy_kind == "budget":
+        scored = select_by_budget(risks, policy_value)
     else:
-        # 호출자가 트리아지를 요청하지 않았는데 여기 도달한 것이다.
-        # 조용히 빈 목록을 내면 "트리아지가 돌았고 아무것도 안 걸렸다"로
-        # 읽혀 미배선을 정상으로 오인한다.
-        raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
+        scored = select_by_threshold(risks, policy_value)
 
-    return _format_triage_summary(
-        target_lang=target_lang,
-        policy_label=policy_label,
-        profile_name=profile.name,
-        risks=scored,
-        excluded=len(failed_ids),
-    )
+    # `scored`는 위험도 내림차순이고 `kept`는 트랙 원본 순서다. 둘의 순서가
+    # 다른 것이 정상이라 `TriageOutcome`은 id 집합으로만 검증한다
+    # (`report/models.py`) - 순서까지 고정하면 이 정상 입력이 거부돼 트리아지
+    # 경로가 통째로 죽는다.
+    return _outcome(tuple(scored), tuple(kept))
 
 
 def _parse_review_budget(raw: str) -> float:
