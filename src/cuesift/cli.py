@@ -419,6 +419,30 @@ def _output_path(
     return directory / f"{stem}.{target_lang}{input_path.suffix}"
 
 
+def _review_path(input_path: Path, review_dir: Path, source_lang: str, target_lang: str) -> Path:
+    """검수 리포트 경로를 정한다 (FR-7.2 · review.json 설계 D2).
+
+    stem 규칙은 바로 위 `_output_path`와 같다 - `.{source_lang}`으로 끝나면
+    치환하고 아니면 덧붙인다. 판정만 `casefold()`한다. **함께 바뀌는 것이라
+    함께 둔다** - 두 규칙이 갈라지면 같은 입력이 `ep01.en.srt`와
+    `ep01.ko.en.review.json`을 내 짝을 눈으로 못 맞춘다.
+
+    **고정 이름(`review.{lang}.json`)을 쓰지 않는 이유는 덮어쓰기다.** `ep01`과
+    `ep02`를 같은 `--review-out`으로 돌리면 뒤엣것이 앞엣것을 조용히 지우고,
+    종료 코드는 0이며 경고도 없다.
+
+    **`casefold()`가 양쪽에 걸려야 한다.** 파일명 쪽만 접으면 `--source-lang KO`
+    (`--source-lang`은 CLI 어디에서도 접히지 않고 여기까지 온다)가 치환에
+    실패해 `ep01.ko.en.review.json`이라는 이중 태그를 낸다 - `_output_path`가
+    겪은 사고의 거울상이다.
+    """
+    stem = input_path.stem
+    suffix = f".{source_lang}"
+    if stem.casefold().endswith(suffix.casefold()):
+        stem = stem[: -len(suffix)]
+    return review_dir / f"{stem}.{target_lang}.review.json"
+
+
 @app.command()
 def translate(
     input: Annotated[
@@ -487,6 +511,19 @@ def translate(
             help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). --review-budget과 함께 쓸 수 없다",
         ),
     ] = None,
+    review_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--review-out",
+            # `file_okay=False`는 `--out`과 같은 이유다 - 출력 디렉터리 자리에
+            # 이미 파일이 있으면 `FileExistsError`가 새어 exit 1로 오보된다.
+            # 1은 이 CLI에서 "규격 위반 발견"이라 설정 실수가 자막 결함이 된다.
+            file_okay=False,
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="검수 리포트(review.json) 출력 디렉터리. --review-budget 또는 "
+            "--review-threshold와 함께 써야 한다",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         # Task 4까지는 "경고 후 무시"(--review-budget과 같은 임시 처리)였다
@@ -521,6 +558,22 @@ def translate(
         # 표에서 1은 "규격 위반 발견"이라 **설정 실수가 자막 결함으로
         # 오보되고**, 사용자는 멀쩡한 자막을 고치려 든다.
         _echo("--review-threshold를 숫자로 읽지 못했다: nan", err=True)
+        raise typer.Exit(2)
+    if review_out is not None and review_budget is None and review_threshold is None:
+        # 리포트를 낼 트리아지 정책이 없다. 조용히 무시하면 사용자는 파일이
+        # 없다는 사실을 다음 단계(배포 스크립트·CI)에서야 만난다(설계 D10).
+        #
+        # **`--dry-run` 분기보다 앞에 둔다**(D11). 뒤로 미루면 dry-run으로
+        # 확인한 명령이 본 실행에서 처음 실패한다. 프로파일 전량 검사가 이미
+        # 같은 규칙을 따른다.
+        #
+        # **세 항을 모두 본다.** `review_out is not None` 하나로 줄이면 정상
+        # 조합까지 거부하고, 뒤의 두 항 중 하나만 보면 나머지 한 방식이
+        # 사용법 오류로 막힌다 - FR-6.3은 두 방식을 대등하게 둔다.
+        _echo(
+            "--review-out은 --review-budget 또는 --review-threshold와 함께 써야 한다",
+            err=True,
+        )
         raise typer.Exit(2)
 
     triage_requested = review_budget is not None or review_threshold is not None
