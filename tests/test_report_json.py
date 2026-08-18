@@ -372,11 +372,23 @@ def test_usage가_없으면_cost가_0을_낸다() -> None:
     """`--dry-run`이 아닌 경로에서 usage가 None인 것은 캐시 전량 히트 등이다.
 
     키를 빼면 소비자가 "집계 안 함"과 "0회 호출"을 구분하지 못한다.
+
+    **세 필드를 전부 단언한다.** `calls` 하나만 보면 나머지 둘의 `usage is None`
+    분기를 아무도 보지 않는다 - `test_cost가_범위를_명시하고`는 usage가 **있는**
+    경우만 보기 때문이다. 세 필드가 같은 3항 연산이라 하나만 망가지는 회귀는
+    드물지만, 드문 것과 게이트가 있는 것은 다르다.
+
+    usage가 있는 경로는 `1234 · 567 · 8`을 내므로 여기의 `0 · 0 · 0`과 갈린다 -
+    그래서 `usage is None` 분기를 통째로 지우는 회귀도(항상 `usage`를 읽으면
+    `None`에서 죽는다) 이 테스트가 잡는다.
     """
     doc = build_review(_outcome(risks=(_risk("00000", selected=True),), usage=None))
 
-    assert doc["summary"]["cost"]["calls"] == 0
-    assert doc["summary"]["cost"]["includes"] == ["translation"]
+    cost = doc["summary"]["cost"]
+    assert cost["prompt_tokens"] == 0
+    assert cost["completion_tokens"] == 0
+    assert cost["calls"] == 0
+    assert cost["includes"] == ["translation"]
 
 
 def test_signal_hits는_선별되지_않은_것도_센다() -> None:
