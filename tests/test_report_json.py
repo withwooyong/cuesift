@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from cuesift.report import TriageOutcome, build_review
+from cuesift.report import TriageOutcome, build_review, write_review
 from cuesift.segment import Segment, SegmentRisk, Signal, Span
 from cuesift.translate.provider import TokenUsage
 
@@ -433,3 +434,55 @@ def test_dict가_json_직렬화_가능하다() -> None:
 
     text = json.dumps(doc, ensure_ascii=False)
     assert json.loads(text) == doc
+
+
+def test_파일을_utf8로_쓴다(tmp_path: Path) -> None:
+    """한국어 원문이 `\\uXXXX`로 이스케이프되면 사람이 못 읽는다.
+
+    **부모를 두 단계 깊게 둔다.** 한 단계(`tmp_path/nested/f.json`)로는
+    `parents=True`를 `False`로 바꿔도 통과한다 - `tmp_path`가 이미 있어 한
+    단계는 `parents`와 무관하게 만들어지기 때문이다(실측: 변이 생존). CLI가
+    받는 `--out`은 `out/ep01/review.json`처럼 여러 단계다.
+    """
+    out = tmp_path / "out" / "nested" / "ep01.en.review.json"
+
+    write_review(_outcome(risks=(_risk("00000", selected=True),)), out)
+
+    assert out.exists(), "부모 디렉터리를 만들지 않았다"
+    text = out.read_text(encoding="utf-8")
+    assert "원문" in text, "ensure_ascii를 끄지 않았다"
+    assert json.loads(text)["summary"]["target_lang"] == "en"
+    # `indent=2`와 끝 개행이 사라지면 산출물이 한 줄이 되어 diff가 줄 단위로
+    # 나지 않는다 - FR-7.2의 수혜자가 사람이라는 사실이 여기 걸린다. 왕복
+    # 단언(`json.loads`)은 둘 다 통과시키므로 본문 형태를 직접 본다.
+    assert text.startswith('{\n  "summary"'), "indent=2가 사라졌다"
+    assert text.endswith("\n"), "끝 개행이 없다"
+
+
+def test_쓰기_실패는_OSError로_전파된다(tmp_path: Path) -> None:
+    """호출자(CLI)가 exit 66으로 바꾼다. 여기서 삼키면 종료 코드를 잃는다."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("파일이다", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        write_review(_outcome(risks=(_risk("00000", selected=True),)), blocker / "x.json")
+
+
+def test_직렬화_불가값은_TypeError로_전파된다(tmp_path: Path) -> None:
+    """설계 §8 — v0.2 QE 플러그인이 `detail`에 비원시값을 넣을 수 있다.
+
+    조용히 빈 파일을 남기는 것보다 시끄럽게 죽는 편이 낫다. 호출자가 exit 70
+    (내부 오류)으로 바꾼다 - exit 1("규격 위반 발견")로 새면 플러그인 결함이
+    자막 결함으로 오보된다.
+    """
+    signal = Signal(name="qe.dummy", tier=2, score=0.5, detail={"model": object()})
+    out = tmp_path / "x.json"
+
+    with pytest.raises(TypeError):
+        write_review(_outcome(risks=(_risk("00000", selected=True, signals=[signal]),)), out)
+
+    # **예외만 보면 순서를 재지 못한다.** `json.dump(fp)`로 스트리밍해도 TypeError는
+    # 똑같이 나므로 위 `raises`는 두 구현을 구별하지 못한다(실측: 변이 생존).
+    # 스트리밍은 예외 시점에 파일이 이미 열려 절반이 쓰여 있고, 소비자는 그것을
+    # "파일이 있으니 성공"으로 읽는다. 파일이 **없어야** 한다는 것이 계약이다.
+    assert not out.exists(), "직렬화 실패인데 반쯤 쓰인 파일이 남았다"

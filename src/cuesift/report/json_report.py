@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from cuesift.report.models import TriageOutcome
@@ -57,6 +59,27 @@ def build_review(outcome: TriageOutcome) -> dict[str, Any]:
         # 목록"이다. 분모는 위 `summary`가 이미 냈다.
         "segments": [_segment_doc(risk, by_id[risk.segment_id]) for risk in outcome.selected],
     }
+
+
+def write_review(outcome: TriageOutcome, path: Path) -> None:
+    """`review.json`을 쓴다 (FR-7.2 · 설계 §5.2).
+
+    **예외를 잡지 않는다.** `OSError`는 호출자가 exit 66으로, `TypeError`
+    (직렬화 불가)는 exit 70으로 바꾼다. 여기서 삼키면 파일이 없는데 종료
+    코드가 0이 되어 다음 단계(배포 스크립트·CI)가 빈손으로 진행한다.
+
+    **`ensure_ascii=False`가 필수다.** 이 프로젝트의 원문은 한국어이고
+    `\\uc6d0\\ubb38`로 이스케이프되면 사람이 파일을 열어 읽을 수 없다 -
+    FR-7.2의 수혜자가 검수자라는 사실이 이 인자 하나에 걸린다.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # **직렬화를 끝내고 나서 연다.** `json.dump(fp)`로 스트리밍하면 `TypeError`가
+    # 난 시점에 이미 열린 파일에 절반이 쓰여 있어 깨진 JSON이 남는다 - 소비자는
+    # 그것을 "파일이 있으니 성공"으로 읽는다.
+    #
+    # `indent=2`는 사람이 읽는 산출물이기 때문이다. diff도 줄 단위로 난다.
+    text = json.dumps(build_review(outcome), ensure_ascii=False, indent=2)
+    path.write_text(text + "\n", encoding="utf-8")
 
 
 def _segment_doc(risk: SegmentRisk, segment: Segment) -> dict[str, Any]:
