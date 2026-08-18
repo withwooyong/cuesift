@@ -13,7 +13,8 @@ import pytest
 from tests.fakes.provider import EchoProvider, ScriptedProvider
 from typer.testing import CliRunner
 
-from cuesift.cli import _parse_review_budget, app
+from cuesift.cli import _format_triage_summary, _parse_review_budget, app
+from cuesift.segment import SegmentRisk
 from cuesift.spec import SpecProfile, available_builtins, load_builtin
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
@@ -304,6 +305,11 @@ def test_대문자_언어_태그도_프로파일을_찾는다(
     assert "경고: 규격 프로파일이 없어" not in upper.output
     # 조회만 접는다 - 출력 파일명은 사용자가 준 태그를 그대로 쓴다.
     assert (tmp_path / "minimal.EN.srt").exists()
+    # **여기가 라벨과 프로파일 이름이 갈리는 유일한 자리다.** 라벨은 사용자가 준
+    # `EN`이고 프로파일은 접어서 찾은 `en`이다. 두 값이 같은 케이스에서만
+    # 단언하면 `profile_name`을 `target_lang`으로 바꿔치기해도 전 스위트가
+    # 통과한다(실측: 1089 passed, 리뷰 축B I2). 이 한 줄이 그것을 닫는다.
+    assert "[EN] 트리아지 (예산 10%, 프로파일 en)" in upper.output
 
 
 def test_대문자_언어_태그는_대소문자_구분_파일시스템에서도_찾는다(
@@ -374,6 +380,23 @@ def _blank_at(indices: set[int], count: int) -> ScriptedProvider:
     """
     items = [{"id": i, "text": "   " if i in indices else f"EN{i}"} for i in range(count)]
     return ScriptedProvider([json.dumps({"translations": items}, ensure_ascii=False)])
+
+
+def _risk_free(source: str) -> str:
+    """Tier 0 신호를 **하나도** 내지 않는 번역문을 만든다.
+
+    선별 정책 자체를 재는 테스트는 위험도가 0.0이어야 한다 - 신호가 끼면
+    hard fail이 예산을 우회해(FR-6.2) 정책이 무엇을 했는지 안 보인다.
+    `EchoProvider`의 기본 transform(`f"EN:{s}"`)은 한글 원문을 남겨
+    `struct.untranslated`가 전량 hard fail을 낸다(실측).
+
+    **숫자를 보존한다.** `large.srt`의 원문이 `안녕하세요 N번째 대사입니다`라
+    숫자를 담고 있어, 번역문에서 빠뜨리면 `struct.number_missing`이 두 자리
+    구간에서 hard fail을 낸다(한 자리는 스타일가이드 때문에 해제돼 있다).
+    나머지 고정 문구는 트랙 안에서 길이가 균일해 `length.ratio`의 분포가
+    서지 않는다(MAD도 평균절대편차도 0이면 이상치가 정의되지 않는다).
+    """
+    return f"Line {''.join(c for c in source if c.isdigit())} of the talk"
 
 
 def test_번역_실패분은_트리아지에서_빠진다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -472,6 +495,39 @@ def test_배치_신호가_발화한다(tmp_path: Path, monkeypatch: pytest.Monke
     assert "spec.overlap" in result.output
 
 
+def test_실패분_제외가_배치_신호를_눈멀게_하지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**수집과 융합의 입력이 다르다** - 리뷰 축A I1이 실측한 결함이다.
+
+    위 `test_배치_신호가_발화한다`는 **번역 실패가 0건인** 트랙만 본다.
+    `collect_all`에 `kept`(실패분을 뺀 목록)를 넘기는 구현은 그 게이트를
+    통과하면서도 여기서 죽는다 - §9.1이 막으려던 실패 모드가 다른 문으로
+    돌아오는 것이다.
+
+    `overlap.vtt`의 두 큐는 1000~4000ms와 3000~5000ms다. `check_overlaps`가
+    **뒤 큐**(`00001`)에 신호를 붙이므로, 앞 큐(`00000`)를 번역 실패시키면:
+
+    | 수집 입력 | 앞 큐를 보는가 | `spec.overlap` |
+    | --- | --- | --- |
+    | `kept` (틀림) | 아니오 | **사라진다** |
+    | `translated.segments` (옳음) | 예 | 뒤 큐에 남는다 |
+
+    **겹침 자체는 산출 파일에 그대로 남아 출고된다.** 요약만 침묵하고 exit는
+    0이라 종료 코드로는 알 수 없다.
+    """
+    _patch_provider(monkeypatch, _blank_at({0}, 2))
+
+    result = runner.invoke(app, _args(tmp_path, "overlap.vtt", "--review-budget", "50%"))
+
+    assert result.exit_code == 1, result.output  # 번역 실패 1건 (FR-2.6)
+    assert "대상 세그먼트 1개 (번역 실패 1건 제외)" in result.output
+    # 실패분을 **융합**에서는 여전히 뺀다 - D12는 유지된다.
+    assert "struct.empty" not in result.output
+    # 그러나 **수집**에서는 빼지 않았으므로 겹침은 살아 있다.
+    assert "spec.overlap" in result.output
+
+
 def test_실패가_없으면_제외_괄호를_내지_않는다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -486,15 +542,36 @@ def test_실패가_없으면_제외_괄호를_내지_않는다(
     assert "(번역 실패" not in result.output
 
 
-def test_임계값_방식이_동작한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """FR-6.3 ② — `select_by_threshold`를 부른다."""
-    _patch_provider(monkeypatch, EchoProvider())
+@pytest.mark.parametrize(
+    ("threshold", "selected", "ratio"),
+    [
+        # 위험도가 전부 0.0이므로 `0.0 >= 0.0`은 참, `0.0 >= 0.7`은 거짓이다.
+        ("0.0", "검수 대상 10개", "실제 100.0%"),
+        ("0.7", "검수 대상 0개", "실제 0.0%"),
+    ],
+)
+def test_임계값_방식이_동작한다(
+    threshold: str, selected: str, ratio: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-6.3 ② — `select_by_threshold`가 **실제로 선별을 결정하는지** 본다.
 
-    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-threshold", "0.7"))
+    **임계값 하나로는 게이트가 되지 않는다.** 이전 판은 `EchoProvider` 기본값
+    (전량 hard fail)에 `0.7` 하나만 걸고 `policy_label`과 세그먼트 수만
+    단언했다 - 임계값이 아무것도 결정하지 않아 `select_by_threshold` 배선을
+    **통째로 지워도 전 스위트가 통과했다**(실측: 1089 passed).
+
+    두 값을 걸어 결과가 갈리는 것을 본다. 이러면 미배선도, 예산 방식으로
+    바꿔치기하는 것도 죽는다 - 어느 쪽도 이 두 줄을 동시에 만족시키지 못한다.
+    """
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-threshold", threshold))
 
     assert result.exit_code == 0, result.output
-    assert "임계값 0.7" in result.output
+    assert f"임계값 {threshold}" in result.output
     assert "대상 세그먼트 10개" in result.output
+    assert selected in result.output
+    assert ratio in result.output
 
 
 def test_언어별로_트리아지가_돈다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -529,3 +606,92 @@ def test_언어별로_트리아지가_돈다(tmp_path: Path, monkeypatch: pytest
     # 값을 화면에 내는 것만으로는 게이트가 되지 않고, 이 두 줄이 그것을 닫는다.
     assert "[en] 트리아지 (예산 10%, 프로파일 en)" in result.output
     assert "[ja] 트리아지 (예산 10%, 프로파일 ja)" in result.output
+
+
+def _risk(seg_id: str, *, selected: bool, reasons: list[str] | None = None) -> SegmentRisk:
+    """요약 포맷터에 먹일 최소 위험도. 신호 구현을 타지 않는다."""
+    return SegmentRisk(
+        segment_id=seg_id,
+        signals=[],
+        risk_score=0.0,
+        hard_fail=False,
+        selected=selected,
+        reasons=reasons or [],
+    )
+
+
+def test_검수_대상이_있으면_0퍼센트로_보이지_않는다() -> None:
+    """`_format_ratio` 재사용을 잠근다 (리뷰 축B 변이 C).
+
+    이 저장소는 "0이 아닌데 `0.0%`로 보이는 것"을 **1급 결함**으로 취급한다
+    (`_format_ratio` 독스트링 - "검수자가 위반 목록을 눈앞에 두고 요약만 보면
+    '0%니까 통과'로 읽는다"). 그래서 트리아지 요약도 `f"{x:.1%}"`가 아니라
+    `_format_ratio`를 써야 하는데, **바꿔치기해도 전 스위트가 통과했다**
+    (실측: 1089 passed) - CLI 경로의 비율이 전부 0.1% 이상이라 두 구현의
+    차이가 드러나는 구간을 아무도 밟지 않았기 때문이다.
+
+    2001건 중 1건이 정확히 그 구간이다: `1/2001*100 = 0.0499...`로
+    `_format_ratio`의 절단 경계(`< 0.05`) 바로 아래다. `f"{x:.1%}"`는 이것을
+    `0.0%`로 떨어뜨린다.
+
+    **순수 함수를 직접 부른다** - 2001큐짜리 픽스처를 만들지 않기 위해서다.
+    포맷터가 `_translate_one`에서 분리돼 있는 것이 이 테스트를 가능하게 한다.
+    """
+    risks = [_risk(f"{i:05d}", selected=(i == 0)) for i in range(2001)]
+
+    lines = _format_triage_summary(
+        target_lang="en", policy_label="예산 0.1%", profile_name="en", risks=risks, excluded=0
+    )
+
+    assert "  검수 대상 1개 (실제 <0.1%)" in lines
+    # 이 단언이 실질이다 - 위 줄만 보면 문자열을 손으로 만든 구현도 통과한다.
+    assert not any("0.0%" in line for line in lines), lines
+
+
+def test_신호별_적발은_선별되지_않은_것도_센다() -> None:
+    """집계는 `risks` **전체**를 본다 (리뷰 축B 변이 D).
+
+    선별분으로 좁혀도 전 스위트가 통과했다(실측). 그러나 §9.2의 실패분 제외
+    게이트가 `"struct.empty" not in output`으로 판정하므로, 집계가 선별분만
+    보면 **실패분이 입력에 섞여 있어도 선별되지 않았다는 이유로 조용히 통과**할
+    수 있다 - 게이트가 재려던 것을 못 재게 된다.
+
+    "신호별 적발"은 "무엇이 걸렸나"이지 "무엇이 뽑혔나"가 아니다. 예산 밖으로
+    밀린 위험도 사용자가 알아야 다음 예산을 정한다.
+    """
+    risks = [
+        _risk("00000", selected=True, reasons=["spec.violation"]),
+        _risk("00001", selected=False, reasons=["struct.empty"]),
+    ]
+
+    lines = _format_triage_summary(
+        target_lang="en", policy_label="예산 50%", profile_name="en", risks=risks, excluded=0
+    )
+
+    assert "    spec.violation 1개" in lines
+    assert "    struct.empty 1개" in lines, "선별되지 않은 세그먼트의 신호가 집계에서 빠졌다"
+
+
+def test_트리아지가_던지면_exit_2다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """정책 오류가 **exit 1로 새지 않는다** (리뷰 축A M2).
+
+    이 CLI에서 1은 "규격 위반 발견"이다(`cli.py` 머리말). 트리아지가 던진
+    `ValueError`를 잡지 않으면 미처리 traceback이 exit 1이 되어 **설정 실수가
+    자막 결함으로 오보되고** 사용자는 멀쩡한 자막을 고치려 든다 -
+    `--review-threshold nan` 가드가 앞단에 있는 이유와 같다.
+
+    번역 파일은 이미 나갔다는 것도 함께 고정한다. 트리아지만 못 돈 것이지
+    번역이 실패한 것이 아니다.
+    """
+
+    def boom(*_args: object, **_kwargs: object) -> list[SegmentRisk]:
+        raise ValueError("정책이 터졌다")
+
+    monkeypatch.setattr("cuesift.cli.select_by_budget", boom)
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
+
+    assert result.exit_code == 2, result.output
+    assert "트리아지를 돌리지 못했다: 정책이 터졌다" in result.output
+    assert (tmp_path / "ten_cues.en.srt").exists(), "번역까지 잃었다"

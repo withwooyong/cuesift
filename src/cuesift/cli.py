@@ -1088,17 +1088,33 @@ def _translate_one(
         # 요약 출력 **뒤**에 온다 - `_format_translate_summary`가 실패 ID를
         # 먼저 나열하고, 트리아지 요약은 그것이 분모에서 빠졌다고 말한다.
         # 순서가 뒤집히면 "3건 제외"가 무엇을 가리키는지 알 수 없다.
-        for line in _run_triage(
-            target_lang=target_lang,
-            profile=triage_profile,
-            glossary=glossary,
-            source_lang=source_lang,
-            translated=translated,
-            budget_ratio=budget_ratio,
-            threshold=threshold,
-            policy_label=policy_label,
-        ):
-            _echo(line)
+        try:
+            for line in _run_triage(
+                target_lang=target_lang,
+                profile=triage_profile,
+                glossary=glossary,
+                source_lang=source_lang,
+                translated=translated,
+                budget_ratio=budget_ratio,
+                threshold=threshold,
+                policy_label=policy_label,
+            ):
+                _echo(line)
+        except ValueError as exc:
+            # **정책 오류가 exit 1로 새는 것을 막는다.** 이 파일 머리말의 표에서
+            # 1은 "규격 위반 발견"이라, 잡지 않으면 미처리 traceback이 exit 1이
+            # 되어 **설정 실수가 자막 결함으로 오보되고** 사용자는 멀쩡한 자막을
+            # 고치려 든다. `--review-threshold nan` 가드가 정확히 같은 이유로
+            # 앞단에 있다 - 여기는 그 가드가 놓친 경로를 받는 두 번째 그물이다.
+            #
+            # 여기로 오는 것: `select_by_*`의 범위·NaN 검사, `fuse`의 가중치
+            # 검사, `_run_triage`의 "budget·threshold가 둘 다 None" 불변식.
+            # 셋 다 **설정이 틀린 것**이지 자막이 틀린 것이 아니므로 2다.
+            #
+            # 번역 파일은 이미 나갔다 - 트리아지만 못 돌린 것이고, 그 사실을
+            # 말하지 않으면 사용자는 번역까지 실패한 줄 안다.
+            _echo(f"[{target_lang}] 트리아지를 돌리지 못했다: {exc}", err=True)
+            return 2
 
     return 1 if translated.failures else 0
 
@@ -1247,9 +1263,10 @@ def _run_triage(
     실제 비율이 15%로 부풀어 배수의 분모까지 망가진다. 번역 안 된 자막은
     검수 대상이 아니라 **재실행 대상**이다.
 
-    **`collect_all`에 트랙 전체를 한 번에 넘긴다.** `spec.overlap`이
-    `BatchCollector`라 세그먼트를 하나씩 넘기면 신호가 발화하지 않는데
-    프로그램은 정상 종료한다 - 종료 코드로는 알 수 없는 조용한 실패다.
+    **그러나 빼는 자리는 융합이지 수집이 아니다.** `collect_all`에는 트랙
+    전체를 넘긴다 - `spec.overlap`이 `BatchCollector`라 이웃을 봐야 판정되고,
+    실패분을 수집 단계에서 빼면 그것과 겹치는 **성공한** 큐의 겹침까지 함께
+    사라진다. 본문의 두 층 주석을 참고할 것.
     """
     failed_ids = {f.segment_id for f in translated.failures}
     kept = [seg for seg in translated.segments if seg.id not in failed_ids]
@@ -1268,7 +1285,21 @@ def _run_triage(
         source_lang=source_lang,
         target_lang=target_lang,
     )
-    signals = collect_all(kept, ctx)
+    # **수집과 융합의 입력이 다르다. 서로 다른 층의 요구이기 때문이다.**
+    #
+    # 수집(`collect_all`)은 **트랙 전체**를 본다 - 배치 신호가 이웃을 봐야
+    # 판정되기 때문이다. 융합(`fuse`)은 **`kept`만** 본다 - 실패분이 hard
+    # fail로 quota를 먹으면 안 되기 때문이다(D12).
+    #
+    # 둘을 `kept` 하나로 묶으면 **번역 실패한 큐와 겹치는 성공한 큐의 겹침이
+    # 사라진다.** 그 겹침은 산출 파일에 그대로 남아 출고되는데 요약은 침묵하고
+    # exit도 정상이다 - 종료 코드로는 알 수 없는 조용한 실패다(실측: 같은 2큐
+    # 파일에서 실패 1건이면 `spec.overlap` 미출력, 실패 0건이면 1개 출력).
+    #
+    # D12는 그대로 유지된다 - 실패분의 신호는 수집되기만 하고 `fuse`에
+    # 도달하지 않아 위험도가 되지 않는다. `length.ratio`는 빈 번역을 분포에서
+    # 이미 제외하므로(`signals/derived.py:145-148`) 분포도 흔들리지 않는다.
+    signals = collect_all(translated.segments, ctx)
     # `collect_all`은 신호가 없는 세그먼트도 빈 리스트로 키를 갖는다
     # (`signals/base.py`) - KeyError 없이 전량을 돌 수 있다는 보장이다.
     risks = [fuse(seg.id, signals[seg.id]) for seg in kept]
