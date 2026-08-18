@@ -306,6 +306,7 @@ cuesift translate ep01.ko.srt --to en    --review-threshold 0.7  # 위험도 0.7
 |---|---|---|
 | `--review-budget` | **비율만** — `10%` · `0.1` · `0` · `100%` | `50`처럼 **개수 지정은 종료 코드 2**입니다. 라이브러리에 개수 기반 선별이 없고, `k/n`으로 환산하면 올림과 hard fail 소진 때문에 정확히 K개가 나오지 않아 옵션이 거짓말을 하게 됩니다 |
 | `--review-threshold` | `0.0`~`1.0` | 이 위험도 이상을 큐에 담습니다 |
+| `--review-out` | 디렉터리 | 결과를 `review.json`으로 남깁니다(아래). **위 둘 중 하나와 함께** 써야 하고, 단독으로 주면 종료 코드 2입니다 |
 
 **둘을 함께 주면 종료 코드 2입니다.** FR-6.3은 "두 방식으로 지정할 수 있다"이지
 "동시에"가 아니고, 합성하면 어느 쪽이 이겼는지가 출력에서 사라집니다.
@@ -351,6 +352,120 @@ en·ja의 LLM 비용을 실제로 쓴 뒤에 fr에서 죽습니다.
 있어 `struct.empty`가 hard fail을 내고, hard fail은 예산을 우회하므로 프로바이더 장애
 하나가 진짜 오류를 큐에서 밀어냅니다(실측: 200큐·진짜 오류 20건·예산 10%에서 번역 실패
 20건이면 Recall이 **0%**). 번역 안 된 자막은 검수 대상이 아니라 **재실행 대상**입니다.
+
+#### 검수 리포트 파일 — `--review-out` (FR-7.2, 동작합니다)
+
+**화면 요약은 실행이 끝나면 사라집니다.** `--review-out DIR`을 주면 같은 결과가
+`review.json`으로 남습니다 — 검수자에게 넘기고, 스크립트로 읽고, 며칠 뒤에 다시 엽니다.
+
+```bash
+cuesift translate ep01.ko.srt --to en --review-budget 30% --review-out reports
+```
+
+```text
+[en] ep01.en.srt
+  세그먼트 3개 · 성공 3개 · 실패 0개
+  캐시 히트 0개 · 실제 호출 1개
+  토큰 prompt 239 · completion 45 · calls 1
+[en] 트리아지 (예산 30%, 프로파일 en)
+  대상 세그먼트 3개
+  검수 대상 1개 (실제 33.3%)
+  hard fail 0개
+  신호별 적발
+    spec.violation 1개
+  리포트 reports\ep01.en.review.json
+```
+
+(경로 구분자는 실행한 OS를 따릅니다 — 위는 Windows에서 그대로 옮긴 것입니다.)
+
+**파일명은 `{stem}.{대상언어}.review.json`이고 자막 파일과 같은 stem 규칙입니다.**
+고정 이름(`review.json`)이면 입력 여럿을 같은 디렉터리로 낼 때 뒤엣것이 앞엣것을
+**조용히 지웁니다** — 종료 코드는 0이고 경고도 없어 사용자는 마지막 파일만 보고 앞의
+작업이 끝났다고 믿습니다. 아래는 실측입니다.
+
+| 실행 | 남는 파일 |
+|---|---|
+| `translate ep01.ko.srt --to en,ja --review-out reports` | `reports/ep01.en.review.json` · `reports/ep01.ja.review.json` |
+| 이어서 `translate ep02.ko.srt --to en --review-out reports` | 위 둘 **그대로** + `reports/ep02.en.review.json` |
+
+파일은 이렇게 생겼습니다. **위 명령이 실제로 낸 것입니다.**
+
+```json
+{
+  "summary": {
+    "source_lang": "ko",
+    "target_lang": "en",
+    "profile": "en",
+    "policy": { "kind": "budget", "value": 0.3 },
+    "total_segments": 3,
+    "triaged_segments": 3,
+    "excluded_failures": 0,
+    "selected_for_review": 1,
+    "review_ratio": 0.3333333333333333,
+    "hard_fail_count": 0,
+    "signal_hits": { "spec.violation": 1 },
+    "cost": {
+      "prompt_tokens": 239,
+      "completion_tokens": 45,
+      "calls": 1,
+      "includes": ["translation"]
+    }
+  },
+  "segments": [
+    {
+      "id": "00001",
+      "start_ms": 3400,
+      "end_ms": 4200,
+      "source_text": "반갑습니다.",
+      "target_text": "Hello.",
+      "risk_score": 0.5,
+      "hard_fail": false,
+      "reasons": ["spec.violation"],
+      "signals": [
+        {
+          "name": "spec.violation",
+          "tier": 0,
+          "score": 0.5,
+          "spans": [],
+          "detail": { "kinds": ["duration_short"], "count": 1 }
+        }
+      ]
+    }
+  ]
+}
+```
+
+전체 구조는 [요구사항정의서 §8.4](docs/요구사항정의서.md)에 있습니다. 읽을 때 알아야 할 것은 넷입니다.
+
+| 무엇 | 왜 그렇게 돼 있나 |
+|---|---|
+| **`segments[]`에는 선별된 것만** 담긴다 | FR-7.2가 "검수 **대상** 세그먼트 목록"입니다. 분모는 `summary`가 따로 냅니다 |
+| **세그먼트 수가 셋**이다 (`total`·`triaged`·`excluded_failures`) | `total = triaged + excluded`가 **파일 안에서 검산됩니다.** 하나로 두면 `review_ratio`의 분모가 무엇인지 알 수 없고, 그 값이 위 "실측" 절 배수의 분모입니다 |
+| **`policy.value`는 비율이지 퍼센트가 아니다** | `30%`는 `0.3`으로 실립니다. 화면 표시는 `× 100`을 거치므로 **반대 방향**입니다 |
+| **`cost.includes`가 집계 범위를 밝힌다** | 지금은 `["translation"]`뿐입니다 — Tier 1 토큰은 아직 여기 합산되지 않습니다. 목록에 `"tier1"`이 없다는 사실 자체가 그 부재를 알립니다 |
+
+**통화 환산 비용(`estimated_usd`)은 넣지 않습니다.** 토큰당 단가가 모델·프로바이더마다
+다르고 우리에게 출처가 없습니다(NFR-2 · §11 R8). `0.0`도 `null`도 넣지 않습니다 —
+전자는 출처 없는 수치이고 후자는 "언젠가 채워질 자리"로 읽혀 **명시적인 범위 결정을
+숨깁니다.**
+
+조합에 따른 동작은 이렇습니다. 넷 다 실측했습니다.
+
+| 조합 | 결과 |
+|---|---|
+| `--review-out` + 예산 **또는** 임계값 | 정상 — 언어마다 파일 하나 |
+| `--review-out` **단독** | **종료 코드 2** — 리포트를 낼 트리아지 정책이 없습니다. 조용히 무시하면 사용자는 파일이 없다는 것을 다음 단계(배포 스크립트·CI)에서야 만납니다 |
+| `--review-out` 단독 + `--dry-run` | **여전히 종료 코드 2** — 옵션 조합 오류는 LLM을 부르기 전에 알아야 합니다 |
+| `--review-out` + 예산 + `--dry-run` | 종료 코드 0, **디렉터리조차 만들지 않습니다** — dry-run은 트리아지를 돌리지 않으므로 낼 것이 없습니다 |
+
+**규격 프로파일이 없는 대상 언어는 리포트를 내지 않습니다.** 위 표(`--to en,th`)대로
+번역은 그대로 나가지만 `th`의 `review.json`은 생기지 않습니다 — 빈 파일을 내면 소비자가
+"검수했고 걸린 것이 없다"로 읽는데 실제로는 **판정 자체를 못 한 것**입니다.
+
+**리포트를 쓰지 못하면 종료 코드로 알립니다.** 디렉터리 생성·쓰기 실패는 `66`,
+직렬화 실패(신호가 JSON으로 바꿀 수 없는 값을 담은 경우)는 `70`입니다. 파일이 없는데
+`0`으로 끝나면 다음 단계가 빈손으로 진행합니다. **자막 파일은 트리아지보다 먼저 쓰이므로
+리포트가 실패해도 번역 산출물은 이미 디스크에 있습니다.**
 
 > **하위 호환이 깨진 지점 3가지** — 이전 버전은 `--review-budget`을 경고만 내고
 > 무시했으므로 **무엇을 주든 종료 코드 0으로 번역이 나왔습니다.** 지금은 값을 검증하고
