@@ -522,3 +522,10 @@ def test_언어별로_트리아지가_돈다(tmp_path: Path, monkeypatch: pytest
     assert result.exit_code == 0, result.output
     assert "[en] 트리아지" in result.output
     assert "[ja] 트리아지" in result.output
+    # **프로파일 이름까지 본다.** 위 두 단언은 언어 라벨만 보므로
+    # `profiles[target]`에 **다른 언어의** 프로파일이 들어가도 통과한다 -
+    # 라벨은 `target_lang`에서 오고 프로파일은 별개의 dict 조회이기 때문이다.
+    # 실측: `en`에만 ko 프로파일을 꽂는 변이가 전 스위트 1089건을 **통과했다.**
+    # 값을 화면에 내는 것만으로는 게이트가 되지 않고, 이 두 줄이 그것을 닫는다.
+    assert "[en] 트리아지 (예산 10%, 프로파일 en)" in result.output
+    assert "[ja] 트리아지 (예산 10%, 프로파일 ja)" in result.output
