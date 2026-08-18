@@ -217,7 +217,8 @@ git commit -m "기능: --review-budget 값 파싱 (FR-6.3 · 설계 §5.2)"
   - `budget_ratio: float | None`
   - `review_threshold: float | None` (옵션 값 그대로)
   - `profiles: dict[str, SpecProfile]` — 대상 언어별로 미리 로드한 프로파일
-  - `policy_label: str` — 요약에 찍을 라벨. 사용자가 준 원문을 쓴다
+  - `policy_label: str | None` — 요약에 찍을 라벨. 사용자가 준 원문을 쓴다.
+    트리아지를 요청하지 않으면 `None`이다(Task 2 fix 라운드 F4)
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
 
@@ -605,6 +606,8 @@ git commit -m "기능: --review-threshold 신설·상호배타·프로파일 사
   - `_run_triage(*, target_lang: str, profile: SpecProfile, glossary: Glossary | None,
     source_lang: str, translated: TranslationResult, budget_ratio: float | None,
     threshold: float | None, policy_label: str) -> list[str]`
+    (`policy_label`은 여기서 `str`이다 — `_translate_one`이 `str | None`을 받아
+    호출 직전에 좁힌다)
   - `_format_triage_summary(*, target_lang: str, policy_label: str,
     risks: Sequence[SegmentRisk], excluded: int) -> list[str]`
 
@@ -1010,14 +1013,25 @@ def _run_triage(
     triage_profile: SpecProfile | None,
     budget_ratio: float | None,
     threshold: float | None,
-    policy_label: str,
+    policy_label: str | None,
 ) -> int:
 ```
+
+`policy_label`이 `str | None`인 이유: Task 2의 fix 라운드가 이것을 `if triage_requested`
+가드 **안**으로 옮겼다(리뷰 F4). 트리아지를 요청하지 않으면 `None`이고, 그것이 정확한
+표현이다 — 초안은 `str`이었고 그때는 정책이 없어도 `"임계값 None"`이라는 무의미한
+문자열이 만들어졌다.
 
 그리고 본문 끝의 `return 1 if translated.failures else 0` **직전**에 추가한다:
 
 ```python
-    if triage_profile is not None:
+    if triage_profile is not None and policy_label is not None:
+        # **두 조건을 함께 본다.** 둘은 `translate` 본문에서 같은 가드
+        # (`if triage_requested`) 안에 함께 설정되므로 실제로는 항상 같이
+        # 있거나 같이 없다. 그럼에도 둘 다 검사하는 것은 `_run_triage`가
+        # `policy_label: str`(None 불가)을 받기 때문이다 - 여기가 타입을
+        # 좁히는 유일한 지점이고, 한쪽만 보면 None이 함수 경계를 넘는다.
+        #
         # 요약 출력 **뒤**에 온다 - `_format_translate_summary`가 실패 ID를
         # 먼저 나열하고, 트리아지 요약은 그것이 분모에서 빠졌다고 말한다.
         # 순서가 뒤집히면 "3건 제외"가 무엇을 가리키는지 알 수 없다.
@@ -1036,7 +1050,7 @@ def _run_triage(
     return 1 if translated.failures else 0
 ```
 
-- [ ] **Step 8: 호출부에 인자를 넘기고 `noqa: F841` 3개를 지운다**
+- [ ] **Step 8: 호출부에 인자를 넘기고 `noqa: F841` 2개를 지운다**
 
 `translate` 본문의 `_translate_one(...)` 호출에 인자를 추가한다(Task 2가 `cli.py`에
 100줄을 더했으므로 줄 번호로 찾지 말고 `_translate_one(` 호출로 찾는다):
@@ -1053,7 +1067,7 @@ def _run_triage(
 `profiles`는 트리아지를 요청하지 않으면 빈 dict라 `.get(target)`이 `None`을 내고
 트리아지가 돌지 않는다(D3 하위 호환).
 
-**그리고 `noqa: F841` 3개를 지운다.** Task 2는 `budget_ratio`·`policy_label`을 만들기만
+**그리고 `noqa: F841` 2개를 지운다.** Task 2는 `budget_ratio`·`policy_label`을 만들기만
 하고 쓰지 않아 ruff `F841`(미사용 지역 변수)로 게이트가 깨졌고, 임시로 `noqa`를 달았다.
 이 Step이 그 변수들을 실제로 쓰는 자리이므로 여기서 걷어낸다.
 
@@ -1061,7 +1075,15 @@ def _run_triage(
 grep -n "noqa: F841" src/cuesift/cli.py
 ```
 
-세 곳(Task 2 시점 기준 `cli.py:512`·`515`·`523`)과 그 위의 안내 주석을 지운다.
+**두 곳이다** — Task 2 fix 라운드 시점 기준 `cli.py:532`(`budget_ratio = _parse_...`)와
+`cli.py:547`(`policy_label = (`), 그리고 그 위의 안내 주석. 줄 번호는 이 Step 이전 편집으로
+움직이므로 grep 결과를 따른다.
+
+> **초안은 "3개(512·515·523)"라고 적었다.** Task 2 리뷰(축A)가 `cli.py:512`
+> (`budget_ratio: float | None = None` — 단순 선언)는 애초에 `F841`을 내지 않는다는 것을
+> 실측했고, fix 라운드에서 그 잉여 하나가 제거됐다. **남은 둘은 재대입 지점이라 실제로
+> `F841`을 억제 중이다** — 재리뷰가 `ruff check --isolated --select F841,RUF100`으로
+> "불필요한 noqa 0, 억제 안 된 F841 0"을 확인했다. 필요한 것까지 지우지 마라.
 
 **도구가 이것을 강제하지 않는다.** ruff의 `RUF100`(불필요한 `noqa` 감지)이 이 저장소의
 select(`E,F,I,UP,B,SIM`)에 **없어서**, 변수를 쓰기 시작해도 `noqa`가 남아 있는 것을 아무도
