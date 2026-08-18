@@ -13,6 +13,7 @@ import pytest
 from tests.fakes.provider import EchoProvider, ScriptedProvider
 from typer.testing import CliRunner
 
+from conftest import normalize_rich_message
 from cuesift.cli import _format_triage_summary, _parse_review_budget, app
 from cuesift.segment import SegmentRisk
 from cuesift.spec import SpecProfile, available_builtins, load_builtin
@@ -251,6 +252,10 @@ def test_임계값이_범위를_벗어나면_exit_2다(
     `1.5`·`-0.1`·`inf`는 click이 잡는다. **누가 잡든 결과가 같아야 한다**는
     것이 이 테스트가 고정하는 계약이므로 넷을 같은 자리에서 본다 - click의
     동작이 바뀌어도 여기서 드러난다.
+
+    **`nan`과 나머지 셋은 출력 경로가 다르다.** `nan`은 우리 가드가 잡아
+    `_echo`로 평문을 내지만, 셋은 click이 잡아 **rich가 렌더한다.** 그래서
+    옵션 이름 단언에 `normalize_rich_message`가 필요하다 - 아래 참고.
     """
     _patch_provider(monkeypatch, EchoProvider())
 
@@ -259,7 +264,17 @@ def test_임계값이_범위를_벗어나면_exit_2다(
     assert result.exit_code == 2, result.output
     # `cli.py`의 `min`/`max` 주석이 "오류 메시지가 옵션 이름을 말한다"를
     # 정당화의 근거로 든다. 그 약속을 게이트로 만든다.
-    assert "--review-threshold" in result.output
+    #
+    # **원문에 그대로 단언하면 색이 켜진 환경에서 죽는다.** rich의
+    # 하이라이터가 `--review-threshold`를 세 조각(`-`·`-review`·`-threshold`)
+    # 으로 나눠 각각 style을 입히므로 토큰 **안쪽에** ANSI가 박힌다
+    # (실측: `\x1b[1;36m-\x1b[0m\x1b[1;36m-review\x1b[0m\x1b[1;36m-threshold\x1b[0m`).
+    # 부분 문자열 `--review-threshold`는 그 순간 사라진다.
+    #
+    # 로컬(Windows)은 색이 꺼져 통과하고 CI(Linux)는 켜져 죽었다 - 종료 코드는
+    # 양쪽 다 2였으므로 **동작이 아니라 관측 방법이 플랫폼에 종속된 것**이다.
+    # 재현: `FORCE_COLOR=1 pytest`.
+    assert normalize_rich_message("--review-threshold") in normalize_rich_message(result.output)
     assert not list(tmp_path.glob("*.srt")), "검증 실패인데 번역 파일이 나왔다"
 
 
