@@ -83,6 +83,15 @@ def _signal_doc(signal: Signal) -> dict[str, Any]:
     `self_consistency.samples`는 "왜 이 번역이 불안정하다고 봤는가"의 유일한
     자료다. 크기는 selected만 담는 것(D3)과 Tier 1이 후보에만 도는 것
     (`max_ratio`)으로 이중 축소된다.
+
+    **`dict(signal.detail)`은 얕은 복사다.** 최상위 dict만 새것이고 안의
+    리스트·dict는 원본 `Signal`과 **같은 객체**다 - 중첩은 가상이 아니라
+    `signals/derived.py`·`signals/llm.py`가 실제로 리스트를 담는다.
+    따라서 `build_review`의 반환 문서는 **읽고 직렬화하는 용도**다.
+    `detail["terms"].append(...)`처럼 제자리 수정을 하면 원본 신호가 오염된다.
+    복제가 필요하면 호출자가 `copy.deepcopy`를 하라 - 여기서 하지 않는 이유는
+    현재 경로가 반환 직후 직렬화라 `samples` 같은 큰 리스트를 통째로 복제할
+    이유가 없기 때문이다.
     """
     return {
         "name": signal.name,

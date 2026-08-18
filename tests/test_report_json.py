@@ -250,8 +250,17 @@ def test_hard_fail이_집계되고_세그먼트마다_실린다() -> None:
     """**hard_fail은 예산을 우회하므로 파일이 그 수를 말해야 한다** (FR-6.2 · D8).
 
     참·거짓을 **둘 다** 담는다. 전부 False인 픽스처에서는 상수 `False` 고정도
-    부정(`not risk.hard_fail`)도 살아남고, 집계 쪽은 여집합으로 바꿔도
-    통과한다. `hard_fail_count`가 선별 수와도 달라야 두 값의 바꿔치기가 잡힌다.
+    부정(`not risk.hard_fail`)도 살아남고, 집계 쪽은 여집합으로 바꿔도 통과한다.
+
+    **네 수가 전부 서로 달라야 한다** - 트리아지 5 · hard_fail 2 · 선별 4 ·
+    여집합 3. 둘이라도 같으면 그 둘을 맞바꾸는 변이가 살아남는다. 실제로
+    이 픽스처는 hard_fail과 선별이 둘 다 2였던 판에서 `hard_fail_count ←
+    selected_for_review`를 통과시켰다. 수를 조금만 옮겨도 다른 등치가 생기니
+    (5·2·3·2처럼) **넷을 한꺼번에 놓고 골라야 한다.**
+
+    hard_fail은 **선별된 것과 안 된 것을 하나씩** 둔다 - 전부 선별분이면
+    집계를 `outcome.selected`로 좁히는 변이가 살아남는다(FR-6.2에서 hard fail은
+    예산을 우회하므로 미선별 hard fail이 실재한다).
     """
     doc = build_review(
         _outcome(
@@ -259,16 +268,17 @@ def test_hard_fail이_집계되고_세그먼트마다_실린다() -> None:
                 _risk("00000", selected=True, hard_fail=True, reasons=["struct.empty"]),
                 _risk("00001", selected=True, hard_fail=False, reasons=["length.ratio"]),
                 _risk("00002", selected=False, hard_fail=True, reasons=["struct.empty"]),
+                _risk("00003", selected=True, hard_fail=False, reasons=["glossary.miss"]),
+                _risk("00004", selected=True, hard_fail=False, reasons=["spec.violation"]),
             )
         )
     )
 
     summary = doc["summary"]
-    # 3개 중 2개가 hard_fail이고 선별은 2개다 - 세 수가 서로 달라야
-    # (전체 3 · hard_fail 2 · 여집합 1) 바꿔치기가 전부 갈린다.
+    # 트리아지 5 · hard_fail 2 · 선별 4 · 여집합 3 - 넷이 전부 다르다.
     assert summary["hard_fail_count"] == 2
-    assert summary["selected_for_review"] == 2
-    assert summary["triaged_segments"] == 3
+    assert summary["selected_for_review"] == 4
+    assert summary["triaged_segments"] == 5
 
     by_id = {s["id"]: s for s in doc["segments"]}
     assert by_id["00000"]["hard_fail"] is True
