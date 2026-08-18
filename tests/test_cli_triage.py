@@ -171,11 +171,16 @@ def test_프로파일이_없는_언어는_경고하고_건너뛴다(
     assert result.exit_code == 0, result.output
     # load_builtin의 메시지를 그대로 전달한다 - 사용 가능 목록이 거기 있다.
     assert "사용 가능" in result.output
-    assert "[fr]" in result.output
+    assert "[fr] 경고" in result.output
     # 프로파일이 있는 언어는 걸러지지 않는다 - 이것이 전량 거부와 갈리는 지점이다.
-    # Task 3이 "[en] 트리아지" 요약 블록을 내면 그 문구로 단언을 강화한다.
+    # **경고 유무만으로는 en이 실제로 처리됐는지 알 수 없어** 산출 파일까지 본다.
+    #
+    # **이 단언은 Task 2 범위에서 약화된 것이다.** 트리아지 출력 라인은 Task 3이
+    # 만든다(설계 §7.1). Task 3 Step 3a가 이 단언을 `"[en] 트리아지"`로 되돌린다 -
+    # 되돌리지 않으면 약화된 채 남아 "검사하지 않고 통과하는 게이트"가 된다.
     assert "[en] 경고: 규격 프로파일이 없어" not in result.output
     assert (tmp_path / "minimal.en.srt").exists()
+    # 건너뛴 것은 트리아지이지 번역이 아니다 - "그 언어를 통째로 드롭"과 갈린다.
     assert (tmp_path / "minimal.fr.srt").exists()
 
 
