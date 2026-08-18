@@ -44,6 +44,21 @@ class TriageOutcome:
     excluded_failures: int
     usage: TokenUsage | None
 
+    def __post_init__(self) -> None:
+        # 형제 모델 넷(`Span`·`Segment`·`Signal`·`SegmentRisk`)과 같은 자리의 방어다.
+        # 둘이 어긋나면 리포트 생성기의 `by_id[risk.segment_id]`가 KeyError로 죽는데,
+        # 그 시점은 파일을 쓰는 도중이라 **어느 조합이 어긋났는지가 스택에 없다.**
+        # 여기서 막으면 실패가 생성 시점으로 앞당겨진다.
+        if len(self.segments) != len(self.risks):
+            raise ValueError(
+                f"segments({len(self.segments)})와 risks({len(self.risks)})의 길이가 다르다"
+            )
+        # 음수면 `total_segments`가 `triaged_segments`보다 작아져 화면이 "2개 중
+        # 5개 검수"라는 불가능한 요약을 낸다. 프로그램은 정상 종료하고 종료 코드도
+        # 0이라 어떤 게이트에도 걸리지 않는다.
+        if self.excluded_failures < 0:
+            raise ValueError(f"excluded_failures({self.excluded_failures})가 음수다")
+
     @property
     def triaged_segments(self) -> int:
         """트리아지 대상 수. **`review_ratio`의 분모다** (설계 §6.2)."""
@@ -51,8 +66,13 @@ class TriageOutcome:
 
     @property
     def total_segments(self) -> int:
-        """트랙 전체. `triaged + excluded`가 이 값이 되어야 파일 안에서 검산된다."""
-        return len(self.risks) + self.excluded_failures
+        """트랙 전체. `triaged + excluded`가 이 값이 되어야 파일 안에서 검산된다.
+
+        **`triaged_segments`를 재사용한다.** `len(self.risks)`로 따로 세면 분모의
+        정의가 2곳이 되고, 그때 `triaged`의 의미만 바뀌면 위 검산식이 조용히
+        거짓이 된다 — 두 값이 지금 같다는 것은 우연이지 보장이 아니다.
+        """
+        return self.triaged_segments + self.excluded_failures
 
     @property
     def selected(self) -> tuple[SegmentRisk, ...]:
@@ -74,6 +94,11 @@ class TriageOutcome:
         선별분으로 좁히면 예산 밖으로 밀린 위험이 사라져 사용자가 다음 예산을
         정할 근거를 잃는다. 정렬은 NFR-3(재현성)이다 - `Counter`의 순서는 삽입
         순이라 세그먼트 순서가 바뀌면 출력이 달라진다.
+
+        **`reasons`는 0점 신호를 담지 않는다**(`fuse.py:73` - "0점 신호를 사유에
+        넣으면 리포트가 '이것 때문에 뽑혔다'고 거짓말한다"). 따라서 이 집계가 곧
+        "적발 **건수**"이지 "신호가 달린 횟수"가 아니다. 이 근거가 없으면 뒷사람이
+        `signals`를 세도록 고쳐 놓고 이름은 그대로 두게 된다.
         """
         counts: Counter[str] = Counter()
         for risk in self.risks:
