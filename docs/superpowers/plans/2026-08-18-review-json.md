@@ -1728,7 +1728,43 @@ def test_전량_실패해도_파일이_사실을_말한다(
     assert doc["summary"]["excluded_failures"] > 0
     assert doc["summary"]["total_segments"] == doc["summary"]["excluded_failures"]
     assert doc["segments"] == []
+
+
+def test_프로파일_없는_언어는_리포트도_내지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**설계 공백을 여기서 닫는다** (Task 5 리뷰 우려 ③).
+
+    `--to en,th`에서 th 프로파일은 없다. 기존 동작은 **경고 후 그 언어의
+    트리아지만 건너뛰고 exit 0**이다(D7 — 전량 거부하면 프로파일이 있는 언어의
+    트리아지까지 잃는다). 그러면 th는 `triage_profile=None`이라 트리아지 블록
+    자체가 돌지 않고, 따라서 낼 `TriageOutcome`이 없다.
+
+    **리포트도 내지 않는 것이 옳다** — 트리아지를 하지 않았는데 파일을 내면
+    소비자는 "th를 검수했고 걸린 것이 없다"로 읽는다. 실제로는 **판정 자체를
+    못 한 것**이고, 그 구별이 전량 실패 경로에서 이미 1급 요구다
+    (`_run_triage`의 "번역된 세그먼트가 없어 건너뛴다"와 같은 논리).
+
+    이 테스트가 없으면 그 사실이 어디에도 고정되지 않아, 나중에 빈 리포트를
+    내도록 바뀌어도 아무 게이트가 울리지 않는다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+    reports = tmp_path / "reports"
+
+    args = _args(tmp_path, "minimal.srt", "--review-budget", "10%", "--review-out", str(reports))
+    args[args.index("--to") + 1] = "en,th"
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert "th" in result.output, "프로파일이 없다는 경고가 나가야 한다"
+    assert sorted(p.name for p in reports.glob("*.review.json")) == ["minimal.en.review.json"]
 ```
+
+**`--review-out` 디렉터리는 아무도 미리 만들지 않는다.** `write_review`가
+`path.parent.mkdir(parents=True, exist_ok=True)`를 하므로(`json_report.py`) 파일을 쓸 때 생긴다.
+따라서 **트리아지가 하나도 돌지 않으면 디렉터리 자체가 안 생긴다** — 위 테스트의 `reports.glob`이
+그 성질에 기대므로 `reports.exists()`를 먼저 단언하지 마라(Task 5 리뷰 우려 ②가 "미결"로 남긴
+항목인데 실제로는 Task 3에서 이미 닫혀 있었다).
 
 - [ ] **Step 3: 실패를 확인한다**
 
@@ -1736,7 +1772,7 @@ def test_전량_실패해도_파일이_사실을_말한다(
 .venv/Scripts/python.exe -m pytest tests/test_cli_review_out.py -v
 ```
 
-기대: 새 테스트 9개가 전부 실패(파일이 만들어지지 않는다).
+기대: 새 테스트 10개가 전부 실패(파일이 만들어지지 않는다).
 
 - [ ] **Step 4: `_translate_one`에 `review_out`을 더한다**
 
