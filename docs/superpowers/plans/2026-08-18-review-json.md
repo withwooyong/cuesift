@@ -337,7 +337,7 @@ __all__ = ["TriageOutcome"]
 .venv/Scripts/python.exe -m pytest tests/test_report_models.py -v
 ```
 
-기대: **7 passed.**
+기대: **9 passed.**
 
 - [ ] **Step 6: 게이트를 돌리고 커밋한다**
 
@@ -349,7 +349,27 @@ git add src/cuesift/report/ tests/test_report_models.py
 git commit -m "기능: TriageOutcome 모델 - 트리아지 수치의 단일 출처 (FR-7.2)"
 ```
 
-pytest 수집 개수가 **1103**(1096 + 7)여야 한다. 다르면 멈추고 원인을 찾는다.
+pytest 수집 개수가 **1105**(1096 + 9)여야 한다. 다르면 멈추고 원인을 찾는다.
+
+### Task 1 — 구현 중 바뀐 결정
+
+**위 코드 블록은 착수 시점 판이다. 최신은 `tests/test_report_models.py`와 `src/cuesift/report/models.py` 자체다.** 이 저장소의 규약을 따른다 — "구현 중 바뀐 결정" 절이 있으면 본문 코드 블록보다 그쪽이 최신이다.
+
+리뷰가 변이 28종을 실행해 **6종이 살아남는 것**을 잡았다. 원인은 전부 위 코드 블록이 지정한 **픽스처의 대칭성**이었다.
+
+| 무엇이 바뀌었나 | 왜 |
+| --- | --- |
+| `hard_fail_count` 픽스처를 2개 중 1개 → **3개 중 2개** | 대칭이면 여집합 변이(`if not r.hard_fail`)가 **같은 값 1**을 내며 통과한다 |
+| `triaged_segments` 픽스처를 risks 1개 → **2개(선별 1)·excluded 3** | risks 1개·selected 0개면 `len(risks)`·여집합·`len(segments)`가 **전부 1**이다 |
+| `signal_hits` 픽스처에 **중복 사유** 추가 | 모든 reason이 1회씩이면 `{k: 1 for k in ...}`로 바꿔도 통과한다. 지금 테스트는 `signal_hits`를 `set`으로 바꿔도 통과했다 |
+| `selected` 순서 단언 추가 (선별 2개) | `tuple(reversed(...))`가 살아남았다. 이 순서가 `review.json`의 `segments[]` 순서다(NFR-3) |
+| `__post_init__` 불변식 **2건** 신설 | `segments`와 `risks`의 세그먼트 **집합** 일치 · `excluded_failures >= 0`. 후자는 `-5`가 통과해 `total_segments == -5`를 냈다 |
+| `total_segments`가 `triaged_segments`를 재사용 | `len(self.risks)`가 두 곳에 있어 정의가 2벌이었다 |
+| `cli.py:1208-1210`의 근거 주석을 `signal_hits` 독스트링으로 이관 | Task 4가 원본을 폐기하면 근거가 사라진다 |
+
+**세그먼트 집합 검증은 순서를 고정하지 않는다.** `_run_triage`가 `_outcome(tuple(scored), tuple(kept))`를 부르는데 `scored`는 **위험도 내림차순**이고 `kept`는 **트랙 원본 순서**라 둘의 순서는 정상적으로 다르다. 순서까지 비교하면 Task 4가 `ValueError`로 죽는다.
+
+**위 표를 되돌리지 마라** — 각 항목은 실제로 살아남던 변이를 격추한 것이고, 되돌리면 그 구멍이 그대로 다시 열린다.
 
 ---
 
@@ -722,7 +742,7 @@ git add src/cuesift/report/ tests/test_report_json.py
 git commit -m "기능: review.json 스키마 직렬화 - §8.4 계약 구현 (FR-7.2)"
 ```
 
-수집 개수 **1114**(1103 + 11).
+수집 개수 **1116**(1105 + 11).
 
 ---
 
@@ -840,7 +860,7 @@ git add src/cuesift/report/ tests/test_report_json.py
 git commit -m "기능: review.json 파일 쓰기 - 예외를 전파해 종료 코드를 살린다 (FR-7.2)"
 ```
 
-수집 개수 **1117**(1114 + 3).
+수집 개수 **1119**(1116 + 3).
 
 ---
 
@@ -883,10 +903,23 @@ def _outcome(risks: list[SegmentRisk], *, policy_label: str, excluded: int = 0) 
         policy_kind="budget",
         policy_value=0.1,
         risks=tuple(risks),
-        segments=(),
+        # **`segments=()`를 쓸 수 없다.** 포매터는 이 필드를 읽지 않지만
+        # `__post_init__`이 `risks`와 같은 세그먼트 집합을 요구하므로
+        # (Task 1 fix, `models.py`) 빈 튜플은 `ValueError`로 거부된다.
+        # 대응하는 더미를 만든다 — 값은 판정에 관여하지 않는다.
+        segments=tuple(
+            Segment(id=r.segment_id, index=i, start_ms=0, end_ms=1000, source_text="원문")
+            for i, r in enumerate(risks)
+        ),
         excluded_failures=excluded,
         usage=None,
     )
+```
+
+`Segment`를 import에 더한다 — `tests/test_cli_triage.py`는 이미 `SegmentRisk`를 갖고 있다.
+
+```python
+from cuesift.segment import Segment, SegmentRisk
 ```
 
 `test_비율이_0_1퍼센트_미만이어도_0으로_보이지_않는다`(742줄 부근)의 호출을 바꾼다.
@@ -1072,7 +1105,7 @@ def _run_triage(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1117 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
+기대: **1119 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
 
 - [ ] **Step 7b: 산식이 실제로 한 벌이 됐는지 확인한다 — 이 태스크의 존재 이유다**
 
@@ -1327,7 +1360,7 @@ git add src/cuesift/cli.py tests/test_cli_review_out.py
 git commit -m "기능: --review-out 옵션과 조합 검증 (FR-7.2 · D2 · D10 · D11)"
 ```
 
-수집 개수 **1124**(1117 + 7).
+수집 개수 **1126**(1119 + 7).
 
 ---
 
@@ -1705,7 +1738,7 @@ def test_전량_실패해도_파일이_사실을_말한다(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1133 passed, 3 deselected**.
+기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1135 passed, 3 deselected**.
 
 - [ ] **Step 8: 실물로 확인한다**
 
@@ -1776,7 +1809,7 @@ git status --short   # 변경 0건이어야 한다
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1134 passed, 3 deselected.** `git status`가 깨끗하지 않으면 변이가 남아 있다.
+기대: **1135 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
 
 - [ ] **Step 4: 확인 기록을 커밋한다**
 
