@@ -42,6 +42,14 @@ npx --yes markdownlint-cli2
 
 착수 시점 기준선: **1096 passed, 3 deselected** · 커버리지 99% · 마크다운 28 files · 상대 링크 131개.
 
+**이 계획의 수집 개수 예고값은 산문이 아니라 기계적 집계로 재산출된 것이다.** 초판은 손으로 세어 Task 1에서 8(실제 7), Task 6에서 10(실제 9)을 적었고 오차가 후속 태스크에 누적됐다 — Task 1 구현자가 `grep -c "^def test_"`로 잡았다. 예고값이 실제와 어긋나면 **멈추고 먼저 세어라**:
+
+```bash
+grep -c "^def test_" <브리프 또는 테스트 파일>
+```
+
+이 저장소는 같은 교훈을 이미 한 번 치렀다 — 요구사항정의서의 `✅`를 손으로 세면 6이 아니라 7이 나왔고, 지금은 스크립트로 재현된다.
+
 ---
 
 ## 파일 구조
@@ -329,7 +337,7 @@ __all__ = ["TriageOutcome"]
 .venv/Scripts/python.exe -m pytest tests/test_report_models.py -v
 ```
 
-기대: **8 passed.**
+기대: **7 passed.**
 
 - [ ] **Step 6: 게이트를 돌리고 커밋한다**
 
@@ -341,7 +349,7 @@ git add src/cuesift/report/ tests/test_report_models.py
 git commit -m "기능: TriageOutcome 모델 - 트리아지 수치의 단일 출처 (FR-7.2)"
 ```
 
-pytest 수집 개수가 **1104**(1096 + 8)여야 한다. 다르면 멈추고 원인을 찾는다.
+pytest 수집 개수가 **1103**(1096 + 7)여야 한다. 다르면 멈추고 원인을 찾는다.
 
 ---
 
@@ -714,7 +722,7 @@ git add src/cuesift/report/ tests/test_report_json.py
 git commit -m "기능: review.json 스키마 직렬화 - §8.4 계약 구현 (FR-7.2)"
 ```
 
-수집 개수 **1115**(1104 + 11).
+수집 개수 **1114**(1103 + 11).
 
 ---
 
@@ -832,7 +840,7 @@ git add src/cuesift/report/ tests/test_report_json.py
 git commit -m "기능: review.json 파일 쓰기 - 예외를 전파해 종료 코드를 살린다 (FR-7.2)"
 ```
 
-수집 개수 **1118**(1115 + 3).
+수집 개수 **1117**(1114 + 3).
 
 ---
 
@@ -1064,7 +1072,7 @@ def _run_triage(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1118 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
+기대: **1117 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
 
 - [ ] **Step 8: 게이트를 돌리고 커밋한다**
 
@@ -1305,7 +1313,7 @@ git add src/cuesift/cli.py tests/test_cli_review_out.py
 git commit -m "기능: --review-out 옵션과 조합 검증 (FR-7.2 · D2 · D10 · D11)"
 ```
 
-수집 개수 **1125**(1118 + 7).
+수집 개수 **1124**(1117 + 7).
 
 ---
 
@@ -1683,7 +1691,7 @@ def test_전량_실패해도_파일이_사실을_말한다(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: `test_cli_review_out.py` **17 passed**, 전체 **1135 passed, 3 deselected**.
+기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1133 passed, 3 deselected**.
 
 - [ ] **Step 8: 실물로 확인한다**
 
