@@ -746,6 +746,8 @@ git commit -m "기능: review.json 스키마 직렬화 - §8.4 계약 구현 (FR
 
 **1118 passed**(1107 + 11).
 
+> **실제로는 16개 · 1123 passed로 끝났다.** 리뷰가 픽스처 단일값 때문에 생존하는 변이 12종을 잡아 케이스 4개와 단언들이 추가됐다. 아래 태스크의 예고값은 **1123을 기준선으로** 재산출한 것이다.
+
 ---
 
 ## Task 3: `write_review()` — 파일 쓰기
@@ -850,7 +852,7 @@ __all__ = ["TriageOutcome", "build_review", "write_review"]
 .venv/Scripts/python.exe -m pytest tests/test_report_json.py -v
 ```
 
-기대: **14 passed.**
+기대: **19 passed**(Task 2가 16개로 끝났다 + 3).
 
 - [ ] **Step 6: 게이트를 돌리고 커밋한다**
 
@@ -862,7 +864,7 @@ git add src/cuesift/report/ tests/test_report_json.py
 git commit -m "기능: review.json 파일 쓰기 - 예외를 전파해 종료 코드를 살린다 (FR-7.2)"
 ```
 
-**1121 passed**(1118 + 3).
+**1126 passed**(1123 + 3).
 
 ---
 
@@ -1107,7 +1109,7 @@ def _run_triage(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1121 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
+기대: **1126 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
 
 - [ ] **Step 7b: 산식이 실제로 한 벌이 됐는지 확인한다 — 이 태스크의 존재 이유다**
 
@@ -1362,7 +1364,7 @@ git add src/cuesift/cli.py tests/test_cli_review_out.py
 git commit -m "기능: --review-out 옵션과 조합 검증 (FR-7.2 · D2 · D10 · D11)"
 ```
 
-**1128 passed**(1121 + 7).
+**1133 passed**(1126 + 7).
 
 ---
 
@@ -1740,7 +1742,7 @@ def test_전량_실패해도_파일이_사실을_말한다(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1137 passed, 3 deselected**.
+기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1142 passed, 3 deselected**.
 
 - [ ] **Step 8: 실물로 확인한다**
 
@@ -1811,7 +1813,7 @@ git status --short   # 변경 0건이어야 한다
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1137 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
+기대: **1142 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
 
 - [ ] **Step 4: 확인 기록을 커밋한다**
 
