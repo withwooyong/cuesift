@@ -31,22 +31,32 @@ def _risk(
 
 
 def _segment(seg_id: str, *, index: int = 0) -> Segment:
+    """**본문과 타임코드를 id에서 파생시킨다.**
+
+    전부 같은 값을 내면 조인이 어긋나도 실린 값이 같아서 순서 회귀를 재지
+    못한다 - `test_순서가_어긋나도_id로_조인된다`가 정확히 그 차이에 기댄다.
+    """
+    n = int(seg_id)
     return Segment(
         id=seg_id,
         index=index,
-        start_ms=12000,
-        end_ms=14500,
-        source_text="원문",
-        target_text="translated text",
+        start_ms=12000 + n * 1000,
+        end_ms=14500 + n * 1000,
+        source_text=f"원문 {seg_id}",
+        target_text=f"translated text {seg_id}",
     )
 
 
 def _outcome(
     *,
     risks: tuple[SegmentRisk, ...],
+    segments: tuple[Segment, ...] | None = None,
     excluded_failures: int = 0,
     usage: TokenUsage | None = None,
 ) -> TriageOutcome:
+    # `segments`를 받는 이유는 **순서를 `risks`와 다르게 둘 수 있어야** 하기
+    # 때문이다. 기본값(`risks` 순서 그대로)은 실제 파이프라인과 달라서
+    # 조인 회귀를 재지 못한다.
     return TriageOutcome(
         source_lang="ko",
         target_lang="en",
@@ -55,7 +65,11 @@ def _outcome(
         policy_kind="budget",
         policy_value=0.1,
         risks=risks,
-        segments=tuple(_segment(r.segment_id, index=i) for i, r in enumerate(risks)),
+        segments=(
+            tuple(_segment(r.segment_id, index=i) for i, r in enumerate(risks))
+            if segments is None
+            else segments
+        ),
         excluded_failures=excluded_failures,
         usage=usage,
     )
@@ -102,9 +116,53 @@ def test_세그먼트_본문이_Segment에서_조인된다() -> None:
     seg = doc["segments"][0]
     assert seg["start_ms"] == 12000
     assert seg["end_ms"] == 14500
-    assert seg["source_text"] == "원문"
-    assert seg["target_text"] == "translated text"
+    assert seg["source_text"] == "원문 00000"
+    assert seg["target_text"] == "translated text 00000"
     assert seg["risk_score"] == pytest.approx(0.87)
+
+
+def test_순서가_어긋나도_id로_조인된다() -> None:
+    """**`risks`와 `segments`의 순서는 실제 파이프라인에서 다르다.**
+
+    `risks`는 `select_by_*`가 낸 위험도 내림차순이고(`policy.py`의 `_sorted_desc`)
+    `segments`는 트랙 원본 순서다 - Task 1 리뷰가 실측으로 확정했다
+    (kept `['00000','00001','00002','00003']` vs
+    scored `['00001','00003','00002','00000']`).
+
+    `TriageOutcome.__post_init__`은 **집합과 길이만** 보고 순서는 일부러 보지
+    않는다 - 순서까지 고정하면 위의 정상 입력이 거부돼 트리아지 경로가 통째로
+    죽기 때문이다. 그래서 조인이 `by_id`에서 `zip`이나 인덱스 접근으로
+    퇴화해도 **예외가 나지 않는다.** `review.json`에 다른 세그먼트의 원문·
+    번역문이 실린 채 프로그램은 정상 종료하고, FR-7.2가 열거한 핵심 필드가
+    통째로 틀리는데 어떤 게이트도 울리지 않는다.
+    """
+    # 위험도 내림차순 - 트랙 순서(00000..00003)와 **일부러** 어긋나게 둔다.
+    risks = (
+        _risk("00001", selected=True, score=0.91),
+        _risk("00003", selected=True, score=0.72),
+        _risk("00002", score=0.40),
+        _risk("00000", selected=True, score=0.12),
+    )
+    track_order = ("00000", "00001", "00002", "00003")
+    doc = build_review(
+        _outcome(
+            risks=risks,
+            segments=tuple(_segment(sid, index=i) for i, sid in enumerate(track_order)),
+        )
+    )
+
+    # 선별분만 담기므로 00002가 빠지고, 순서는 `risks`를 따른다(설계 D3).
+    assert [s["id"] for s in doc["segments"]] == ["00001", "00003", "00000"]
+    for seg in doc["segments"]:
+        # **문서마다 자기 id의 본문을 들고 있어야 한다.** `_segment`가 id에서
+        # 본문·타임코드를 파생시키므로 조인이 어긋나면 여기서 값이 갈린다.
+        assert seg["source_text"] == f"원문 {seg['id']}"
+        assert seg["target_text"] == f"translated text {seg['id']}"
+        assert seg["start_ms"] == 12000 + int(seg["id"]) * 1000
+    # 위험도도 id를 따라와야 한다 - 본문만 보면 `risk` 쪽이 어긋난 경우를 놓친다.
+    assert {s["id"]: s["risk_score"] for s in doc["segments"]} == pytest.approx(
+        {"00001": 0.91, "00003": 0.72, "00000": 0.12}
+    )
 
 
 def test_신호가_detail을_통째로_싣는다() -> None:
