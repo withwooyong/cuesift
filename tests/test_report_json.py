@@ -505,18 +505,32 @@ def test_같은_경로에_다시_쓰면_덮어쓴다(tmp_path: Path) -> None:
     assert [s["id"] for s in doc["segments"]] == ["00001"]
 
 
-def test_쓰기_실패는_OSError로_전파된다(tmp_path: Path) -> None:
+def test_mkdir_실패는_OSError로_전파된다(tmp_path: Path) -> None:
     """호출자(CLI)가 파일 사정 오류로 바꾼다. 여기서 삼키면 종료 코드를 잃는다.
 
-    **이 테스트가 재는 것은 `mkdir` 경로다.** `blocker`가 파일이라 예외가
-    `mkdir`에서 먼저 나고 `write_text`는 실행조차 되지 않는다(실측: 줄 75,
-    `FileExistsError [WinError 183]`). 아래 짝 테스트와 **함께 있어야** 두
-    실패 지점이 각각 닫힌다 - 자세한 것은 그쪽 독스트링에 있다.
+    **`OSError`가 아니라 `FileExistsError`를 단언한다.** 넓게 잡으면 이
+    테스트는 `mkdir` 경로를 재지 못한다 - `blocker`가 파일이라 `mkdir`을
+    삼켜도 `write_text`가 대신 던져서 `pytest.raises(OSError)`가 통과한다
+    (실측: `mkdir`만 삼키는 변이가 **생존했다**).
+
+    두 실패 지점은 예외 **타입**으로 갈린다(실측):
+
+    | 무엇이 던지나 | 타입 |
+    | --- | --- |
+    | `mkdir` (파일이 자리를 막음) | `FileExistsError` |
+    | `write_text` (mkdir이 삼켜짐) | `FileNotFoundError` (Linux는 `NotADirectoryError`) |
+
+    어느 플랫폼에서도 삼켜진 쪽은 `FileExistsError`가 아니므로 이 단언은
+    이식성이 있다. `FileExistsError`는 `OSError`의 자식이라 "OSError를
+    전파한다"는 계약 자체는 그대로 유지된다.
+
+    아래 짝 테스트가 반대 방향(`write_text`만 실패)을 닫는다. **둘이 함께
+    있어야** 두 지점이 각각 닫힌다.
     """
     blocker = tmp_path / "blocked"
     blocker.write_text("파일이다", encoding="utf-8")
 
-    with pytest.raises(OSError):
+    with pytest.raises(FileExistsError):
         write_review(_outcome(risks=(_risk("00000", selected=True),)), blocker / "x.json")
 
 
