@@ -1925,11 +1925,56 @@ git commit -m "기능: review.json 배선 - translate가 검수 리포트를 낸
 
 ---
 
-## Task 7: 게이트를 버그 버전에서 실패시켜 확인한다
+## Task 7: 선행 게이트가 브랜치 HEAD에서도 죽이는지 확인한다 (회귀 스윕)
 
 **이 저장소의 규율이다** — 회귀 테스트는 버그 코드에서 실제로 실패하는 것을 본 뒤에야 회귀 테스트다. 길이비 회귀 테스트가 버그 버전에서도 통과해 데이터를 다시 짠 전례가 있다.
 
-**Files:** 없음(변이를 넣고 되돌린다). 기록만 커밋 메시지에 남긴다.
+### 성격이 바뀌었다 — 최초 검증이 아니라 회귀 스윕이다
+
+**계획 수립 시점에는 "태스크마다 변이 검증을 붙인다"가 규율이 아니었다.** 실행 중에 규율이 됐고,
+그래서 아래 12종이 **거의 전부 이미 최초 검증됐다.**
+
+| Task 7 변이 | 최초 검증 | 규모 |
+| --- | --- | --- |
+| #1 `selected_for_review` · #5 `segments` · #8 `detail` · #10 `estimated_usd` · #11 `spans.side` | **Task 2** | 변이 46종 + fix 라운드 25종 |
+| #2 `total_segments` · #2b `signal_hits` · #3 `review_ratio` | **Task 1** | 변이 28종 |
+| #4 `_review_path` · #6 조합 검증 삭제 · #7 `and not dry_run` | **Task 5** | 변이 26종 + 대조군 2 |
+| #9 `except OSError` · #12 `profile_name` | **Task 6** | M2·M8, fix 라운드가 그물을 넓혔다 |
+
+**그래도 버리지 않는다. 아직 아무도 재지 않은 것이 남아 있다.**
+Task 1~3의 변이는 **그 시점 코드**에서 검증됐고, 그 뒤 Task 4가 `_run_triage`의 반환형을 통째로
+바꿨으며 Task 6이 배선과 픽스처를 갈아엎었다. **"그때 죽던 게이트가 지금도 죽는가"** 는
+미검증이다. 이 위험은 가설이 아니다 — Task 6 리뷰에서 픽스처 하나(`_blank_at({2,5,9},10)`의
+`hard_fail_count == 0`)가 게이트 아홉 개의 한계 가치를 동시에 죽이고 있던 것이 실측됐다.
+
+따라서 이 태스크의 산출물은 **"12종이 죽는다"가 아니라 "선행 태스크가 세운 게이트가 브랜치
+HEAD에서도 같은 이름으로 죽인다"** 이다. 각 변이에 **최초 검증 태스크를 병기**하고, 살해자
+이름이 그때와 달라졌으면 그 사실을 기록한다.
+
+**Files:** 없음(스크래치 사본에 변이를 넣는다). 기록만 커밋 메시지에 남긴다.
+
+### 하네스 — 제자리 변이를 쓰지 않는다
+
+**아래 Step 1의 `git checkout -- src/cuesift/`는 폐기됐다.** 이 브랜치에서 확립된 방식은
+**스크래치 사본 + `PYTHONPATH` 강제**다. 이유 셋:
+
+| 제자리 변이의 문제 | 결과 |
+| --- | --- |
+| 중단되면 변이가 리포에 남는다 | 이 세션에서 에이전트가 **3회** 중단됐다 — "중단은 드물다"를 가정할 수 없다 |
+| `git checkout`이 무관한 변경까지 쓸어버린다 | 되돌릴 수 없는 손실 |
+| editable `.pth` 오탐 검사를 애초에 못 한다 | 사본이 로드되는지 프로브할 대상이 없다 |
+
+하네스가 반드시 막아야 할 **오탐 4종**:
+
+| # | 오탐 | 차단 |
+| --- | --- | --- |
+| ① | editable install의 `.pth`가 사본을 가림 | `PYTHONPATH=<scratch>/src` 강제 + **`모듈.__file__`을 출력해 스크래치 경로인지 확인** |
+| ② | `shutil.copy2`가 mtime을 보존해 stale `.pyc` 재사용 | `PYTHONDONTWRITEBYTECODE=1` + `python -B` + 매 변이마다 `__pycache__` 삭제 |
+| ③ | 앵커가 **0회** 매치 | 변이가 안 들어간 채 통과하고 그것이 "생존"으로 읽힌다 → `count == 1` 단언, 아니면 SKIP |
+| ④ | 앵커가 **여러 곳** 매치 | 엉뚱한 함수가 변이되고 `1 failed`가 "격추"로 오독된다 → 유일 문자열로 앵커를 잡는다 |
+
+**격추 판정은 개수가 아니라 살해자 이름으로 한다.** ①~③은 생존/죽음을 뒤집고,
+④는 **엉뚱한 곳이 죽은 것을 겨눈 곳이 죽은 것으로 오독**한다.
 
 - [ ] **Step 1: 변이 12종을 하나씩 넣고 해당 테스트만 죽는지 확인한다**
 
@@ -1951,12 +1996,19 @@ git commit -m "기능: review.json 배선 - translate가 검수 리포트를 낸
 
 각 변이마다:
 
+스크래치 사본에서 돌린다(제자리 변이 금지 — 위 표 참조):
+
 ```bash
-# 변이를 넣는다
-.venv/Scripts/python.exe -m pytest tests/ -x -q 2>&1 | tail -20
-# 죽은 테스트 이름을 기록하고 되돌린다
-git checkout -- src/cuesift/
+# 사본을 만든다 (git archive면 추적 파일만 나오고 __pycache__가 딸려오지 않는다)
+git archive HEAD | tar -x -C "$WORK"
+# 변이를 주입하고, 사본이 실제로 로드되는지 프로브한다
+PYTHONPATH="$WORK/src" .venv/Scripts/python.exe -B -c "import cuesift.cli as m; print(m.__file__)"
+# 살해자 이름까지 본다 - `-x`를 쓰지 않는다(첫 실패에서 멈추면 살해자가 하나로 보인다)
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$WORK/src" .venv/Scripts/python.exe -B -m pytest tests/ -q 2>&1 | tail -20
 ```
+
+**`-x`를 쓰지 마라.** 첫 실패에서 멈추면 살해자가 하나뿐인지 여럿인지 구별할 수 없고,
+"단독 격추"라는 판정을 낼 수 없다.
 
 - [ ] **Step 2: 변이가 통과해 버리면 테스트를 고친다**
 
@@ -1969,7 +2021,13 @@ git status --short   # 변경 0건이어야 한다
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1151 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
+기대: **1153 passed, 3 deselected** (Task 6 fix 라운드 1 이후 실측. Task 7은 코드를 남기지
+않으므로 이 값이 유지돼야 한다). `git status`가 깨끗하지 않으면 변이가 남아 있다 — 스크래치
+사본을 썼다면 애초에 더러워질 수 없으므로, 더럽다면 하네스가 틀린 것이다.
+
+**`test_cli_review_out.py`에서 `grep -c "^def test_"`와 수집 개수가 갈린다** — 정의 **22** ·
+수집 **24**다. 어긋남이 아니라 예외 3종 `parametrize` 때문이고 산술은 21 + 1×3 = 24다.
+**두 수가 같은지가 아니라 산술이 맞는지가 판단 기준이다.**
 
 - [ ] **Step 4: 확인 기록을 커밋한다**
 
