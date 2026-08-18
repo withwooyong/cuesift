@@ -23,9 +23,11 @@
 from __future__ import annotations
 
 import errno
+import math
 import os
 import re
 import sys
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -36,6 +38,9 @@ import typer
 from cuesift import __version__
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
+from cuesift.risk import fuse
+from cuesift.segment import SegmentRisk
+from cuesift.signals import SignalContext, collect_all
 from cuesift.spec import (
     SpecProfile,
     SpecViolation,
@@ -57,6 +62,7 @@ from cuesift.translate import (
     iter_batches,
     translate_segments,
 )
+from cuesift.triage import review_ratio, select_by_budget, select_by_threshold
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
 # `translate`가 배선된 뒤로 70은 `transcribe` 하나의 표식이다.
@@ -463,7 +469,23 @@ def translate(
     ] = False,
     review_budget: Annotated[
         str | None,
-        typer.Option("--review-budget", help="사람이 검수할 상위 비율. 아직 구현되지 않았다"),
+        typer.Option(
+            "--review-budget",
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="사람이 검수할 상위 비율 (예: 10% 또는 0.1). --review-threshold와 함께 쓸 수 없다",
+        ),
+    ] = None,
+    review_threshold: Annotated[
+        float | None,
+        typer.Option(
+            "--review-threshold",
+            min=0.0,
+            max=1.0,
+            # 라이브러리(`policy.py`)도 범위를 검사하지만 여기서 막으면 오류
+            # 메시지가 옵션 이름을 말한다 - `--context-window`·`--limit`이
+            # 이미 같은 패턴이다.
+            help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). --review-budget과 함께 쓸 수 없다",
+        ),
     ] = None,
     dry_run: Annotated[
         bool,
@@ -482,14 +504,53 @@ def translate(
     if no_cache and cache_dir is not None:
         _echo("--no-cache와 --cache-dir을 함께 줄 수 없다", err=True)
         raise typer.Exit(2)
+    if review_budget is not None and review_threshold is not None:
+        # FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
+        # 합성하면 어느 쪽이 이겼는지가 출력에서 사라진다(설계 D4).
+        _echo("--review-budget과 --review-threshold는 함께 쓸 수 없다", err=True)
+        raise typer.Exit(2)
+    if review_threshold is not None and math.isnan(review_threshold):
+        # **`min`/`max`는 NaN을 통과시킨다.** click의 범위 검사가
+        # `lt(nan, 0.0)`·`gt(nan, 1.0)`으로 판정하는데 **둘 다 False**라
+        # 무력하다. `inf`는 `gt(inf, 1.0)`이 True라 click이 잡으므로 여기
+        # 오지 않는다(실측). `_parse_review_budget`은 `not 0.0 <= nan <= 1.0`이
+        # True가 되어 거부한다 - **극성이 반대다.**
+        #
+        # 이 가드가 없으면 `select_by_threshold`가 ValueError를 던지고,
+        # 잡히지 않으면 미처리 traceback이 **exit 1**이 된다. 이 파일 머리말의
+        # 표에서 1은 "규격 위반 발견"이라 **설정 실수가 자막 결함으로
+        # 오보되고**, 사용자는 멀쩡한 자막을 고치려 든다.
+        _echo("--review-threshold를 숫자로 읽지 못했다: nan", err=True)
+        raise typer.Exit(2)
+
+    triage_requested = review_budget is not None or review_threshold is not None
+
+    # **파싱을 여기서 한다 - `_translate_one` 안이 아니다.** 예산 문자열이
+    # 틀렸으면 LLM을 부르기 전에 exit 2로 끝나야 한다. 루프 안에서 파싱하면
+    # 첫 언어의 번역 비용을 쓴 뒤에야 사용법 오류를 알린다.
+    budget_ratio: float | None = None
+    policy_label: str | None = None
     if review_budget is not None:
-        # 설계 D12와 같은 판단 — 조용한 무시는 사용자가 트리아지가 됐다고
-        # 믿게 만든다. `--config`가 이미 같은 방식이다.
-        _echo(
-            f"경고: --review-budget은 아직 구현되지 않았습니다 (WP5). "
-            f"지정한 '{review_budget}'는 무시됩니다.",
-            err=True,
+        try:
+            budget_ratio = _parse_review_budget(review_budget)
+        except ValueError as exc:
+            _echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+
+    if triage_requested:
+        # **`triage_requested` 안에서 만든다.** 밖에서 만들면 정책이 하나도
+        # 없을 때 `"임계값 None"`이라는 사실이 아닌 라벨이 생기고, 요약에
+        # 그것이 찍히면 트리아지를 요청하지 않은 사용자가 임계값을 준 것으로
+        # 읽는다. 타입을 `str | None`으로 둔 것이 그 오용을 막는다 -
+        # `_translate_one`이 `None` 처리를 강제로 마주한다.
+        #
+        # 사용자가 준 원문을 라벨에 쓴다 - 파싱 결과(`0.1`)를 찍으면 `10%`라고
+        # 쓴 사람이 자기 입력을 화면에서 못 찾는다. 이해가 맞았는지는 별도로
+        # 출력되는 "실제 N%"가 말한다.
+        policy_label = (
+            f"예산 {review_budget}" if review_budget is not None else f"임계값 {review_threshold}"
         )
+
     resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
     if not targets:
@@ -501,6 +562,61 @@ def translate(
         # 검증되지 않은 문자열을 파일 경로 조각으로 그대로 쓴다.
         _echo(f"--to에 유효하지 않은 언어 태그가 있다: {', '.join(invalid)}", err=True)
         raise typer.Exit(2)
+
+    profiles: dict[str, SpecProfile] = {}
+    if triage_requested:
+        # **모든 대상 언어를 여기서 검사한다 - 루프 안에서 하지 않는다.**
+        # 루프 안에서만 보면 `--to en,ja,fr`이 en·ja의 LLM 비용을 실제로 쓴
+        # 뒤 fr에서 exit 2를 낸다(설계 D13). `--dry-run`의 용어집 검사가
+        # 이미 같은 이유로 `targets[0]`이 아니라 전량을 본다(아래 주석 참고).
+        #
+        # 프로파일은 **대상 언어**의 규격이다 - `check --spec ko`(검사 대상
+        # 자막의 규격)와 이름이 같아도 다른 것이다(설계 §3.2). 신호 2종
+        # (`spec.violation`·`length.ratio`)이 번역문에 이것을 적용한다.
+        for target in targets:
+            try:
+                # **조회만 소문자로 본다.** `_LANG_TAG_RE`(위)가 `[A-Za-z]`로
+                # 대문자를 허용하는데 `load_builtin`은 `specs/<name>.yaml`을
+                # 파일로 찾는다 - Windows는 파일명 대소문자를 구분하지 않아
+                # `--to EN`이 `en.yaml`을 찾아내지만 **CI의 Linux는 구분해
+                # 프로파일 없음이 된다.** 접지 않으면 같은 명령의 종료 코드가
+                # 플랫폼마다 갈린다(Windows 0 · Linux 2). `_resolve_profile`이
+                # `--spec`의 확장자를 가를 때 같은 이유로 같은 처리를 한다.
+                # **출력 파일명은 접지 않는다** - `_output_path`가 원본 태그를
+                # 써서 `minimal.EN.srt`가 그대로 유지된다.
+                profiles[target] = load_builtin(target.lower())
+            except (OSError, ValueError) as exc:
+                # **경고하고 그 언어만 건너뛴다 - 전량 거부하지 않는다**(D7).
+                # 전량 거부는 프로파일이 **있는** 언어의 트리아지까지 잃게 하고,
+                # 요구사항정의서 §8.1 S3의 문서화된 호출
+                # (`--to en,ja,th,vi --review-budget 10%`)을 깨뜨린다 -
+                # th·vi 프로파일이 없고 `tests/test_cli.py:57-73`이 그것을
+                # exit 0으로 고정하고 있다. 선례는 `cli.py`의 캐시 처리다:
+                # 프로바이더가 `cache_identity`를 주지 않으면 경고하고 캐시를
+                # 끈다("끄는 쪽이 안전하고, 조용히 끄지는 않는다").
+                #
+                # **건너뛰는 것은 트리아지이지 번역이 아니다.** 이 언어의
+                # 번역은 그대로 나간다 - `profiles`에 없다는 사실만 뒤에서
+                # 트리아지를 거르는 데 쓴다.
+                #
+                # `load_builtin`의 메시지가 이미 사용 가능 목록을 담으므로
+                # (`spec/profile.py:177-180`) 새로 쓰지 않고 전달한다.
+                # `[target]` 라벨만 붙인다: 이 함수의 다른 `_echo`들이 전부
+                # 그렇게 하고, 언어가 여러 개일 때 어느 언어인지 구별해야 한다.
+                _echo(
+                    f"[{target}] 경고: 규격 프로파일이 없어 트리아지를 건너뛴다 - {exc}", err=True
+                )
+
+        if not profiles:
+            # **한 언어도 못 돌면 요청이 통째로 무시된 것이다.** 경고만 내고
+            # exit 0으로 끝나면 CI가 "트리아지했다"로 읽는다. 하나라도 돌면
+            # 부분 적용이고 어느 언어가 빠졌는지는 위 경고가 말한다.
+            #
+            # **이 경우는 번역도 나가지 않는다** - 위 경고의 "번역은 그대로
+            # 나간다"는 부분 적용일 때의 이야기다. 요청이 통째로 무시되므로
+            # 여기서는 사용법 오류로 다뤄 LLM을 부르기 전에 끝낸다.
+            _echo("트리아지를 적용할 수 있는 대상 언어가 없다", err=True)
+            raise typer.Exit(2)
 
     try:
         result = load_subtitle(input, source_lang=source_lang)
@@ -614,6 +730,10 @@ def translate(
             work_context=work_context,
             context_window=context_window,
             cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+            triage_profile=profiles.get(target),
+            budget_ratio=budget_ratio,
+            threshold=review_threshold,
+            policy_label=policy_label,
         )
         worst = max(worst, code)
         if code == EXIT_UNAVAILABLE:
@@ -809,6 +929,10 @@ def _translate_one(
     work_context: str | None,
     context_window: int,
     cache_dir: Path | None,
+    triage_profile: SpecProfile | None,
+    budget_ratio: float | None,
+    threshold: float | None,
+    policy_label: str | None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
 
@@ -954,6 +1078,44 @@ def _translate_one(
     ):
         _echo(line)
 
+    if triage_profile is not None and policy_label is not None:
+        # **두 조건을 함께 본다.** 둘은 `translate` 본문에서 같은 가드
+        # (`if triage_requested`) 안에 함께 설정되므로 실제로는 항상 같이
+        # 있거나 같이 없다. 그럼에도 둘 다 검사하는 것은 `_run_triage`가
+        # `policy_label: str`(None 불가)을 받기 때문이다 - 여기가 타입을
+        # 좁히는 유일한 지점이고, 한쪽만 보면 None이 함수 경계를 넘는다.
+        #
+        # 요약 출력 **뒤**에 온다 - `_format_translate_summary`가 실패 ID를
+        # 먼저 나열하고, 트리아지 요약은 그것이 분모에서 빠졌다고 말한다.
+        # 순서가 뒤집히면 "3건 제외"가 무엇을 가리키는지 알 수 없다.
+        try:
+            for line in _run_triage(
+                target_lang=target_lang,
+                profile=triage_profile,
+                glossary=glossary,
+                source_lang=source_lang,
+                translated=translated,
+                budget_ratio=budget_ratio,
+                threshold=threshold,
+                policy_label=policy_label,
+            ):
+                _echo(line)
+        except ValueError as exc:
+            # **정책 오류가 exit 1로 새는 것을 막는다.** 이 파일 머리말의 표에서
+            # 1은 "규격 위반 발견"이라, 잡지 않으면 미처리 traceback이 exit 1이
+            # 되어 **설정 실수가 자막 결함으로 오보되고** 사용자는 멀쩡한 자막을
+            # 고치려 든다. `--review-threshold nan` 가드가 정확히 같은 이유로
+            # 앞단에 있다 - 여기는 그 가드가 놓친 경로를 받는 두 번째 그물이다.
+            #
+            # 여기로 오는 것: `select_by_*`의 범위·NaN 검사, `fuse`의 가중치
+            # 검사, `_run_triage`의 "budget·threshold가 둘 다 None" 불변식.
+            # 셋 다 **설정이 틀린 것**이지 자막이 틀린 것이 아니므로 2다.
+            #
+            # 번역 파일은 이미 나갔다 - 트리아지만 못 돌린 것이고, 그 사실을
+            # 말하지 않으면 사용자는 번역까지 실패한 줄 안다.
+            _echo(f"[{target_lang}] 트리아지를 돌리지 못했다: {exc}", err=True)
+            return 2
+
     return 1 if translated.failures else 0
 
 
@@ -1008,6 +1170,191 @@ def _format_translate_summary(
         ids = ", ".join(f.segment_id for f in result.failures)
         lines.append(f"  실패 세그먼트(원문 유지): {ids}")
     return lines
+
+
+def _format_triage_summary(
+    *,
+    target_lang: str,
+    policy_label: str,
+    profile_name: str,
+    risks: Sequence[SegmentRisk],
+    excluded: int,
+) -> list[str]:
+    """트리아지 결과를 요약한다 (FR-7.4 · 설계 §7.1).
+
+    **`risks`는 `select_by_*`가 돌려준 전체 목록이다.** 선별분만 넘기면
+    `review_ratio`가 언제나 1.0이 되고, 그 값이 스펙 §6.2의 "실제 검수
+    비율"이자 README 배수의 분모라 조용히 틀리면 프로젝트의 핵심 주장이
+    무너진다(`triage/policy.py` 모듈 독스트링).
+
+    **요청 예산과 실제 비율을 함께 낸다.** hard fail이 quota를 소진하므로
+    (`policy.py:92`) 둘은 정기적으로 어긋나고, `ceil` 하나로도 어긋난다
+    (26건에 10%면 실제 11.5%). 요청만 찍으면 사용자가 배수를 틀린 분모로
+    재계산한다.
+
+    `excluded`가 0이면 괄호를 내지 않는다 - 실패가 없는 정상 실행에서
+    "(번역 실패 0건 제외)"는 없는 문제를 있는 것처럼 보이게 한다. 실패 ID
+    자체는 `_format_translate_summary`가 바로 위에서 나열했으므로 여기서
+    반복하지 않는다(설계 §7.1).
+    """
+    total = len(risks)
+    selected = sum(1 for r in risks if r.selected)
+    hard = sum(1 for r in risks if r.hard_fail)
+
+    scope = f"  대상 세그먼트 {total}개"
+    if excluded:
+        scope += f" (번역 실패 {excluded}건 제외)"
+
+    # `reasons`는 0점 신호를 담지 않는다(`fuse.py:73` - "0점 신호를 사유에
+    # 넣으면 리포트가 '이것 때문에 뽑혔다'고 거짓말한다"). 따라서 이 집계가
+    # 곧 "적발 건수"다.
+    counts: Counter[str] = Counter()
+    for risk in risks:
+        counts.update(risk.reasons)
+
+    lines = [
+        # **프로파일 이름을 낸다.** 이것이 없으면 `profiles[target]`에 **다른 언어의**
+        # 프로파일이 들어가도 어떤 테스트도 잡지 못한다 - Task 2 리뷰(축A I4)가
+        # `profiles[target] = load_builtin("ko")` 변이로 실측했다: 키 집합만 검증되고
+        # 값은 검증되지 않아 전 스위트가 통과한다. 사용자에게도 "어느 규격으로
+        # 검사했는가"가 필요한 정보다(FR-5.1이 규격을 언어별로 정의한다).
+        f"[{target_lang}] 트리아지 ({policy_label}, 프로파일 {profile_name})",
+        scope,
+        # **`_format_ratio`를 재사용한다 - `f"{x:.1%}"`로 직접 찍지 않는다.**
+        # 직접 찍으면 세그먼트 2001개 중 검수 대상 1개(0.05%)가 `"0.0%"`가 되는데,
+        # `_format_ratio`의 독스트링이 그것을 이 저장소의 **1급 결함**으로 이미 적어
+        # 두었다 - "검수자가 위반 목록을 눈앞에 두고 요약만 보면 '0%니까 통과'로
+        # 읽는다." 트리아지 요약에도 같은 위험이 있다: 검수 대상이 하나라도 있으면
+        # 0%로 보여선 안 된다. `_format_ratio`는 그 경우 `"<0.1%"`를 낸다.
+        #
+        # **`* 100`이 필수다.** `_format_ratio`는 0~100 **퍼센트**를 받고
+        # (`percent < 0.05`가 0.05%를 뜻한다) `review_ratio`는 0~1 **비율**을 낸다.
+        # 빼먹으면 실제 10%가 `"0.1%"`로 찍히고 프로그램은 정상 종료한다 -
+        # 종료 코드로는 알 수 없는 조용한 100배 축소다.
+        f"  검수 대상 {selected}개 (실제 {_format_ratio(review_ratio(risks) * 100)})",
+        f"  hard fail {hard}개",
+    ]
+    if counts:
+        lines.append("  신호별 적발")
+        # 정렬은 NFR-3(재현성)이다 - Counter의 순서는 삽입 순이라 세그먼트
+        # 순서가 바뀌면 화면이 달라지고 테스트가 흔들린다.
+        lines.extend(f"    {name} {count}개" for name, count in sorted(counts.items()))
+    return lines
+
+
+def _run_triage(
+    *,
+    target_lang: str,
+    profile: SpecProfile,
+    glossary: Glossary | None,
+    source_lang: str,
+    translated: TranslationResult,
+    budget_ratio: float | None,
+    threshold: float | None,
+    policy_label: str,
+) -> list[str]:
+    """번역 결과를 트리아지해 요약 줄을 낸다 (FR-6.1~6.3 · 설계 §4).
+
+    **번역 실패분을 입력에서 뺀다.** `TranslationResult`가 독스트링으로
+    요구하는 계약이다 - 실패분은 `segments`에 `target_text=None`으로 남아
+    `struct.empty`가 `hard_fail=True`를 내고(`structural.py:166-172`), hard
+    fail은 예산 quota를 소진해 진짜 오류를 큐에서 밀어낸다. 실측(200큐·진짜
+    오류 20건·예산 10%): 실패 20건에서 **Recall@10%가 0%**가 되고 30건에서는
+    실제 비율이 15%로 부풀어 배수의 분모까지 망가진다. 번역 안 된 자막은
+    검수 대상이 아니라 **재실행 대상**이다.
+
+    **그러나 빼는 자리는 융합이지 수집이 아니다.** `collect_all`에는 트랙
+    전체를 넘긴다 - `spec.overlap`이 `BatchCollector`라 이웃을 봐야 판정되고,
+    실패분을 수집 단계에서 빼면 그것과 겹치는 **성공한** 큐의 겹침까지 함께
+    사라진다. 본문의 두 층 주석을 참고할 것.
+    """
+    failed_ids = {f.segment_id for f in translated.failures}
+    kept = [seg for seg in translated.segments if seg.id not in failed_ids]
+    if not kept:
+        # 전량 실패에서 `review_ratio`는 0.0을 내지만(빈 목록 가드,
+        # `policy.py:194-195`) "검수 대상 0개"는 "볼 것이 없다"로 읽힌다.
+        # 실제로는 **판정 자체를 못 한 것**이므로 구별해 말한다.
+        return [
+            f"[{target_lang}] 트리아지: 번역된 세그먼트가 없어 건너뛴다 "
+            f"(전량 {len(failed_ids)}건 실패)"
+        ]
+
+    ctx = SignalContext(
+        profile=profile,
+        glossary=glossary,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    # **수집과 융합의 입력이 다르다. 서로 다른 층의 요구이기 때문이다.**
+    #
+    # 수집(`collect_all`)은 **트랙 전체**를 본다 - 배치 신호가 이웃을 봐야
+    # 판정되기 때문이다. 융합(`fuse`)은 **`kept`만** 본다 - 실패분이 hard
+    # fail로 quota를 먹으면 안 되기 때문이다(D12).
+    #
+    # 둘을 `kept` 하나로 묶으면 **번역 실패한 큐와 겹치는 성공한 큐의 겹침이
+    # 사라진다.** 그 겹침은 산출 파일에 그대로 남아 출고되는데 요약은 침묵하고
+    # exit도 정상이다 - 종료 코드로는 알 수 없는 조용한 실패다(실측: 같은 2큐
+    # 파일에서 실패 1건이면 `spec.overlap` 미출력, 실패 0건이면 1개 출력).
+    #
+    # D12는 그대로 유지된다 - 실패분의 신호는 수집되기만 하고 `fuse`에
+    # 도달하지 않아 위험도가 되지 않는다. `length.ratio`는 빈 번역을 분포에서
+    # 이미 제외하므로(`signals/derived.py:145-148`) 분포도 흔들리지 않는다.
+    signals = collect_all(translated.segments, ctx)
+    # `collect_all`은 신호가 없는 세그먼트도 빈 리스트로 키를 갖는다
+    # (`signals/base.py`) - KeyError 없이 전량을 돌 수 있다는 보장이다.
+    risks = [fuse(seg.id, signals[seg.id]) for seg in kept]
+
+    if budget_ratio is not None:
+        scored = select_by_budget(risks, budget_ratio)
+    elif threshold is not None:
+        scored = select_by_threshold(risks, threshold)
+    else:
+        # 호출자가 트리아지를 요청하지 않았는데 여기 도달한 것이다.
+        # 조용히 빈 목록을 내면 "트리아지가 돌았고 아무것도 안 걸렸다"로
+        # 읽혀 미배선을 정상으로 오인한다.
+        raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
+
+    return _format_triage_summary(
+        target_lang=target_lang,
+        policy_label=policy_label,
+        profile_name=profile.name,
+        risks=scored,
+        excluded=len(failed_ids),
+    )
+
+
+def _parse_review_budget(raw: str) -> float:
+    """`--review-budget` 값을 비율로 바꾼다 (FR-6.3 ① · 설계 §5.2).
+
+    `10%`와 `0.1`을 모두 받는다. **개수 지정(`50`)은 범위 밖으로 거부된다** -
+    라이브러리에 개수 기반 선별 함수가 없고, `k/n`으로 환산하면 `ceil`과 hard
+    fail 소진 때문에 정확히 K개가 나오지 않아 옵션이 거짓말을 한다(설계 D5).
+
+    **`1`은 100%다.** `%` 유무만 다르고 나머지는 `0.0 <= x <= 1.0` 한 규칙이라
+    그 결과다. 규칙을 좁혀(`%` 없는 값에 소수점을 요구해) `1`을 거부하면 `0`도
+    함께 막혀 "hard fail만 보기"가 사라진다.
+
+    **NaN·inf는 범위 검사가 거부한다** - `nan <= 1.0`이 False이기 때문이다.
+    이것이 우연이 아니라 의도임을 `test_NaN과_inf는_범위_검사가_거부한다`가
+    **오류 메시지로** 못 박고 있다 - 예외 타입만 단언하면 앞에 `math.isnan`
+    분기를 끼워 넣어 "숫자로 읽지 못했다"로 바꿔도 통과해, 이 문단이 약속한
+    경로가 사라진 것을 게이트가 못 잡는다. 이 방어가 없으면
+    `select_by_budget`이 `math.isnan`으로 다시 막아 주지만, 그때는 오류
+    메시지가 옵션 이름을 말하지 못한다.
+    """
+    text = raw.strip()
+    percent = text.endswith("%")
+    number = text[:-1].strip() if percent else text
+    try:
+        value = float(number) / 100.0 if percent else float(number)
+    except ValueError as exc:
+        raise ValueError(f"--review-budget을 숫자로 읽지 못했다: {raw!r}") from exc
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(
+            f"--review-budget이 0~100% 범위를 벗어났다: {raw!r}. "
+            "개수 지정은 v0.1 범위 밖이다 - 비율로 지정하라 (예: 10%)"
+        )
+    return value
 
 
 def _resolve_profile(spec: str) -> tuple[SpecProfile, str]:

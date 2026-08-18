@@ -321,14 +321,26 @@ def test_no_cache와_cache_dir을_함께_주면_exit_2다(tmp_path: Path) -> Non
     assert result.exit_code == 2
 
 
-def test_review_budget은_경고한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 조용한 무시는 이 저장소가 1급으로 금지한 것이다 (--config 선례).
+def test_review_budget은_더_이상_미구현_경고를_내지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """조용한 무시는 이 저장소가 1급으로 금지한 것이다 (`--config` 선례).
+
+    WP8b 전에는 "아직 구현되지 않았습니다"라고 경고**만** 했다. 이제는 옵션이
+    실제로 동작하므로 그 경고가 남아 있으면 그 자체가 거짓말이다 - 원래 의도
+    ("무시하면서 침묵하지 마라")는 그대로이고 충족 수단이 경고에서 동작으로
+    바뀌었다. 트리아지 요약 자체는 Task 3이 낸다.
+    """
     _patch_provider(monkeypatch, EchoProvider())
 
     result = runner.invoke(app, [*_args(tmp_path), "--review-budget", "10%"])
 
     assert result.exit_code == 0, result.output
-    assert "review-budget" in result.output
+    # **양성 단언이 먼저다.** 부정 단언 둘만 두면 옵션이 통째로 무시돼도
+    # 통과한다 - 경고가 사라진 것과 동작이 생긴 것을 구별하지 못한다.
+    assert "트리아지" in result.output
+    assert "아직 구현되지 않았" not in result.output
+    assert "무시됩니다" not in result.output
 
 
 def test_용어집을_읽는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
