@@ -13,6 +13,7 @@ from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from cuesift.cli import _parse_review_budget, app
+from cuesift.spec import SpecProfile, available_builtins, load_builtin
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 runner = CliRunner()
@@ -120,9 +121,14 @@ def test_두_정책을_함께_주면_exit_2다(tmp_path: Path, monkeypatch: pyte
     )
 
     assert result.exit_code == 2, result.output
+    # **`output`이 아니라 `stderr`를 본다.** `output`은 stdout+stderr 합본이라
+    # `_echo(..., err=True)`의 `err=True`를 지워도 통과한다 - 이 파일의 다른
+    # 테스트가 전부 그렇다. 한 곳이라도 스트림을 갈라 봐야 "오류는 stderr로
+    # 낸다"가 관례가 아니라 게이트가 된다.
+    assert result.stdout == "", "사용법 오류가 stdout으로 샜다"
     # 두 옵션 이름이 모두 나와야 사용자가 무엇을 지울지 안다.
-    assert "--review-budget" in result.output
-    assert "--review-threshold" in result.output
+    assert "--review-budget" in result.stderr
+    assert "--review-threshold" in result.stderr
 
 
 def test_예산_파싱_실패는_exit_2다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,13 +190,21 @@ def test_프로파일이_없는_언어는_경고하고_건너뛴다(
     assert (tmp_path / "minimal.fr.srt").exists()
 
 
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("--review-budget", "10%"), ("--review-threshold", "0.7")],
+)
 def test_트리아지할_언어가_하나도_없으면_exit_2다(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    option: str, value: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Ruling 3a + D13 — 요청이 통째로 무시되는 경우만 사용법 오류다.
 
     **프로바이더 호출 0회를 단언하는 것이 이 테스트의 요점이다.** exit 2만
     보면 "언제" 죽었는지 알 수 없어, LLM 비용을 쓴 뒤 죽는 구현도 통과한다.
+
+    **두 옵션 모두로 돌린다.** `--review-budget`만 보면 `triage_requested`에서
+    `or review_threshold is not None`을 지워도 전 스위트가 통과한다 - 임계값
+    경로의 D13 비용 게이트가 통째로 비게 된다.
     """
     provider = EchoProvider()
     _patch_provider(monkeypatch, provider)
@@ -211,14 +225,132 @@ def test_트리아지할_언어가_하나도_없으면_exit_2다(
             "--model",
             "m1",
             "--no-cache",
-            "--review-budget",
-            "10%",
+            option,
+            value,
         ],
     )
 
     assert result.exit_code == 2, result.output
     assert "적용할 수 있는 대상 언어가 없다" in result.output
     assert provider.calls == [], "프로파일 검증 전에 번역을 호출했다"
+
+
+@pytest.mark.parametrize("raw", ["nan", "1.5", "-0.1", "inf"])
+def test_임계값이_범위를_벗어나면_exit_2다(
+    raw: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--review-threshold`의 범위 검사가 **NaN까지** 막는지 고정한다.
+
+    `nan`은 click의 `min`/`max`가 통과시킨다 - `lt(nan, 0.0)`도
+    `gt(nan, 1.0)`도 False이기 때문이다. 그것이 새는 것을 여기서 잡지 않으면
+    Task 3의 `select_by_threshold`가 던지는 ValueError가 미처리 traceback으로
+    **exit 1**이 되고, exit 1은 이 CLI에서 "규격 위반 발견"이라 설정 실수가
+    자막 결함으로 오보된다.
+
+    `1.5`·`-0.1`·`inf`는 click이 잡는다. **누가 잡든 결과가 같아야 한다**는
+    것이 이 테스트가 고정하는 계약이므로 넷을 같은 자리에서 본다 - click의
+    동작이 바뀌어도 여기서 드러난다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-threshold", raw))
+
+    assert result.exit_code == 2, result.output
+    # `cli.py`의 `min`/`max` 주석이 "오류 메시지가 옵션 이름을 말한다"를
+    # 정당화의 근거로 든다. 그 약속을 게이트로 만든다.
+    assert "--review-threshold" in result.output
+    assert not list(tmp_path.glob("*.srt")), "검증 실패인데 번역 파일이 나왔다"
+
+
+def test_대문자_언어_태그도_프로파일을_찾는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**플랫폼 의존을 막는다.** 접지 않으면 Windows 0 · Linux 2로 갈린다.
+
+    `_LANG_TAG_RE`가 `[A-Za-z]`로 대문자를 허용하는데 `load_builtin`은
+    `specs/<name>.yaml`을 파일로 찾는다. Windows는 파일명 대소문자를 구분하지
+    않아 `EN`이 `en.yaml`을 찾아내지만 CI의 Linux(`ubuntu-latest`)는 구분해
+    "프로파일 없음"이 되고, 유일한 대상이므로 exit 2가 된다.
+
+    **이 테스트는 개발 플랫폼(Windows)에서는 접기 전에도 통과한다** - 잠기는
+    곳은 CI다. 같은 이유로 `_resolve_profile`·`_output_path`가 이미 같은
+    처리를 한다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-budget", "10%"))
+    assert result.exit_code == 0, result.output
+
+    upper = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "EN",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            "--review-budget",
+            "10%",
+        ],
+    )
+
+    assert upper.exit_code == 0, upper.output
+    assert "경고: 규격 프로파일이 없어" not in upper.output
+    # 조회만 접는다 - 출력 파일명은 사용자가 준 태그를 그대로 쓴다.
+    assert (tmp_path / "minimal.EN.srt").exists()
+
+
+def test_대문자_언어_태그는_대소문자_구분_파일시스템에서도_찾는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**위 테스트는 개발 플랫폼에서 죽지 않는다.** 그것을 이 테스트가 메운다.
+
+    Windows는 파일명 대소문자를 구분하지 않아 `.lower()`를 빼도 위 테스트가
+    통과한다 - 개발 기계에서 실패시켜 볼 수 없는 게이트이고, 이 저장소가
+    금지하는 "검사하지 않고 통과하는 게이트"에 해당한다. CI(`ubuntu-latest`)만
+    잡아 주는 상태로 두지 않으려고 `load_builtin`을 대소문자 구분 버전으로
+    감싸 Linux를 흉내 낸다.
+    """
+    real = load_builtin
+
+    def case_sensitive(name: str) -> SpecProfile:
+        # `Path.is_file()`이 대소문자를 구분하는 파일시스템의 동작이다.
+        if name not in available_builtins():
+            raise FileNotFoundError(
+                f"'{name}' 프로파일이 없다. 사용 가능: {', '.join(available_builtins())}"
+            )
+        return real(name)
+
+    monkeypatch.setattr("cuesift.cli.load_builtin", case_sensitive)
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "EN",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            "--review-budget",
+            "10%",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "경고: 규격 프로파일이 없어" not in result.output
 
 
 def test_정책이_없으면_기존_동작이다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import errno
+import math
 import os
 import re
 import sys
@@ -503,13 +504,29 @@ def translate(
         # 합성하면 어느 쪽이 이겼는지가 출력에서 사라진다(설계 D4).
         _echo("--review-budget과 --review-threshold는 함께 쓸 수 없다", err=True)
         raise typer.Exit(2)
+    if review_threshold is not None and math.isnan(review_threshold):
+        # **`min`/`max`는 NaN을 통과시킨다.** click의 범위 검사가
+        # `lt(nan, 0.0)`·`gt(nan, 1.0)`으로 판정하는데 **둘 다 False**라
+        # 무력하다. `inf`는 `gt(inf, 1.0)`이 True라 click이 잡으므로 여기
+        # 오지 않는다(실측). `_parse_review_budget`은 `not 0.0 <= nan <= 1.0`이
+        # True가 되어 거부한다 - **극성이 반대다.**
+        #
+        # 이 가드가 없으면 `select_by_threshold`가 ValueError를 던지고,
+        # 잡히지 않으면 미처리 traceback이 **exit 1**이 된다. 이 파일 머리말의
+        # 표에서 1은 "규격 위반 발견"이라 **설정 실수가 자막 결함으로
+        # 오보되고**, 사용자는 멀쩡한 자막을 고치려 든다.
+        _echo("--review-threshold를 숫자로 읽지 못했다: nan", err=True)
+        raise typer.Exit(2)
+
+    triage_requested = review_budget is not None or review_threshold is not None
 
     # `budget_ratio`·`policy_label`은 **이 태스크에서는 읽는 곳이 없다** -
     # 트리아지 실행과 요약 출력이 WP8b Task 3이라 소비자가 아직 없다. 값을
     # 버리고 Task 3에서 다시 파싱하게 두지 않는 이유는 파싱 실패가 여기서
     # exit 2로 끝나야 하기 때문이다(LLM을 호출하기 전이다). `noqa`를 지우는
     # 것이 Task 3의 배선이 실제로 이 값들을 썼다는 표식이 된다.
-    budget_ratio: float | None = None  # noqa: F841
+    budget_ratio: float | None = None
+    policy_label: str | None = None
     if review_budget is not None:
         try:
             budget_ratio = _parse_review_budget(review_budget)  # noqa: F841
@@ -517,12 +534,19 @@ def translate(
             _echo(str(exc), err=True)
             raise typer.Exit(2) from exc
 
-    # 사용자가 준 원문을 라벨에 쓴다 - 파싱 결과(`0.1`)를 찍으면 `10%`라고
-    # 쓴 사람이 자기 입력을 화면에서 못 찾는다. 이해가 맞았는지는 별도로
-    # 출력되는 "실제 N%"가 말한다.
-    policy_label = (  # noqa: F841
-        f"예산 {review_budget}" if review_budget is not None else f"임계값 {review_threshold}"
-    )
+    if triage_requested:
+        # **`triage_requested` 안에서 만든다.** 밖에서 만들면 정책이 하나도
+        # 없을 때 `"임계값 None"`이라는 사실이 아닌 라벨이 생기고, Task 3이
+        # 그것을 요약에 찍으면 트리아지를 요청하지 않은 사용자가 임계값을
+        # 준 것으로 읽는다. 타입을 `str | None`으로 둔 것이 그 오용을 막는다 -
+        # 소비자가 `None` 처리를 강제로 마주한다.
+        #
+        # 사용자가 준 원문을 라벨에 쓴다 - 파싱 결과(`0.1`)를 찍으면 `10%`라고
+        # 쓴 사람이 자기 입력을 화면에서 못 찾는다. 이해가 맞았는지는 별도로
+        # 출력되는 "실제 N%"가 말한다.
+        policy_label = (  # noqa: F841
+            f"예산 {review_budget}" if review_budget is not None else f"임계값 {review_threshold}"
+        )
 
     resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
@@ -536,7 +560,6 @@ def translate(
         _echo(f"--to에 유효하지 않은 언어 태그가 있다: {', '.join(invalid)}", err=True)
         raise typer.Exit(2)
 
-    triage_requested = review_budget is not None or review_threshold is not None
     profiles: dict[str, SpecProfile] = {}
     if triage_requested:
         # **모든 대상 언어를 여기서 검사한다 - 루프 안에서 하지 않는다.**
@@ -549,7 +572,16 @@ def translate(
         # (`spec.violation`·`length.ratio`)이 번역문에 이것을 적용한다.
         for target in targets:
             try:
-                profiles[target] = load_builtin(target)
+                # **조회만 소문자로 본다.** `_LANG_TAG_RE`(위)가 `[A-Za-z]`로
+                # 대문자를 허용하는데 `load_builtin`은 `specs/<name>.yaml`을
+                # 파일로 찾는다 - Windows는 파일명 대소문자를 구분하지 않아
+                # `--to EN`이 `en.yaml`을 찾아내지만 **CI의 Linux는 구분해
+                # 프로파일 없음이 된다.** 접지 않으면 같은 명령의 종료 코드가
+                # 플랫폼마다 갈린다(Windows 0 · Linux 2). `_resolve_profile`이
+                # `--spec`의 확장자를 가를 때 같은 이유로 같은 처리를 한다.
+                # **출력 파일명은 접지 않는다** - `_output_path`가 원본 태그를
+                # 써서 `minimal.EN.srt`가 그대로 유지된다.
+                profiles[target] = load_builtin(target.lower())
             except (OSError, ValueError) as exc:
                 # **경고하고 그 언어만 건너뛴다 - 전량 거부하지 않는다**(D7).
                 # 전량 거부는 프로파일이 **있는** 언어의 트리아지까지 잃게 하고,
@@ -576,6 +608,10 @@ def translate(
             # **한 언어도 못 돌면 요청이 통째로 무시된 것이다.** 경고만 내고
             # exit 0으로 끝나면 CI가 "트리아지했다"로 읽는다. 하나라도 돌면
             # 부분 적용이고 어느 언어가 빠졌는지는 위 경고가 말한다.
+            #
+            # **이 경우는 번역도 나가지 않는다** - 위 경고의 "번역은 그대로
+            # 나간다"는 부분 적용일 때의 이야기다. 요청이 통째로 무시되므로
+            # 여기서는 사용법 오류로 다뤄 LLM을 부르기 전에 끝낸다.
             _echo("트리아지를 적용할 수 있는 대상 언어가 없다", err=True)
             raise typer.Exit(2)
 
