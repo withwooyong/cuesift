@@ -369,6 +369,77 @@ def test_정책이_없으면_기존_동작이다(tmp_path: Path, monkeypatch: py
     assert "트리아지" not in result.output
 
 
+def test_dry_run은_트리아지를_돌리지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """README가 "dry-run에는 트리아지가 반영되지 않는다"를 약속한다.
+
+    **문서가 약속한 동작에 게이트가 없으면 이 저장소가 1급으로 금지하는
+    상태다.** dry-run은 번역을 하지 않으므로 트리아지도 돌 것이 없는데,
+    그 사실이 코드 어디에도 단언돼 있지 않아 `_dry_run_report` 뒤에
+    트리아지를 얹는 변경이 조용히 통과한다.
+
+    `--review-budget`을 **주고도** 요약이 없어야 한다는 것이 요점이다 -
+    옵션을 안 주고 검사하면 `triage_requested`가 거짓이라 아무것도 증명하지
+    못한다(그 경로는 `test_정책이_없으면_기존_동작이다`가 이미 본다).
+
+    **낱말 `"트리아지"` 하나로 단언하면 안 된다.** pytest가 `tmp_path`를
+    **테스트 함수 이름으로** 짓는데 그 이름에 "트리아지"가 들어 있고,
+    dry-run 출력이 출력 경로를 찍으므로 임시 디렉터리 이름이 그대로 걸린다
+    (실측: 이 테스트의 첫 판이 그렇게 실패했다). 요약 헤더의 고유한 모양인
+    `"] 트리아지 ("`로 좁힌다 - 경로에는 이 조합이 나올 수 없다.
+    """
+    provider = EchoProvider()
+    _patch_provider(monkeypatch, provider)
+
+    result = runner.invoke(
+        app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%", "--dry-run")
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "] 트리아지 (" not in result.output
+    assert "검수 대상" not in result.output
+    assert provider.calls == [], "dry-run이 프로바이더를 호출했다"
+
+
+def test_dry_run에서도_프로파일_검증은_돈다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D13 — 프로파일 전량 검사는 `--dry-run` 분기보다 **앞**에 있다.
+
+    README가 "옵션 조합이 맞는지 LLM을 부르기 전에 확인하는 용도로는 쓸 수
+    있다"고 적은 근거다. 검사를 dry-run 뒤로 옮기면 `--to fr --dry-run`이
+    exit 0으로 조용히 통과하고, 사용자는 **본 실행에서야** exit 2를 만난다 -
+    dry-run의 존재 이유가 정확히 그것을 앞당기는 것인데.
+    """
+    provider = EchoProvider()
+    _patch_provider(monkeypatch, provider)
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "ten_cues.srt"),
+            "--to",
+            "fr",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            "--review-budget",
+            "10%",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "적용할 수 있는 대상 언어가 없다" in result.output
+    assert provider.calls == []
+
+
 def _blank_at(indices: set[int], count: int) -> ScriptedProvider:
     """지정한 인덱스만 **공백 번역**으로 답하는 가짜.
 
@@ -390,11 +461,25 @@ def _risk_free(source: str) -> str:
     `EchoProvider`의 기본 transform(`f"EN:{s}"`)은 한글 원문을 남겨
     `struct.untranslated`가 전량 hard fail을 낸다(실측).
 
-    **숫자를 보존한다.** `large.srt`의 원문이 `안녕하세요 N번째 대사입니다`라
-    숫자를 담고 있어, 번역문에서 빠뜨리면 `struct.number_missing`이 두 자리
-    구간에서 hard fail을 낸다(한 자리는 스타일가이드 때문에 해제돼 있다).
-    나머지 고정 문구는 트랙 안에서 길이가 균일해 `length.ratio`의 분포가
-    서지 않는다(MAD도 평균절대편차도 0이면 이상치가 정의되지 않는다).
+    **숫자를 그대로 옮긴다.** 원문의 숫자를 번역문에서 빠뜨리면
+    `struct.number_missing`이 hard fail을 낸다. 다만 이 함수를 쓰는 두
+    테스트의 픽스처인 `ten_cues.srt`에는 **숫자가 하나도 없어** 그 경로가
+    지금은 발동하지 않는다 - 결과는 10큐 전부 `"Line  of the talk"`라는
+    **한 문자열**이다(실측). 숫자를 담은 트랙으로 바꿔도 죽지 않게 하는
+    보험으로 남긴다.
+
+    **`length.ratio`가 잠잠한 이유는 MAD가 0이어서가 아니다.**
+    `ten_cues.srt`의 원문 폭이 7과 8 두 가지뿐이고 번역문이 전부 같으므로
+    비율이 2.4286과 2.125 둘로만 갈리고, 그러면 **모든 편차가 MAD와 정확히
+    같아진다.** 그래서 z가 전 큐에서 `_MAD_SCALE`(0.6745)에 고정되고
+    임계 `_RATIO_Z_THRESHOLD`(3.5)의 **약 1/5**에 그친다
+    (실측: median 2.2768 · MAD 0.1518 · z 집합 {0.6745}).
+    분포가 안 서는 것이 아니라 **서긴 서는데 전부 같은 자리에 선다.**
+
+    **원문 길이가 두 가지를 넘으면 이 여유가 줄어든다.** 편차가 갈리기
+    시작하면 z가 0.6745에서 흩어지고, 하나라도 3.5를 넘는 순간 이 함수의
+    이름이 거짓이 되어 정책 테스트가 **조용히** 오염된다 - 신호가 붙어도
+    프로그램은 정상 종료하므로 종료 코드로는 알 수 없다.
     """
     return f"Line {''.join(c for c in source if c.isdigit())} of the talk"
 
