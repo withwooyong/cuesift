@@ -459,13 +459,92 @@ def test_파일을_utf8로_쓴다(tmp_path: Path) -> None:
     assert text.endswith("\n"), "끝 개행이 없다"
 
 
+def test_줄바꿈은_플랫폼과_무관하게_LF다(tmp_path: Path) -> None:
+    """**`read_text`로는 잴 수 없다** - universal newline이 CRLF를 되돌린다.
+
+    `write_text`의 텍스트 모드 기본값은 `\\n`을 `os.linesep`으로 번역하므로
+    Windows에서는 CRLF가 나간다(실측: **CRLF 39개 · 순수 LF 0개**). 그런데
+    `read_text`도 되돌리므로 위 테스트의 `endswith("\\n")`·`startswith`는
+    CRLF에서도 통과한다 - `newline="\\r\\n"` 강제와 `newline="\\n"` 강제가
+    **둘 다 생존했다.**
+
+    이 리포는 `.gitattributes`에서 `* text=auto eol=lf`로 "Windows에서 개발하고
+    CI는 Linux에서 도니 명시하지 않으면 줄바꿈만 바뀐 diff가 난다"를 이미 못
+    박았다. 산출물만 그 규율 밖에 있었다.
+
+    `read_bytes()`로 봐야 재진다. `encoding="utf-8"` 삭제 변이도 여기서 함께
+    죽는다 - 한국어가 로케일 코드페이지로 나가면 이 바이트 단언이 깨진다.
+    """
+    out = tmp_path / "x.json"
+
+    write_review(_outcome(risks=(_risk("00000", selected=True),)), out)
+
+    raw = out.read_bytes()
+    assert b"\r\n" not in raw, "CRLF가 나갔다 - newline='\\n'이 빠졌다"
+    assert raw.endswith(b"\n"), "끝 개행이 없다"
+    assert raw.startswith(b'{\n  "summary"'), "indent=2가 사라졌거나 CRLF다"
+    # 한국어가 utf-8로 나갔는지 바이트로 못 박는다.
+    assert "원문".encode() in raw, "utf-8로 쓰지 않았다"
+
+
+def test_같은_경로에_다시_쓰면_덮어쓴다(tmp_path: Path) -> None:
+    """이어쓰기(`open("a")`)로 바뀌면 재실행 시 JSON 두 덩이가 붙는다.
+
+    그러면 `json.loads`가 죽는데 **픽스처가 언제나 새 경로라 스위트는
+    통과한다**(실측: 변이 생존). 덮어쓰기 정책 자체(백업·거부 등)는 CLI가
+    정할 몫이고, 여기서 재는 것은 **"지금 truncate한다"는 사실**뿐이다.
+    """
+    out = tmp_path / "x.json"
+
+    write_review(_outcome(risks=(_risk("00000", selected=True),), target_lang="en"), out)
+    write_review(_outcome(risks=(_risk("00001", selected=True),), target_lang="ja"), out)
+
+    # 이어쓰기면 여기서 JSONDecodeError로 죽는다.
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["summary"]["target_lang"] == "ja", "두 번째 내용이 남지 않았다"
+    assert [s["id"] for s in doc["segments"]] == ["00001"]
+
+
 def test_쓰기_실패는_OSError로_전파된다(tmp_path: Path) -> None:
-    """호출자(CLI)가 exit 66으로 바꾼다. 여기서 삼키면 종료 코드를 잃는다."""
+    """호출자(CLI)가 파일 사정 오류로 바꾼다. 여기서 삼키면 종료 코드를 잃는다.
+
+    **이 테스트가 재는 것은 `mkdir` 경로다.** `blocker`가 파일이라 예외가
+    `mkdir`에서 먼저 나고 `write_text`는 실행조차 되지 않는다(실측: 줄 75,
+    `FileExistsError [WinError 183]`). 아래 짝 테스트와 **함께 있어야** 두
+    실패 지점이 각각 닫힌다 - 자세한 것은 그쪽 독스트링에 있다.
+    """
     blocker = tmp_path / "blocked"
     blocker.write_text("파일이다", encoding="utf-8")
 
     with pytest.raises(OSError):
         write_review(_outcome(risks=(_risk("00000", selected=True),)), blocker / "x.json")
+
+
+def test_mkdir은_성공하고_쓰기만_실패해도_OSError다(tmp_path: Path) -> None:
+    """**실패 지점을 구별한다.** 위 테스트만으로는 절반이 무방비다.
+
+    위 테스트의 픽스처는 `mkdir`과 `write_text`를 **동시에** 터뜨릴 조건이라
+    "둘 중 적어도 하나가 던진다"만 잰다. 실측한 변이 결과:
+
+    | 변이 | 결과 |
+    | --- | --- |
+    | 본문 **전체** `OSError` 삼킴 | 죽는다 |
+    | **`write_text`만** 삼킴 | **생존** - `mkdir`이 대신 던진다 |
+    | **`mkdir`만** 삼킴 | **생존** - `write_text`가 대신 던진다 |
+
+    즉 `write_text`의 `OSError`를 삼키는 리팩터(재시도·경고 로깅 추가 등)가
+    들어오면 **스위트 전부가 통과한 채 파일 없이 정상 종료**한다.
+
+    대상 경로 자체를 **이미 있는 디렉터리**로 두면 갈린다 -
+    `mkdir(parents=True, exist_ok=True)`는 부모가 있으니 성공하고
+    `write_text`만 실패한다(실측: 줄 82, Windows `PermissionError` ·
+    Linux `IsADirectoryError` - 둘 다 `OSError`라 플랫폼 무관하게 잡힌다).
+    """
+    out = tmp_path / "already_a_dir"
+    out.mkdir()
+
+    with pytest.raises(OSError):
+        write_review(_outcome(risks=(_risk("00000", selected=True),)), out)
 
 
 def test_직렬화_불가값은_TypeError로_전파된다(tmp_path: Path) -> None:

@@ -64,9 +64,14 @@ def build_review(outcome: TriageOutcome) -> dict[str, Any]:
 def write_review(outcome: TriageOutcome, path: Path) -> None:
     """`review.json`을 쓴다 (FR-7.2 · 설계 §5.2).
 
-    **예외를 잡지 않는다.** `OSError`는 호출자가 exit 66으로, `TypeError`
-    (직렬화 불가)는 exit 70으로 바꾼다. 여기서 삼키면 파일이 없는데 종료
-    코드가 0이 되어 다음 단계(배포 스크립트·CI)가 빈손으로 진행한다.
+    **예외를 잡지 않는다.** `OSError`는 디스크 상태의 문제이고 `TypeError`
+    (직렬화 불가)는 내부 결함이라 성격이 다르다 - **호출자가 각각을 종료
+    코드로 바꾼다.** 여기서 삼키면 파일이 없는데 종료 코드가 0이 되어 다음
+    단계(배포 스크립트·CI)가 빈손으로 진행한다.
+
+    **종료 코드 숫자는 여기 적지 않는다.** 이 모듈은 라이브러리이고 코드
+    정책은 `cli.py`가 갖는다 - 숫자를 양쪽에 적으면 CLI가 정책을 바꿀 때
+    갈라지고 어느 쪽이 계약인지 알 수 없어진다.
 
     **`ensure_ascii=False`가 필수다.** 이 프로젝트의 원문은 한국어이고
     `\\uc6d0\\ubb38`로 이스케이프되면 사람이 파일을 열어 읽을 수 없다 -
@@ -79,7 +84,13 @@ def write_review(outcome: TriageOutcome, path: Path) -> None:
     #
     # `indent=2`는 사람이 읽는 산출물이기 때문이다. diff도 줄 단위로 난다.
     text = json.dumps(build_review(outcome), ensure_ascii=False, indent=2)
-    path.write_text(text + "\n", encoding="utf-8")
+    # **`newline="\n"`이 없으면 줄바꿈이 플랫폼마다 갈린다.** 텍스트 모드의
+    # 기본값은 `\n`을 `os.linesep`으로 번역하므로 Windows에서는 CRLF가, Linux
+    # CI에서는 LF가 나간다 - 같은 입력이 다른 바이트를 낸다(실측: Windows에서
+    # CRLF 39개·순수 LF 0개). 위 줄이 "diff도 줄 단위로 난다"고 적은 의도가
+    # 그때 깨진다. `.gitattributes`가 `* text=auto eol=lf`로 소스에 이미 건
+    # 규율을 산출물에도 적용하는 것이다.
+    path.write_text(text + "\n", encoding="utf-8", newline="\n")
 
 
 def _segment_doc(risk: SegmentRisk, segment: Segment) -> dict[str, Any]:
