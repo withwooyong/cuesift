@@ -375,7 +375,7 @@ def load_builtin(name: str) -> SpecProfile:
 ### 7.1 형식
 
 ```text
-[en] 트리아지 (예산 10%)
+[en] 트리아지 (예산 10%, 프로파일 en)
   대상 세그먼트    1200  (번역 실패 3건 제외)
   검수 대상         120  (실제 10.0%)
   hard fail           2
@@ -386,6 +386,7 @@ def load_builtin(name: str) -> SpecProfile:
 
 | 줄 | 출처 | 근거 |
 | --- | --- | --- |
+| 프로파일 이름 | `profile.name` | **값 검증의 유일한 수단이다.** 없으면 `profiles[target]`에 다른 언어의 프로파일이 들어가도 어떤 테스트도 잡지 못한다 — Task 2 리뷰(축A)가 `profiles[target] = load_builtin("ko")` 변이로 실측했다(키 집합만 검증되고 값은 검증되지 않아 전 스위트 통과). 사용자에게도 "어느 규격으로 검사했는가"가 필요하다(FR-5.1) |
 | 대상 세그먼트 | `len(risks)` — **실패분을 뺀 수** | FR-7.4 · D12. 이 값이 `review_ratio`의 분모다 |
 | 번역 실패 제외 건수 | `len(result.failures)` | §3.6 — 분모가 총 세그먼트가 아닌 이유를 사용자가 알아야 한다. **0건이면 이 괄호를 내지 않는다** |
 | 검수 대상 · 실제 비율 | `sum(selected)` · `review_ratio(scored)` | FR-7.4 · D8 |

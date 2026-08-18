@@ -864,6 +864,7 @@ def _format_triage_summary(
     *,
     target_lang: str,
     policy_label: str,
+    profile_name: str,
     risks: Sequence[SegmentRisk],
     excluded: int,
 ) -> list[str]:
@@ -900,7 +901,12 @@ def _format_triage_summary(
         counts.update(risk.reasons)
 
     lines = [
-        f"[{target_lang}] 트리아지 ({policy_label})",
+        # **프로파일 이름을 낸다.** 이것이 없으면 `profiles[target]`에 **다른 언어의**
+        # 프로파일이 들어가도 어떤 테스트도 잡지 못한다 - Task 2 리뷰(축A I4)가
+        # `profiles[target] = load_builtin("ko")` 변이로 실측했다: 키 집합만 검증되고
+        # 값은 검증되지 않아 전 스위트가 통과한다. 사용자에게도 "어느 규격으로
+        # 검사했는가"가 필요한 정보다(FR-5.1이 규격을 언어별로 정의한다).
+        f"[{target_lang}] 트리아지 ({policy_label}, 프로파일 {profile_name})",
         scope,
         # **`_format_ratio`를 재사용한다 - `f"{x:.1%}"`로 직접 찍지 않는다.**
         # 직접 찍으면 세그먼트 2001개 중 검수 대상 1개(0.05%)가 `"0.0%"`가 되는데,
@@ -989,6 +995,7 @@ def _run_triage(
     return _format_triage_summary(
         target_lang=target_lang,
         policy_label=policy_label,
+        profile_name=profile.name,
         risks=scored,
         excluded=len(failed_ids),
     )
@@ -1029,9 +1036,10 @@ def _run_triage(
     return 1 if translated.failures else 0
 ```
 
-- [ ] **Step 8: 호출부에 인자를 넘긴다**
+- [ ] **Step 8: 호출부에 인자를 넘기고 `noqa: F841` 3개를 지운다**
 
-`translate` 본문의 `_translate_one(...)` 호출(`cli.py:606-617`)에 인자를 추가한다:
+`translate` 본문의 `_translate_one(...)` 호출에 인자를 추가한다(Task 2가 `cli.py`에
+100줄을 더했으므로 줄 번호로 찾지 말고 `_translate_one(` 호출로 찾는다):
 
 ```python
             cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
@@ -1044,6 +1052,24 @@ def _run_triage(
 
 `profiles`는 트리아지를 요청하지 않으면 빈 dict라 `.get(target)`이 `None`을 내고
 트리아지가 돌지 않는다(D3 하위 호환).
+
+**그리고 `noqa: F841` 3개를 지운다.** Task 2는 `budget_ratio`·`policy_label`을 만들기만
+하고 쓰지 않아 ruff `F841`(미사용 지역 변수)로 게이트가 깨졌고, 임시로 `noqa`를 달았다.
+이 Step이 그 변수들을 실제로 쓰는 자리이므로 여기서 걷어낸다.
+
+```bash
+grep -n "noqa: F841" src/cuesift/cli.py
+```
+
+세 곳(Task 2 시점 기준 `cli.py:512`·`515`·`523`)과 그 위의 안내 주석을 지운다.
+
+**도구가 이것을 강제하지 않는다.** ruff의 `RUF100`(불필요한 `noqa` 감지)이 이 저장소의
+select(`E,F,I,UP,B,SIM`)에 **없어서**, 변수를 쓰기 시작해도 `noqa`가 남아 있는 것을 아무도
+잡아 주지 않는다. 남겨 두면 나중에 진짜 `F841`이 생겨도 조용히 억제된다 — 이 저장소가
+1급으로 금지하는 "검사하지 않고 통과하는 게이트"의 한 형태다.
+
+확인: 지운 뒤 `ruff check .`이 여전히 통과해야 한다. `F841`이 다시 나오면 그 변수를 아직
+안 쓰고 있다는 뜻이므로 배선이 빠진 것이다.
 
 - [ ] **Step 9: 통과를 확인한다**
 
@@ -1225,6 +1251,7 @@ git commit --allow-empty -m @'
 
 **Files:**
 
+- Modify: **`README.md:293`** — 이제 거짓이다. Task 2 리뷰(축B I-2)가 잡았다
 - Modify: `docs/WBS.md` — FR-6.3의 CLI 배선 담당을 명시, 의존 그래프, 다음 작업 순서
 - Modify: `docs/요구사항정의서.md` §5.4 — FR-6.3·6.4·7.4 상태
 - Modify: `HANDOFF.md` — 낡은 절 정리 + 이번 작업 반영
@@ -1281,6 +1308,31 @@ Changelog) — 이미 릴리스된 이력이 아니므로 손대는 데 제약�
 - "다음 1순위"를 **Tier 1 CLI 배선(FR-4.3)**으로 바꾼다. 그리고 이전 HANDOFF ①의 4건
   (배치 무력화·Tier 1 토큰 미집계·`samples` 상한 부재·`CacheRequest.attempt` 검증 부재)이
   **여전히 유효한 선결 사항**임을 남긴다
+
+- [ ] **Step 4a: `README.md`를 고친다 — 사용자 대면 문서가 이제 거짓이다**
+
+`README.md:293`이 이렇게 적혀 있다:
+
+> `--review-budget`은 아직 구현되지 않았습니다(WP5) — 지정해도 경고만 내고 무시됩니다.
+
+**이제 이 옵션은 파싱하고, 검증하고, exit 2로 실행을 중단시킬 수 있다.** Task 2 리뷰(축B)가
+하위 호환 파기 2건을 실측했다:
+
+| 호출 | 이전 | 지금 |
+| --- | --- | --- |
+| `--review-budget abc` | 경고 + exit 0 + **번역 산출** | **exit 2, 산출 없음** |
+| `--to th --review-budget 10%` | 경고 + exit 0 + th 번역 산출 | **exit 2, 산출 없음**(th 프로파일이 없고 다른 대상 언어도 없다) |
+
+둘 다 D13·Ruling 3a의 의도된 결과지만, README를 읽고 스크립트를 짠 사용자에게는 **예고 없는
+파기**다. 문서가 "no-op"이라 말하는 플래그가 번역 산출물을 통째로 없애는 상태를 남기지 않는다.
+
+고쳐 쓸 내용:
+
+- `--review-budget`의 실제 동작 — 비율(`10%`·`0.1`), 개수 지정은 v0.1 범위 밖
+- `--review-threshold` 신설, `--review-budget`과 상호배타
+- 프로파일은 **대상 언어 코드로 자동 유도**되고, 없는 언어는 경고 후 그 언어만 건너뛴다
+- **정책을 줬는데 프로파일 있는 대상 언어가 하나도 없으면 exit 2**
+- 요약 출력에 요청 예산과 **실제 검수 비율**이 함께 나온다는 것
 
 - [ ] **Step 5: 문서 게이트를 돌린다**
 
