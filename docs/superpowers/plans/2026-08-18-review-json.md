@@ -1074,6 +1074,20 @@ def _run_triage(
 
 기대: **1117 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
 
+- [ ] **Step 7b: 산식이 실제로 한 벌이 됐는지 확인한다 — 이 태스크의 존재 이유다**
+
+**전 스위트 통과는 이것을 재지 못한다.** 스위트는 "출력이 같은가"만 보고, `_format_triage_summary`가 프로퍼티를 읽든 자기가 다시 세든 출력은 같다. Task 1 리뷰가 지적한 자리다(I4) — 그때는 2벌이 과도기라 이월했고, **여기가 그 과도기를 닫는 지점이다.**
+
+```bash
+sed -n '/^def _format_triage_summary/,/^def /p' src/cuesift/cli.py | grep -nE "sum\(|Counter\(|len\(risks\)|sorted\("
+```
+
+기대: **0건.** 하나라도 나오면 그 수치는 여전히 두 곳에서 계산되고 있다. `_format_triage_summary`는 `outcome`의 프로퍼티만 읽어야 한다.
+
+교체 전 `cli.py`가 갖고 있던 산식은 넷이다 — `total = len(risks)` · `selected = sum(...)` · `hard = sum(...)` · `Counter` 루프와 `sorted(counts.items())`. 넷 다 `TriageOutcome`의 프로퍼티로 대체된다.
+
+**`cli.py:1208-1210`의 근거 주석**(`reasons`는 0점 신호를 담지 않으므로 이 집계가 곧 적발 건수다)은 Task 1이 이미 `models.py`의 `signal_hits` 독스트링으로 옮겼다. 여기서 원본을 지울 때 **근거가 사라지지 않았는지 확인**하고, 옮겨져 있지 않으면 지우지 말고 보고하라.
+
 - [ ] **Step 8: 게이트를 돌리고 커밋한다**
 
 ```bash
