@@ -854,6 +854,8 @@ __all__ = ["TriageOutcome", "build_review", "write_review"]
 
 기대: **19 passed**(Task 2가 16개로 끝났다 + 3).
 
+> **실제로는 22개 · 1129 passed로 끝났다.** 리뷰가 예외 경로의 절반(쓰기 실패)이 무방비인 것과 줄바꿈이 플랫폼마다 갈리는 것을 잡아 테스트 3개가 추가됐다. 아래 태스크의 예고값은 **1129를 기준선으로** 재산출한 것이다.
+
 - [ ] **Step 6: 게이트를 돌리고 커밋한다**
 
 ```bash
@@ -864,7 +866,7 @@ git add src/cuesift/report/ tests/test_report_json.py
 git commit -m "기능: review.json 파일 쓰기 - 예외를 전파해 종료 코드를 살린다 (FR-7.2)"
 ```
 
-**1126 passed**(1123 + 3).
+**1129 passed**(1123 + 6 — 리뷰가 3개를 더 요구했다).
 
 ---
 
@@ -1109,7 +1111,7 @@ def _run_triage(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1126 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
+기대: **1129 passed, 3 deselected.** 동작을 바꾸지 않는 리팩터링이므로 **개수가 늘지도 줄지도 않는다.** 하나라도 실패하면 출력이 달라진 것이다 — 문자열을 원상 복구한다.
 
 - [ ] **Step 7b: 산식이 실제로 한 벌이 됐는지 확인한다 — 이 태스크의 존재 이유다**
 
@@ -1364,7 +1366,7 @@ git add src/cuesift/cli.py tests/test_cli_review_out.py
 git commit -m "기능: --review-out 옵션과 조합 검증 (FR-7.2 · D2 · D10 · D11)"
 ```
 
-**1133 passed**(1126 + 7).
+**1136 passed**(1129 + 7).
 
 ---
 
@@ -1756,7 +1758,7 @@ def test_전량_실패해도_파일이_사실을_말한다(
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1142 passed, 3 deselected**.
+기대: `test_cli_review_out.py` **16 passed**(5의 7 + 6의 9), 전체 **1145 passed, 3 deselected**.
 
 - [ ] **Step 8: 실물로 확인한다**
 
@@ -1827,7 +1829,7 @@ git status --short   # 변경 0건이어야 한다
 .venv/Scripts/python.exe -m pytest --cov=cuesift --cov-report=term-missing
 ```
 
-기대: **1142 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
+기대: **1145 passed, 3 deselected**(Task 7은 코드를 남기지 않으므로 Task 6과 같다). `git status`가 깨끗하지 않으면 변이가 남아 있다.
 
 - [ ] **Step 4: 확인 기록을 커밋한다**
 
