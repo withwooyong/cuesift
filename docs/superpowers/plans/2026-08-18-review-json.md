@@ -1380,6 +1380,20 @@ git commit -m "기능: --review-out 옵션과 조합 검증 (FR-7.2 · D2 · D10
 - Consumes: `write_review` (Task 3) · `_review_path` (Task 5) · `TriageOutcome` (Task 4)
 - Produces: `_translate_one(..., review_out: Path | None)` — 종료 코드에 **70이 추가된다**
 
+- [ ] **Step 0: `cli.py:67-69`의 70 서술을 갱신한다 — Task 3 리뷰가 잡았다**
+
+지금 주석은 이렇다.
+
+```text
+# CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
+# `translate`가 배선된 뒤로 70은 `transcribe` 하나의 표식이다.
+EXIT_NOT_IMPLEMENTED = 70
+```
+
+**이 태스크가 그 문장을 거짓으로 만든다.** `write_review`의 `TypeError`(직렬화 불가)가 70으로 나가면 70의 발신처가 둘이 된다.
+
+그대로 두면 CI가 "아직 안 만든 명령"과 "리포트 직렬화가 죽었다"를 종료 코드만으로 구별하지 못하는데, **그 사실이 문서 어디에도 없다.** 주석을 갱신해 두 발신처를 명시하고, 70을 고른 근거(sysexits.h `EX_SOFTWARE` = internal software error · 66은 "사용자가 고칠 수 있는 문제"라 내부 결함을 보내면 "자막이 깨졌다"로 오독된다)를 남긴다. 상수 이름 `EXIT_NOT_IMPLEMENTED`가 좁아졌다는 사실도 적는다 — 이름을 바꾸는 것은 `transcribe`와 테스트를 함께 건드리므로 이 태스크의 범위 밖이다.
+
 - [ ] **Step 1: 종료 코드 순서 성질을 확인한다 — 코드를 쓰기 전에 한다**
 
 `cli.py:716` 부근에 이런 주석이 있다.
