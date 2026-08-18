@@ -4,7 +4,7 @@
 경로 규칙(`_review_path`) · 옵션 선언 · 조합 검증. 쓰기는 Task 6이 붙인다.
 그래서 아래 성공 경로 테스트들은 **파일의 부재를 단언하지 않는다** -
 그렇게 하면 Task 6이 반드시 지워야 하는 테스트가 되고, 지워야 하는 게이트는
-게이트가 아니다. 단언하지 않는 유일한 예외가 `test_예산만_주면_파일을_쓰지_않는다`
+게이트가 아니다. **단언하는 유일한 예외**가 `test_예산만_주면_파일을_쓰지_않는다`
 인데, 그쪽은 `--review-out`이 아예 없어서 Task 6 이후에도 참이다.
 """
 
@@ -106,6 +106,39 @@ def test_대문자_source_lang_인자도_치환된다() -> None:
     assert got == Path("reports/ep01.en.review.json")
 
 
+def test_두번째_값_조합도_같은_경로_규칙을_따른다() -> None:
+    """**네 인자를 동시에 다른 값으로 바꾼다 - 상수 고정 변이를 잡는 유일한 자리다.**
+
+    위 네 테스트는 축마다 값을 하나씩만 쓴다(`ep01` · `reports` · `ko`/`KO` ·
+    `en`). 그래서 인자를 **리터럴로 굳히는** 변이가 전부 살아남는다 - 실측으로
+    네 종이 전체 스위트를 통과했다:
+
+    | 굳힌 것 | 굳혀도 통과하던 이유 |
+    | --- | --- |
+    | `target_lang` -> `"en"` | 모든 테스트가 `en`만 쓴다 |
+    | `suffix` -> `".ko"` | 모든 테스트가 source `ko`만 쓴다 |
+    | `stem` -> `"ep01"` | 모든 테스트가 `ep01`만 쓴다 |
+    | `review_dir` -> `Path("reports")` | 모든 테스트가 `reports`만 쓴다 |
+
+    **`stem` 고정이 가장 아프다.** 굳히면 어떤 입력을 줘도
+    `ep01.en.review.json` 하나만 내는 코드가 되는데, 그것은 이 함수의
+    독스트링이 막겠다고 선언한 사고 그 자체다 - "`ep01`과 `ep02`를 같은
+    `--review-out`으로 돌리면 뒤엣것이 앞엣것을 조용히 지운다". **막겠다고
+    적은 사고를 재현하는 구현이 게이트를 통과하고 있었다.**
+
+    축을 하나만 바꾸면 그 축의 변이 하나만 죽는다. 넷을 동시에 바꿔야 한
+    줄로 넷을 다 죽인다 - 그래서 stem·디렉터리·source·target을 전부 갈았다
+    (`ep02` · `out` · `ja` · `ko`).
+
+    **source(`ja`)와 target(`ko`)을 서로 다르게 둔 것도 필수다.** 같게 두면
+    출력 이름에 `target_lang` 대신 `source_lang`을 쓰는 바꿔치기 변이가
+    이 테스트에서도 살아남는다.
+    """
+    got = _review_path(Path("b/ep02.ja.srt"), Path("out"), "ja", "ko")
+
+    assert got == Path("out/ep02.ko.review.json")
+
+
 def test_review_out_단독은_exit_2다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """설계 D10 - 리포트를 기대했는데 조용히 안 나오는 것이 최악이다."""
     _patch_provider(monkeypatch, EchoProvider())
@@ -139,6 +172,38 @@ def test_review_out_단독은_dry_run에서도_exit_2다(
     )
 
     assert result.exit_code == 2, result.output
+
+
+def test_정상_조합은_dry_run에서도_받아들인다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """위 테스트의 **양성 절반**이다. D11은 "실행 전에 알린다"이지 "dry-run을 막는다"가 아니다.
+
+    바로 위가 실패 방향 하나뿐이라, **dry-run이면 정상 조합까지 거부하는**
+    변이가 전체 스위트를 통과한다(실측). 그 변이는 `--dry-run`을 조합 확인
+    수단으로 쓰는 사용법을 통째로 막는데, 실패 케이스만 보는 테스트는
+    "조합이 틀렸을 때 거부한다"와 "dry-run이면 무조건 거부한다"를 구별하지
+    못한다.
+
+    `test_예산과_함께_주면_받아들인다`가 같은 조합을 dry-run **없이** 보므로,
+    둘이 짝일 때만 "dry-run 여부가 판정을 바꾸지 않는다"가 고정된다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(
+        app,
+        _args(
+            tmp_path,
+            "minimal.srt",
+            "--review-budget",
+            "10%",
+            "--review-out",
+            str(tmp_path / "rp"),
+            "--dry-run",
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 def test_예산과_함께_주면_받아들인다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
