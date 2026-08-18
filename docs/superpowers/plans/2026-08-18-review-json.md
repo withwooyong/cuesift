@@ -928,7 +928,7 @@ def _outcome(risks: list[SegmentRisk], *, policy_label: str, excluded: int = 0) 
 from cuesift.segment import Segment, SegmentRisk
 ```
 
-`test_비율이_0_1퍼센트_미만이어도_0으로_보이지_않는다`(742줄 부근)의 호출을 바꾼다.
+`test_검수_대상이_있으면_0퍼센트로_보이지_않는다`(742줄 부근)의 호출을 바꾼다.
 
 ```python
     lines = _format_triage_summary(_outcome(risks, policy_label="예산 0.1%"))
@@ -1393,6 +1393,8 @@ EXIT_NOT_IMPLEMENTED = 70
 ```
 
 **이 태스크가 그 문장을 거짓으로 만든다.** `write_review`의 `TypeError`(직렬화 불가)가 70으로 나가면 70의 발신처가 둘이 된다.
+
+**파일 머리말 표(`cli.py:14` 부근)의 `| 70 | 미구현 | |` 행도 함께 고친다.** 그 표가 종료 코드의 단일 출처이고, 주석만 고치면 표와 갈라진다 — 다른 다섯 행은 전부 근거 열(`sysexits.h EX_NOINPUT` 등)을 갖는데 70만 비어 있는 것도 이때 채운다.
 
 그대로 두면 CI가 "아직 안 만든 명령"과 "리포트 직렬화가 죽었다"를 종료 코드만으로 구별하지 못하는데, **그 사실이 문서 어디에도 없다.** 주석을 갱신해 두 발신처를 명시하고, 70을 고른 근거(sysexits.h `EX_SOFTWARE` = internal software error · 66은 "사용자가 고칠 수 있는 문제"라 내부 결함을 보내면 "자막이 깨졌다"로 오독된다)를 남긴다. 상수 이름 `EXIT_NOT_IMPLEMENTED`가 좁아졌다는 사실도 적는다 — 이름을 바꾸는 것은 `transcribe`와 테스트를 함께 건드리므로 이 태스크의 범위 밖이다.
 
