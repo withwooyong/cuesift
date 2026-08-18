@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from cuesift.report.json_report import build_review
 from cuesift.report.models import TriageOutcome
 
-__all__ = ["TriageOutcome"]
+__all__ = ["TriageOutcome", "build_review"]
