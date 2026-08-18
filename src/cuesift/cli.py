@@ -13,7 +13,7 @@
 | 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패·출력 경로 충돌) | typer 관행 |
 | 66 | 파일 사정 (자막·용어집 파싱 실패, utf-8 아님, 읽거나 쓰지 못함) | `sysexits.h` EX_NOINPUT |
 | 69 | 외부 서비스(LLM 프로바이더)가 요청을 거부함 | `sysexits.h` EX_UNAVAILABLE |
-| 70 | 미구현 | |
+| 70 | 미구현(`transcribe`), 또는 검수 리포트를 직렬화하지 못함 | `sysexits.h` EX_SOFTWARE |
 
 **1을 진단 실패에 쓰지 않는 것이 핵심이다.** 1은 "규격 위반 발견"이므로
 파일을 못 읽은 것을 1로 내면 CI가 "자막이 깨졌다"와 "경로가 틀렸다"에
@@ -37,7 +37,7 @@ import typer
 from cuesift import __version__
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
-from cuesift.report import TriageOutcome
+from cuesift.report import TriageOutcome, write_review
 from cuesift.risk import fuse
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
@@ -65,7 +65,22 @@ from cuesift.translate import (
 from cuesift.triage import select_by_budget, select_by_threshold
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
-# `translate`가 배선된 뒤로 70은 `transcribe` 하나의 표식이다.
+#
+# **발신처가 둘이다.** `transcribe`(미구현)와 `_translate_one`이 `write_review`의
+# `TypeError`(직렬화 불가)를 받는 자리다 - review.json 배선(FR-7.2)이 둘째를
+# 더했다. 따라서 CI는 "아직 안 만든 명령"과 "리포트 직렬화가 죽었다"를 **종료
+# 코드만으로는 구별하지 못한다**. 구별이 필요하면 stderr 메시지를 봐야 한다.
+# 이 사실이 여기 없으면 아무 데도 없다.
+#
+# **둘이 같은 코드인 것이 옳다.** `sysexits.h`의 EX_SOFTWARE는 "internal
+# software error"라 둘을 함께 덮는다 - 사용자가 입력이나 설정을 고쳐도 사라지지
+# 않는 우리 쪽 결함이라는 점이 같다. 66(EX_NOINPUT)으로 보내면 "사용자가 고칠
+# 수 있는 문제"가 되어 **"자막이 깨졌다"로 오독되고 멀쩡한 자막을 고치려 든다** -
+# 1을 진단 실패에 쓰지 않는 이유(파일 머리말)와 같은 사고다.
+#
+# **이름이 좁아졌다.** `EXIT_NOT_IMPLEMENTED`는 이제 발신처의 절반만 말한다.
+# 바꾸려면 `transcribe`와 그 테스트를 함께 건드려야 해 배선 태스크의 범위를
+# 넘는다 - 이 문단이 그때까지 이름을 대신한다.
 EXIT_NOT_IMPLEMENTED = 70
 
 # sysexits.h EX_NOINPUT — 파일 내용이 틀렸다는 뜻이다. 명령줄이 틀린 2와 구분한다.
@@ -774,10 +789,12 @@ def translate(
             _echo(line)
         return
 
-    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69
-    # (설계 §6.6 표의 6종 중 70을 뺀 5종 - `_translate_one`은 70을 내지
-    # 않는다). 이 성질이 깨지면 아래 max()가 틀린 코드를 낸다 - 새 코드를
-    # 추가할 때 반드시 확인한다.
+    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69 < 70.
+    # 70(내부 오류)이 69(외부 서비스 거부)를 이기는 것이 옳다 - 한 언어가
+    # 프로바이더 거부이고 다른 언어가 직렬화 실패라면 보고할 것은 우리 쪽
+    # 결함이다. 사용자가 LLM 설정을 고쳐도 70은 사라지지 않는다.
+    # **이 성질이 깨지면 아래 max()가 틀린 코드를 낸다** - 새 코드를 추가할 때
+    # 반드시 확인한다. review.json 배선(FR-7.2)이 70을 추가하며 이 주석을 갱신했다.
     worst = 0
     for i, target in enumerate(targets):
         code = _translate_one(
@@ -795,6 +812,7 @@ def translate(
             budget_ratio=budget_ratio,
             threshold=review_threshold,
             policy_label=policy_label,
+            review_out=review_out,
         )
         worst = max(worst, code)
         if code == EXIT_UNAVAILABLE:
@@ -994,6 +1012,7 @@ def _translate_one(
     budget_ratio: float | None,
     threshold: float | None,
     policy_label: str | None,
+    review_out: Path | None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
 
@@ -1177,6 +1196,13 @@ def _translate_one(
             # `_run_triage`가 `risks`와 `segments`를 같은 `kept`에서 만들므로
             # 도달 경로가 없다. 도달한다면 그때는 코드가 틀린 것이다.
             #
+            # **review.json 배선(FR-7.2)이 이 판정을 다시 했다.** 배선은
+            # `outcome`을 읽어 파일로 쓰기만 하고 생성에는 관여하지 않으므로
+            # 도달 불가가 유지된다 - 따라서 여기를 쪼개지 않았다. 나중에
+            # `TriageOutcome`을 다른 재료로 만드는 경로가 생기면 그때는 이
+            # `except`를 분리해 내부 결함을 70으로 내야 한다. 지금 미리
+            # 쪼개면 어떤 테스트도 밟지 못하는 가지가 생긴다.
+            #
             # 번역 파일은 이미 나갔다 - 트리아지만 못 돌린 것이고, 그 사실을
             # 말하지 않으면 사용자는 번역까지 실패한 줄 안다.
             _echo(f"[{target_lang}] 트리아지를 돌리지 못했다: {exc}", err=True)
@@ -1196,6 +1222,45 @@ def _translate_one(
         else:
             for line in _format_triage_summary(outcome):
                 _echo(line)
+
+        if review_out is not None:
+            # **요약 출력 뒤에 온다.** 화면이 먼저 수치를 말하고 그 다음
+            # 줄이 "그 수치가 어느 파일에 들어갔다"를 말한다. 순서를
+            # 뒤집으면 경로가 수치보다 먼저 나와 어느 실행의 산출물인지
+            # 눈으로 못 맞춘다.
+            #
+            # **전량 실패도 파일을 낸다 - 조건을 달지 않는다.** 그때
+            # `segments`가 비고 `excluded_failures`가 사실을 말한다. 파일이
+            # 아예 없으면 소비자는 "실행이 안 됐다"와 "번역이 전량
+            # 실패했다"를 구분하지 못한다(설계 D8). `outcome.risks or
+            # outcome.excluded_failures`로 감싸는 형태를 쓰지 않은 이유는
+            # 그 조건이 **여기서 언제나 참**이기 때문이다: 둘 다 거짓이려면
+            # 트랙의 세그먼트가 0개여야 하는데 `load_subtitle`이 그것을
+            # `IngestError("empty")`로 이미 거부한다(`ingest/loader.py:67-72`).
+            # 항상 참인 `if`는 거짓 가지를 어떤 테스트도 밟지 못해
+            # "검사하지 않고 통과하는 게이트"가 된다.
+            #
+            # **트리아지를 돌린 언어만 여기 온다.** 프로파일이 없어 건너뛴
+            # 언어는 바깥 `if triage_profile is not None`에서 이미 걸러졌다 -
+            # 그 언어에 빈 리포트를 내면 소비자가 "검수했고 걸린 것이 없다"로
+            # 읽는데 실제로는 판정 자체를 못 한 것이다(D7).
+            review_path = _review_path(input_path, review_out, source_lang, target_lang)
+            try:
+                write_review(outcome, review_path)
+            except OSError as exc:
+                # 디스크 상태의 문제다. 번역 파일은 이미 나갔다(설계 §3.4) -
+                # 그 사실을 말하지 않으면 사용자는 번역까지 실패한 줄 알고
+                # LLM 호출을 통째로 다시 쓴다.
+                _echo(f"{review_path}: 검수 리포트를 쓰지 못했다 - {exc}", err=True)
+                return EXIT_BAD_INPUT
+            except TypeError as exc:
+                # `detail`에 직렬화 불가값이 들어왔다. **exit 1로 새면 내부
+                # 결함이 "규격 위반 발견"으로 오보되고** 사용자는 멀쩡한
+                # 자막을 고치려 든다. 66도 안 된다 - 66은 "사용자가 준 파일이
+                # 틀렸다"이고 이것은 우리 코드가 틀린 것이다.
+                _echo(f"{review_path}: 검수 리포트를 직렬화하지 못했다 - {exc}", err=True)
+                return EXIT_NOT_IMPLEMENTED
+            _echo(f"  리포트 {review_path}")
 
     return 1 if translated.failures else 0
 
