@@ -849,6 +849,78 @@ def test_출력_경로_자리가_이미_디렉터리면_exit_66이다(
     assert result.exit_code == 66
 
 
+# ── 브랜치 전체 리뷰 (코드 축 Important 2) — 오염된 모델 출력 ────────────
+
+# **소스 리터럴로 적지 않는다.** docstring에 든 서로게이트는 `compile`이
+# UTF-8로 인코딩하려다 죽어 **pytest 수집이 통째로 중단된다**(실측 3.14).
+# 런타임에 만들면 그 경로를 타지 않는다.
+_LONE_SURROGATE = chr(0xD800)
+
+
+def test_모델_출력의_고립_서로게이트는_exit_70이고_잘린_자막을_남기지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**`except OSError` 하나로는 그물이 샜다** (브랜치 리뷰 코드 축 Important 2).
+
+    `subs.save`가 내는 `UnicodeEncodeError`는 `ValueError` 하위라 `OSError`
+    절을 지나쳐 미처리 traceback이 됐고, 종료 코드는 **1**이었다(실측). 1은
+    이 CLI에서 "규격 위반 발견 또는 번역 일부 실패"라 **정상 종료와 구별되지
+    않는다** - CI는 자막을 그대로 쓰고 넘어간다.
+
+    **더 나쁜 것은 디스크에 남던 것이다** - 실측(수정 전): 10큐 중 5번째만
+    오염시키면 `ten_cues.en.srt`가 **274바이트 · 큐 5개**로 남고 5번째는
+    타임코드만 있었다. `write_subtitle`의 원자적 쓰기가 그것을 막는다.
+
+    **도달 경로는 가정이 아니다** - `openai_compat.py`의 `response.json()`이
+    고립 서로게이트를 통과시키고 `isinstance(content, str)`도 지나간다.
+    요구사항정의서 §12 Q3가 백엔드 능력의 불균일을 전제로 둔다.
+
+    **70이지 66이 아닌 근거**는 `cli.py`의 해당 주석에 있다 - 같은 오염
+    문자열이 `write_review`로도 가는데 그쪽이 70이라, 여기가 66이면 같은
+    원인이 어느 쓰기가 먼저 죽느냐에 따라 다른 코드를 낸다.
+    """
+    seen: list[str] = []
+
+    def poison_fifth(text: str) -> str:
+        seen.append(text)
+        # 가운데를 고른다 - 첫 큐면 파일이 거의 비어 나와 "빈 파일"과
+        # 구별되지 않고, 마지막이면 잘린 정도가 작아 단언이 무뎌진다.
+        return f"EN:{_LONE_SURROGATE}" if len(seen) == 5 else f"EN:{text}"
+
+    _patch_provider(monkeypatch, EchoProvider(transform=poison_fifth))
+    out_dir = tmp_path / "subs"
+
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            str(_FIXTURES / "ten_cues.srt"),
+            "--to",
+            "en",
+            "--out",
+            str(out_dir),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+        ],
+    )
+
+    assert len(seen) >= 5, f"5번째 큐에 도달하지 못했다 - 픽스처가 바뀌었나: {len(seen)}"
+    assert result.exit_code == 70, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"미처리 예외가 샜다: {result.exception!r}"
+    )
+    # 넓은 catch를 택한 대가를 줄이는 계약 - 타입명이 없으면 사용자가
+    # "모델 출력이 오염됐다"와 "우리 버그"를 구별할 수 없다.
+    assert "UnicodeEncodeError" in result.output, "예외 타입명이 없다"
+    # **핵심 단언.** 이것이 없으면 "exit 70인데 파일은 잘린 채 남아 있다"가
+    # 통과한다 - 소비자는 파일이 있으니 성공으로 읽는다.
+    assert not (out_dir / "ten_cues.en.srt").exists(), "잘린 자막이 남았다"
+    assert list(out_dir.glob("*.tmp")) == [], "임시 파일이 남았다"
+
+
 # ── 리뷰 라운드 1 (Important 4) — --to 값 검증 ──────────────────────────
 
 

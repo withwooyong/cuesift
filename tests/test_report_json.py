@@ -546,13 +546,20 @@ def test_mkdir은_성공하고_쓰기만_실패해도_OSError다(tmp_path: Path)
     | **`write_text`만** 삼킴 | **생존** - `mkdir`이 대신 던진다 |
     | **`mkdir`만** 삼킴 | **생존** - `write_text`가 대신 던진다 |
 
-    즉 `write_text`의 `OSError`를 삼키는 리팩터(재시도·경고 로깅 추가 등)가
+    즉 쓰기 쪽 `OSError`를 삼키는 리팩터(재시도·경고 로깅 추가 등)가
     들어오면 **스위트 전부가 통과한 채 파일 없이 정상 종료**한다.
 
     대상 경로 자체를 **이미 있는 디렉터리**로 두면 갈린다 -
-    `mkdir(parents=True, exist_ok=True)`는 부모가 있으니 성공하고
-    `write_text`만 실패한다(실측: 줄 82, Windows `PermissionError` ·
-    Linux `IsADirectoryError` - 둘 다 `OSError`라 플랫폼 무관하게 잡힌다).
+    `mkdir(parents=True, exist_ok=True)`는 부모가 있으니 성공하고 쓰기만
+    실패한다(실측: Windows `PermissionError` · Linux `IsADirectoryError` -
+    둘 다 `OSError`라 플랫폼 무관하게 잡힌다).
+
+    **원자적 쓰기가 들어오며 실패 지점이 옮겨 갔다.** 임시 파일 쓰기는
+    성공하고(부모가 있다) `os.replace(tmp, 디렉터리)`가 던진다 - 타입은
+    위와 같고(Windows `PermissionError` · Linux `IsADirectoryError`) 이
+    단언도 그대로다. **그래서 이 테스트는 `os.replace` 실패까지 함께
+    잠근다** - `os.replace`를 `contextlib.suppress(OSError)`로 감싸는
+    변이가 여기서 죽는다.
     """
     out = tmp_path / "already_a_dir"
     out.mkdir()
@@ -579,3 +586,121 @@ def test_직렬화_불가값은_TypeError로_전파된다(tmp_path: Path) -> Non
     # 스트리밍은 예외 시점에 파일이 이미 열려 절반이 쓰여 있고, 소비자는 그것을
     # "파일이 있으니 성공"으로 읽는다. 파일이 **없어야** 한다는 것이 계약이다.
     assert not out.exists(), "직렬화 실패인데 반쯤 쓰인 파일이 남았다"
+    assert _leftovers(tmp_path) == [], "임시 파일이 남았다"
+
+
+def _leftovers(directory: Path) -> list[str]:
+    """`.tmp` 잔여물 목록. 원자적 쓰기가 `finally`에서 지우는 것을 잰다."""
+    return sorted(p.name for p in directory.iterdir() if p.name.endswith(".tmp"))
+
+
+# **고립 서로게이트를 소스 리터럴로 쓰지 않는다.** 이 저장소는 로컬 3.14와
+# CI 3.11·3.12 **세 버전**에서 도는데(`CLAUDE.md`), 서로게이트를 소스에 적으면
+# **docstring**에 든 경우 `compile`이 UTF-8 인코딩을 시도해 죽는다(실측 3.14:
+# 일반 상수는 통과하고 docstring만 `UnicodeEncodeError` → pytest 수집이
+# `Interrupted: 1 error during collection`으로 통째로 중단됐다). 일반 상수의
+# 안전 여부는 **버전마다 확인할 수단이 없으므로** 런타임 생성으로 통일한다 -
+# 재려는 것은 "값이 파일 쓰기에서 죽는가"이지 "소스에 적을 수 있는가"가 아니다.
+_LONE_SURROGATE = chr(0xD800)
+
+
+def test_인코딩_실패해도_기존_파일이_보존된다(tmp_path: Path) -> None:
+    """**재실행이 지난 실행의 정상 리포트를 0바이트로 파괴하면 안 된다.**
+
+    `write_text`는 **먼저 truncate하며 열고 그 다음에 인코딩한다.** 그래서
+    `json.dumps`를 먼저 끝내는 방어(`test_직렬화_불가값은...`이 잠근 것)는
+    `UnicodeEncodeError`를 막지 못한다 - 그것만 방어선 **바깥**에서 난다.
+    실측(수정 전): 정상 1071바이트를 쓴 뒤 서로게이트 섞인 outcome으로
+    재호출하면 `UnicodeEncodeError`가 나고 **파일은 0바이트 · 기존 내용
+    보존 실패**였다.
+
+    0바이트 파일은 "반쯤 쓰인 파일"보다 나쁘다 - `json.loads`가 죽으므로
+    소비자가 알아채기는 하지만, 그 시점에 **원본은 이미 사라졌다.**
+
+    **고립 서로게이트는 실물 도달 경로가 있다** - `openai_compat.py`의
+    `response.json()`이 그 문자를 그대로 통과시키고 isinstance 검사도
+    지나간다(§12 Q3가 백엔드 능력의 불균일을 전제한다).
+
+    | 무엇을 재나 | 어떤 변이가 죽나 |
+    | --- | --- |
+    | 기존 내용이 **바이트 단위로** 그대로다 | `os.replace`를 `path.write_text`로 되돌리기 |
+    | `.tmp`가 남지 않는다 | `finally`의 `unlink` 제거 |
+
+    바이트 비교여야 한다 - "파일이 존재한다"만 재면 0바이트도 통과한다.
+    """
+    out = tmp_path / "ep01.en.review.json"
+    write_review(_outcome(risks=(_risk("00000", selected=True),), target_lang="en"), out)
+    good = out.read_bytes()
+    assert good, "1차 쓰기가 빈 파일을 냈다 - 픽스처가 무의미하다"
+
+    poisoned = Signal(name="spec.violation", tier=0, score=0.5, detail={"kinds": [_LONE_SURROGATE]})
+    with pytest.raises(UnicodeEncodeError):
+        write_review(
+            _outcome(risks=(_risk("00000", selected=True, signals=[poisoned]),), target_lang="ja"),
+            out,
+        )
+
+    assert out.read_bytes() == good, "인코딩 실패가 기존 정상 리포트를 파괴했다"
+    assert _leftovers(tmp_path) == [], "임시 파일이 남았다"
+
+
+def test_성공한_쓰기도_임시_파일을_남기지_않는다(tmp_path: Path) -> None:
+    """정상 경로의 `finally`를 따로 잰다.
+
+    위 테스트는 **실패 경로**의 정리만 재므로, `os.replace` 뒤에 `unlink`가
+    도달하지 않는 형태의 변이(예: `finally`를 `except`로 바꾸기)를 놓친다.
+    `os.replace`는 원본을 옮기므로 정상 경로의 `unlink`는 언제나 no-op이고,
+    그 사실 자체가 `missing_ok=True`가 필요한 이유다.
+    """
+    out = tmp_path / "ep01.en.review.json"
+
+    write_review(_outcome(risks=(_risk("00000", selected=True),)), out)
+
+    assert out.exists()
+    assert _leftovers(tmp_path) == [], "임시 파일이 남았다"
+
+
+def test_NaN은_ValueError로_거부된다(tmp_path: Path) -> None:
+    """**`NaN`은 예외 없이 통과해 규격 위반 JSON을 만든다** - 파이썬만 관대하다.
+
+    `json.dumps`의 기본값 `allow_nan=True`는 `NaN`·`Infinity`를 그 이름
+    그대로 써 넣는데 그것은 JSON 규격에 없는 리터럴이다. 파이썬의
+    `json.loads`는 되읽으므로 **이 파일의 왕복 단언으로는 영영 잡히지
+    않고**(실측: 수정 전 `write_review`가 예외 없이 파일을 냈고 본문에
+    `NaN`이 들어 있었다), `jq`와 JS `JSON.parse`에서만 깨진다 - FR-7.2의
+    수혜자가 쓰는 도구 쪽이다.
+
+    **오늘 도달 경로는 0이다.** `Signal.__post_init__`의 범위 검사·
+    `_parse_review_budget`·`cli.py`의 `math.isnan` 가드·`review_ratio`가
+    정수 나눗셈인 것, 넷이 막는다. 그래서 이 테스트는 `detail`로 들어간다 -
+    **`detail`만이 그 4중 밖에 있다.** 신호 구현이 무엇이든 담는 자유
+    dict이고 어느 검사도 그 안을 보지 않는다(v0.2 QE 플러그인이 `detail`에
+    모델 출력을 싣는 것이 설계 D4다).
+
+    파일이 남지 않아야 한다 - `ValueError`는 `json.dumps` 단계라 임시 파일
+    자체가 만들어지지 않는다.
+    """
+    signal = Signal(name="qe.dummy", tier=2, score=0.5, detail={"ratio": float("nan")})
+    out = tmp_path / "x.json"
+
+    with pytest.raises(ValueError, match="JSON compliant"):
+        write_review(_outcome(risks=(_risk("00000", selected=True, signals=[signal]),)), out)
+
+    assert not out.exists(), "규격 위반 JSON이 파일로 나갔다"
+    assert _leftovers(tmp_path) == [], "임시 파일이 남았다"
+
+
+def test_Infinity도_거부된다(tmp_path: Path) -> None:
+    """`NaN`만 막고 `Infinity`를 흘리는 변이를 잡는다.
+
+    둘은 `allow_nan` 하나가 함께 다루지만, 이 검사를 손으로 짠
+    `math.isnan` 가드로 갈아 끼우는 변경은 `Infinity`를 놓친다 -
+    `math.isnan(float("inf"))`는 `False`다.
+    """
+    signal = Signal(name="qe.dummy", tier=2, score=0.5, detail={"z": float("inf")})
+    out = tmp_path / "x.json"
+
+    with pytest.raises(ValueError, match="JSON compliant"):
+        write_review(_outcome(risks=(_risk("00000", selected=True, signals=[signal]),)), out)
+
+    assert not out.exists()

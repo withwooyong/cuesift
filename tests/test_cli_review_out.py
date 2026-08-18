@@ -20,7 +20,8 @@ from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import blank_at, normalize_rich_message, scripted_at
-from cuesift.cli import _review_path, app
+from cuesift.cli import _output_path, _review_path, app
+from cuesift.report import json_report
 
 runner = CliRunner()
 
@@ -60,16 +61,62 @@ def _args(tmp_path: Path, fixture: str, *extra: str) -> list[str]:
     ]
 
 
-def test_stem_규칙이_자막_출력과_같다() -> None:
+@pytest.mark.parametrize(
+    ("stem", "source_lang"),
+    [
+        # 평범한 경우.
+        ("ep01.ko", "ko"),
+        # **파일명**이 대문자 - `stem.casefold()`가 잠근다. Windows는 파일명
+        # 대소문자를 구분하지 않아 `ep01.KO.srt`가 정상인 파일명이다.
+        ("ep01.KO", "ko"),
+        # **인자**가 대문자 - `suffix.casefold()`가 잠근다. 이 한 줄이
+        # `_output_path`의 접기 구멍을 닫는다(아래 독스트링 참고).
+        ("ep01.ko", "KO"),
+        # 태그가 없어 덧붙이는 경우. 치환 분기를 **무조건 타는** 변이를 잡는다.
+        ("ep01", "ko"),
+    ],
+)
+def test_stem_규칙이_자막_출력과_같다(stem: str, source_lang: str) -> None:
     """설계 D2 - 고정 이름은 입력 파일 여럿을 같은 디렉터리로 낼 때 서로를 지운다.
 
-    네 값(`a` · `reports` · `ko` · `en`)을 **전부 다르게** 골랐다. 하나라도
-    겹치면 그 축의 바꿔치기 변이가 살아남는다 - 예를 들어 출력 이름에
-    `target_lang` 대신 `source_lang`을 쓰는 변이는 둘이 같으면 안 잡힌다.
-    """
-    got = _review_path(Path("a/ep01.ko.srt"), Path("reports"), "ko", "en")
+    **이 테스트는 이름과 달리 `_output_path`를 부르지 않고 있었다.** 그래서
+    "자막 출력과 같다"는 이름이 주장만 하고 아무것도 재지 않았고,
+    `_output_path`의 `suffix.casefold()`만 제거하는 변이가 **전 스위트를
+    통과했다**(실측: 브랜치 전체 리뷰 M2 생존). `_review_path`의 같은 변이는
+    `test_대문자_source_lang_인자도_치환된다`가 단독으로 격추한다 - **자물쇠가
+    한쪽에만 달려 있었다.**
 
-    assert got == Path("reports/ep01.en.review.json")
+    구멍은 **파일명**이 아니라 **인자**가 대문자인 방향이다. 기존 테스트는
+    파일명 대문자만 봤다:
+
+    | 입력 | 현재 | `_output_path` suffix fold 제거 시 |
+    | --- | --- | --- |
+    | `ep01.ko.srt --source-lang KO` | `ep01.en.srt` | **`ep01.ko.en.srt`** |
+    | 같은 입력의 리포트 | `ep01.en.review.json` | `ep01.en.review.json` (안 바뀐다) |
+
+    `_review_path`의 독스트링이 **"두 규칙이 갈라지면 같은 입력이
+    `ep01.en.srt`와 `ep01.ko.en.review.json`을 내 짝을 눈으로 못 맞춘다"**고
+    불변식을 선언한 바로 그 갈라짐이다. 아래 마지막 단언이 그것을 직접 잰다 -
+    두 함수의 출력을 **서로** 비교하므로 어느 한쪽만 바뀌어도 죽는다.
+
+    디렉터리를 `subs`/`reports`로 **다르게** 둔다 - 같게 두면 경로 결정이
+    통째로 틀려도 이름 비교가 우연히 성립할 수 있다. 나머지 값(`a` · `ko` ·
+    `en`)도 서로 다르다: 겹치면 그 축의 바꿔치기 변이가 살아남는다(출력
+    이름에 `target_lang` 대신 `source_lang`을 쓰는 변이는 둘이 같으면 안
+    잡힌다).
+    """
+    src = Path(f"a/{stem}.srt")
+
+    subtitle = _output_path(src, Path("subs"), source_lang, "en")
+    review = _review_path(src, Path("reports"), source_lang, "en")
+
+    assert subtitle == Path("subs/ep01.en.srt")
+    assert review == Path("reports/ep01.en.review.json")
+    # **두 규칙이 갈라지는 순간을 직접 잡는다.** 위 두 단언은 각각 자기
+    # 함수만 보므로, 둘이 함께 틀리는 미래의 변경은 통과시킨다.
+    assert review.name == f"{subtitle.stem}.review.json", (
+        f"자막({subtitle.name})과 리포트({review.name})의 stem 규칙이 갈라졌다"
+    )
 
 
 def test_source_태그가_없으면_덧붙인다() -> None:
@@ -498,14 +545,17 @@ def test_dry_run은_파일을_쓰지_않는다(tmp_path: Path, monkeypatch: pyte
     죽는다 - 살해자가 5개라 "리포트가 안 나온다"만 재는 단독 증거가 되지
     않는다.
 
-    **양성 단언을 더해도 나아지지 않는다.** `assert "리포트" not in
-    result.output`을 붙여도 살해자가 그대로 5개다 - `_echo(f"  리포트 ...")`가
-    `write_review` 성공 뒤에만 나오므로 dry-run에서는 **파일 부재와 화면 부재가
-    같은 `return` 하나에 막힌다.** 두 관측이 독립이 아니라서 무엇을 더해도
-    분리되지 않는다.
+    **화면 부재를 단언하지 않는다 - 이제 dry-run은 리포트 경로를 말한다**
+    (브랜치 리뷰 코드 축 m1이 침묵을 결함으로 판정했다). 이전 판의 이 자리에는
+    "`assert "리포트" not in result.output`을 붙여도 살해자가 늘지 않는다"고
+    적혀 있었는데, 그 근거였던 **"`리포트` 줄은 `write_review` 성공 뒤에만
+    나온다"가 더 이상 사실이 아니다.** 지금 그 단언을 붙이면 정상 동작을
+    깨뜨린다. **이 테스트가 재는 것은 오직 파일의 부재다** - 예고와 산출은
+    다르고, 아래 `test_dry_run이_리포트_경로를_예고한다`가 예고 쪽을 잰다.
 
-    그래도 지운 게이트는 아니다 - "dry-run이 리포트를 쓰지 않는다"를 이름으로
-    선언하는 자리가 여기뿐이고, 그 계약이 깨지면 살해자 명단에 반드시 들어온다.
+    그래도 지운 게이트는 아니다 - "dry-run이 리포트를 **쓰지** 않는다"를
+    이름으로 선언하는 자리가 여기뿐이고, 그 계약이 깨지면 살해자 명단에
+    반드시 들어온다.
     """
     _patch_provider(monkeypatch, EchoProvider())
     reports = tmp_path / "reports"
@@ -525,6 +575,109 @@ def test_dry_run은_파일을_쓰지_않는다(tmp_path: Path, monkeypatch: pyte
 
     assert result.exit_code == 0, result.output
     assert not reports.exists() or list(reports.glob("*.review.json")) == []
+
+
+def test_dry_run이_리포트_경로를_예고하고_그_경로가_본_실행과_같다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**dry-run이 `--review-out` 산출물을 한 줄도 말하지 않았다** (리뷰 코드 축 m1).
+
+    자막 경로는 언어별로 찍으면서 리포트는 침묵했다. D11 주석이 "dry-run으로
+    확인한 명령이 본 실행에서 처음 실패한다"를 막겠다고 선언했으므로 의도는
+    dry-run/본실행 정합인데, **산출물 목록만 그 정합에서 빠져 있었다.**
+
+    **하드코딩한 문자열과 비교하지 않는다.** 그러면 두 경로 규칙이 함께
+    틀려도 통과한다. **실제 실행이 낸 파일의 경로**가 dry-run 화면에 있었는지를
+    묻는 것이 이 테스트의 요점이다 - 그래서 `_review_path`를 dry-run 쪽에서만
+    바꾸는 변이가 여기서 죽는다.
+
+    **입력 파일 이름에 `.ko` 태그가 있어야 한다.** `minimal.srt`처럼 태그가
+    없으면 `_review_path`(치환)와 손조립(`input.stem`을 그대로 씀)이 **같은
+    답을 내서** 손조립 변이가 살아남는다(실측: 그 변이가 전 스위트를
+    통과했다). 태그가 있으면 갈린다 - 정답 `ep01.en.review.json` ↔ 손조립
+    `ep01.ko.en.review.json`. 그래서 픽스처를 `tmp_path`로 복사해 이름을 준다.
+
+    `normalize_rich_message`를 양쪽에 통과시킨다 - `rich`가 긴 경로를 어디서
+    접든 같은 결과를 내야 한다(그 함수의 독스트링).
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+    reports = tmp_path / "reports"
+    source = tmp_path / "ep01.ko.srt"
+    source.write_bytes((_FIXTURES / "minimal.srt").read_bytes())
+    args = [
+        "translate",
+        str(source),
+        "--to",
+        "en",
+        "--out",
+        str(tmp_path / "subs"),
+        "--base-url",
+        "http://h/v1",
+        "--model",
+        "m1",
+        "--no-cache",
+        "--review-budget",
+        "10%",
+        "--review-out",
+        str(reports),
+    ]
+
+    dry = runner.invoke(app, [*args, "--dry-run"])
+
+    assert dry.exit_code == 0, dry.output
+    dry_norm = normalize_rich_message(dry.output)
+    # **`"리포트"`를 세지 않는다.** `tmp_path`가 테스트 이름에서 파생되므로
+    # 이름에 그 낱말이 들어 있으면 경로마다 세어져 개수가 부풀었다(실측: 1이
+    # 아니라 4). `.review.json`은 예고한 경로에만 나온다.
+    assert dry_norm.count(".review.json") == 1, f"리포트 예고가 1건이 아니다\n{dry.output}"
+    # dry-run은 예고만 한다 - 파일도 디렉터리도 만들지 않는다(README 조합 표).
+    assert not reports.exists(), "dry-run이 디렉터리를 만들었다"
+
+    real = runner.invoke(app, args)
+
+    assert real.exit_code == 0, real.output
+    written = sorted(reports.glob("*.review.json"))
+    assert len(written) == 1, written
+    # 태그 치환이 실제로 일어났는지도 함께 못 박는다 - 이것이 없으면 두
+    # 규칙이 **함께** 손조립으로 바뀌는 변경이 통과한다.
+    assert written[0].name == "ep01.en.review.json", written[0]
+    assert normalize_rich_message(str(written[0])) in dry_norm, (
+        f"예고한 경로와 실제 산출물이 다르다\ndry-run:\n{dry.output}\n실제: {written[0]}"
+    )
+
+
+def test_dry_run은_프로파일_없는_언어의_리포트를_예고하지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D7 — 프로파일이 없으면 본 실행도 리포트를 내지 않는다.
+
+    **예고가 산출보다 넓으면 dry-run이 거짓말을 한다.** `--review-out`만 보고
+    전 언어에 대해 줄을 찍는 구현은 `th`의 `review.json`을 예고하는데 본
+    실행은 내지 않는다 - dry-run을 CI 사전 점검으로 쓰는 사용자가 없는
+    파일을 기다린다. 규칙(`target in profiles`)이 호출자 한 곳에만 있어야
+    하는 이유다.
+
+    **`en`의 줄이 남아 있는 것을 함께 본다.** 없으면 "리포트 줄을 통째로
+    지우는" 변이도 이 테스트를 통과한다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+    reports = tmp_path / "reports"
+
+    args = _args(
+        tmp_path, "minimal.srt", "--review-budget", "10%", "--review-out", str(reports), "--dry-run"
+    )
+    args[args.index("--to") + 1] = "en,th"
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    output = normalize_rich_message(result.output)
+    # `"리포트"`가 아니라 `.review.json`을 센다 - 위 테스트의 주석 참고.
+    assert output.count(".review.json") == 1, f"프로파일 없는 언어까지 예고했다\n{result.output}"
+    assert "minimal.en.review.json" in output, result.output
+    assert "minimal.th.review.json" not in output, "없을 파일을 예고했다"
+    # 번역 자체는 두 언어 모두 예고돼야 한다 - 건너뛰는 것은 트리아지이지
+    # 번역이 아니다(`load_builtin` 실패 경로의 주석).
+    assert "[th]" in output, "th의 번역 예고까지 사라졌다"
 
 
 def test_쓰기_실패는_exit_66이다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -617,6 +770,53 @@ def test_직렬화_실패는_예외_타입과_무관하게_exit_70이다(
     # 없으면 `ValueError`(리포트 구조에 순환이 생겼다)와 `NameError`(버그를
     # 신고해야 한다)가 사용자에게 같은 모양으로 보인다.
     assert label in result.output, "예외 타입명이 없으면 진단을 구별할 수 없다"
+
+
+def test_NaN이_섞이면_ValueError로_exit_70이_된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**`allow_nan=False`가 만든 경로를 CLI 끝까지 고정한다.**
+
+    위 세 케이스는 `write_review`를 통째로 가짜로 바꿔 "예외가 나면 70"만
+    잰다. 여기는 **진짜 `write_review`를 그대로 두고** `json.dumps`가 실제로
+    `ValueError`를 내게 한다 - `allow_nan=False`를 지우는 변이는 위 셋을
+    전부 통과하고 여기서만 죽는다.
+
+    **왜 문서를 오염시키는가.** 오늘 `NaN`의 도달 경로는 0이다(`Signal`의
+    범위 검사·`_parse_review_budget`·`math.isnan` 가드·정수 나눗셈이 4중으로
+    막는다 - 리뷰어 실측). 열려 있는 자리는 `detail` 하나인데 그것을 채우는
+    것은 신호 구현이라, 여기서 신호를 흉내 내면 **이 태스크가 만들지 않은
+    미래의 신호**를 픽스처로 삼는 셈이 된다. 그래서 마지막 공통 통로인
+    `build_review`의 반환 문서에 한 값을 심는다 - 재는 것은 "누가 넣었나"가
+    아니라 **"넣으면 파일로 나가는가"**다.
+
+    **파일이 남지 않아야 한다는 것을 함께 본다.** `NaN`은 파이썬
+    `json.loads`가 되읽으므로, 파일이 나가면 이 저장소의 테스트로는 영영
+    안 잡히고 `jq`·JS `JSON.parse`를 쓰는 검수자 쪽에서만 깨진다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+    reports = tmp_path / "reports"
+    real_build = json_report.build_review
+
+    def poisoned(outcome: object) -> dict:
+        doc = real_build(outcome)  # type: ignore[arg-type]
+        doc["summary"]["signal_hits"]["qe.dummy"] = float("nan")
+        return doc
+
+    monkeypatch.setattr("cuesift.report.json_report.build_review", poisoned)
+
+    result = runner.invoke(
+        app,
+        _args(tmp_path, "minimal.srt", "--review-budget", "10%", "--review-out", str(reports)),
+    )
+
+    assert result.exit_code == 70, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"미처리 예외가 샜다: {result.exception!r}"
+    )
+    assert "ValueError" in result.output, "예외 타입명이 없으면 진단을 구별할 수 없다"
+    assert not (reports / "minimal.en.review.json").exists(), "규격 위반 JSON이 파일로 나갔다"
+    assert (tmp_path / "subs" / "minimal.en.srt").exists(), "번역까지 잃었다"
 
 
 def test_언어별로_파일이_나오고_프로파일이_각각_다르다(

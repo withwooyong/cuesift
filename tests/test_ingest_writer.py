@@ -182,3 +182,72 @@ def test_픽스처_라운드트립(fixture: str, tmp_path: Path) -> None:
     write_subtitle(result, _translated(result), out)
 
     assert len(load_subtitle(out).segments) == len(result.segments)
+
+
+def _leftovers(directory: Path) -> list[str]:
+    """`.tmp` 잔여물 목록. 원자적 쓰기가 `finally`에서 지우는 것을 잰다."""
+    return sorted(p.name for p in directory.iterdir() if p.name.endswith(".tmp"))
+
+
+# **고립 서로게이트를 소스 리터럴로 쓰지 않는다.** `"\\ud800"` escape를 그대로
+# 적으면 모듈에 서로게이트 문자열 **상수**가 생기고, pytest의 단언 재작성이
+# 그 모듈을 다시 compile할 때 `UnicodeEncodeError`로 **수집 자체가 죽는다**
+# (실측: `Interrupted: 1 error during collection`). 런타임에 만들면 상수가
+# 아니므로 그 경로를 타지 않는다 - 재려는 것은 "값이 파일 쓰기에서 죽는가"이지
+# "소스에 적을 수 있는가"가 아니다.
+_LONE_SURROGATE = chr(0xD800)
+
+
+def test_인코딩_실패해도_기존_자막이_보존되고_잘린_파일이_남지_않는다(tmp_path: Path) -> None:
+    """**잘린 자막이 디스크에 남는 것이 예외가 새는 것보다 나쁘다.**
+
+    `subs.save`는 대상을 먼저 truncate하며 열고 **그 다음에** 인코딩하므로,
+    LLM이 낸 문자열에 고립 서로게이트가 하나만 있어도 그 지점까지 쓰인
+    파일이 남는다 - 실측(수정 전): 10큐 중 5번째만 오염시키면
+    `ten_cues.en.srt`가 **274바이트 · 큐 5개**로 남고 **5번째는 타임코드만**
+    있었다. 소비자는 그것을 "번역이 다 됐다"로 읽는다.
+
+    **오염을 5번째에 둔다.** 첫 큐에 두면 파일이 거의 비어 나와 "빈 파일"과
+    구별되지 않고, 마지막에 두면 잘린 정도가 작아 큐 개수 단언이 무뎌진다.
+    가운데여야 "일부는 쓰였다"는 형태가 재진다.
+
+    **고립 서로게이트에 도달 경로가 있다** - `openai_compat.py`의
+    `response.json()`이 그 문자를 통과시키고 isinstance 검사도 지나간다
+    (§12 Q3가 백엔드 능력의 불균일을 전제한다).
+
+    | 무엇을 재나 | 어떤 변이가 죽나 |
+    | --- | --- |
+    | 기존 내용이 **바이트 단위로** 그대로다 | `os.replace`를 `subs.save(out_path)`로 되돌리기 |
+    | `.tmp`가 남지 않는다 | `finally`의 `unlink` 제거 |
+    """
+    out = tmp_path / "ten_cues.en.srt"
+    good_result = load_subtitle(_FIXTURES / "ten_cues.srt")
+    write_subtitle(good_result, _translated(good_result), out)
+    good = out.read_bytes()
+    assert len(load_subtitle(out).segments) == 10, "픽스처가 10큐가 아니다"
+
+    poisoned = load_subtitle(_FIXTURES / "ten_cues.srt")
+    for i, segment in enumerate(poisoned.segments):
+        segment.target_text = f"EN:{_LONE_SURROGATE}오염" if i == 4 else f"EN:{segment.source_text}"
+
+    with pytest.raises(UnicodeEncodeError):
+        write_subtitle(poisoned, poisoned.segments, out)
+
+    assert out.read_bytes() == good, "인코딩 실패가 기존 자막을 잘린 파일로 바꿨다"
+    assert _leftovers(tmp_path) == [], "임시 파일이 남았다"
+
+
+def test_성공한_쓰기도_임시_파일을_남기지_않는다(tmp_path: Path) -> None:
+    """정상 경로의 `finally` 도달을 따로 잰다.
+
+    위 테스트는 **실패 경로**의 정리만 재므로 `finally`를 `except`로 바꾸는
+    변이를 놓친다. `os.replace`가 원본을 옮기므로 정상 경로의 `unlink`는
+    언제나 no-op이고, 그 사실이 `missing_ok=True`가 필요한 이유다.
+    """
+    result = load_subtitle(_FIXTURES / "minimal.srt")
+    out = tmp_path / "out.srt"
+
+    write_subtitle(result, _translated(result), out)
+
+    assert out.exists()
+    assert _leftovers(tmp_path) == [], "임시 파일이 남았다"

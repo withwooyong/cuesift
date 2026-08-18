@@ -13,7 +13,7 @@
 | 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패·출력 경로 충돌) | typer 관행 |
 | 66 | 파일 사정 (자막·용어집 파싱 실패, utf-8 아님, 읽거나 쓰지 못함) | `sysexits.h` EX_NOINPUT |
 | 69 | 외부 서비스(LLM 프로바이더)가 요청을 거부함 | `sysexits.h` EX_UNAVAILABLE |
-| 70 | 미구현(`transcribe`), 또는 검수 리포트를 직렬화하지 못함 | `sysexits.h` EX_SOFTWARE |
+| 70 | 미구현(`transcribe`), 또는 산출물의 **내용** 결함 | `sysexits.h` EX_SOFTWARE |
 
 **1을 진단 실패에 쓰지 않는 것이 핵심이다.** 1은 "규격 위반 발견"이므로
 파일을 못 읽은 것을 1로 내면 CI가 "자막이 깨졌다"와 "경로가 틀렸다"에
@@ -66,22 +66,23 @@ from cuesift.triage import select_by_budget, select_by_threshold
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
 #
-# **발신처가 둘이다.** `transcribe`(미구현)와 `_translate_one`이 `write_review`의
-# 직렬화·쓰기 실패를 받는 자리다 - review.json 배선(FR-7.2)이 둘째를 더했다.
-# 따라서 CI는 "아직 안 만든 명령"과 "리포트 직렬화가 죽었다"를 **종료 코드만으로는
-# 구별하지 못한다**. 구별이 필요하면 stderr 메시지를 봐야 한다 - 그쪽은 예외
-# 타입명을 병기한다. 이 사실이 여기 없으면 아무 데도 없다.
+# **발신처가 셋이다.** `transcribe`(미구현), `_translate_one`이 `write_review`의
+# 직렬화 실패를 받는 자리(review.json 배선 FR-7.2가 더했다), 그리고 같은 함수가
+# `write_subtitle`의 **내용** 실패를 받는 자리다. 따라서 CI는 셋을 **종료
+# 코드만으로는 구별하지 못한다**. 구별이 필요하면 stderr 메시지를 봐야 한다 -
+# 셋 다 예외 타입명을 병기한다. 이 사실이 여기 없으면 아무 데도 없다.
 #
-# **둘째 발신처는 `TypeError` 하나가 아니다.** `json.dumps`의 실패는 열린
-# 집합이라 그 자리는 `except Exception`으로 받는다 - 근거는 그 주석에 있다.
+# **뒤의 둘은 `TypeError`·`OSError` 하나로 좁힐 수 없다.** `json.dumps`의 실패도
+# `subs.save`의 실패도 열린 집합이라 두 자리 모두 `except Exception`으로 받는다 -
+# 근거는 각 주석에 있다.
 #
-# **둘이 같은 코드인 것이 옳다.** `sysexits.h`의 EX_SOFTWARE는 "internal
-# software error"라 둘을 함께 덮는다 - 사용자가 입력이나 설정을 고쳐도 사라지지
+# **셋이 같은 코드인 것이 옳다.** `sysexits.h`의 EX_SOFTWARE는 "internal
+# software error"라 셋을 함께 덮는다 - 사용자가 입력이나 설정을 고쳐도 사라지지
 # 않는 우리 쪽 결함이라는 점이 같다. 66(EX_NOINPUT)으로 보내면 "사용자가 고칠
 # 수 있는 문제"가 되어 **"자막이 깨졌다"로 오독되고 멀쩡한 자막을 고치려 든다** -
 # 1을 진단 실패에 쓰지 않는 이유(파일 머리말)와 같은 사고다.
 #
-# **이름이 좁아졌다.** `EXIT_NOT_IMPLEMENTED`는 이제 발신처의 절반만 말한다.
+# **이름이 좁아졌다.** `EXIT_NOT_IMPLEMENTED`는 이제 발신처 셋 중 하나만 말한다.
 # 바꾸려면 `transcribe`와 그 테스트를 함께 건드려야 해 배선 태스크의 범위를
 # 넘는다 - 이 문단이 그때까지 이름을 대신한다.
 EXIT_NOT_IMPLEMENTED = 70
@@ -788,6 +789,24 @@ def translate(
             work_context=work_context,
             context_window=context_window,
             cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+            # **본 실행과 같은 규칙으로 여기서 조립한다** (브랜치 리뷰 코드 축 m1).
+            # 두 조건이 실제 실행의 두 가드와 하나씩 대응한다 - `review_out is
+            # not None`은 `_translate_one`의 `if review_out is not None`이고,
+            # `target in profiles`는 그 함수에 `triage_profile`이 넘어가는
+            # 조건(`profiles.get(target)`)이다. 프로파일이 없는 언어를 넣으면
+            # **dry-run이 나오지도 않을 파일을 예고한다**(D7).
+            #
+            # 경로 자체는 `_review_path` - 본 실행이 부르는 **같은 함수**다.
+            # 손으로 조립하면 stem 규칙이 갈라져도 드러나지 않는다.
+            review_paths=(
+                {}
+                if review_out is None
+                else {
+                    target: _review_path(input, review_out, source_lang, target)
+                    for target in targets
+                    if target in profiles
+                }
+            ),
         ):
             _echo(line)
         return
@@ -852,6 +871,7 @@ def _dry_run_report(
     work_context: str | None,
     context_window: int,
     cache_dir: Path | None,
+    review_paths: Mapping[str, Path],
 ) -> list[str]:
     """실행하지 않고 추정치를 낸다 (NFR-2 · 설계 §7).
 
@@ -920,6 +940,23 @@ def _dry_run_report(
     (`tests/test_cli_translate.py`) 3개가 매번 죽는다(WP7b Task 6 리뷰
     라운드 1에서 2개로 보고됐으나 라운드 1 수정에서 추가된 세 번째 테스트로
     재확인하면 3개다).
+
+    ## 리포트 경로는 **계산하지 않고 받는다** (브랜치 전체 리뷰 코드 축 m1)
+
+    이 함수는 자막 경로를 언어마다 찍으면서 `--review-out`의 산출물은 한 줄도
+    말하지 않았다 - `test_dry_run은_파일을_쓰지_않는다`가 "쓰지 **않는다**"는
+    **음성 방향만** 보고 "무엇을 낼 것인지 말한다"는 양성 방향은 아무도 안
+    봤기 때문이다. 위 D11 주석이 "dry-run으로 확인한 명령이 본 실행에서 처음
+    실패한다"를 막겠다고 선언했으므로 의도는 dry-run/본실행 정합인데, 산출물
+    목록만 그 정합에서 빠져 있었다.
+
+    **`review_out`과 `profiles`를 받아 여기서 조립하지 않는다.** 리포트를 내는
+    언어는 "규격 프로파일이 있는 언어"뿐이고(D7 - 없는 언어에 빈 파일을 내면
+    소비자가 "검수했고 걸린 것이 없다"로 읽는다), 그 규칙은 실제 실행에서
+    **호출자가** `profiles.get(target)`으로 판정한다. 여기서 규칙을 다시 쓰면
+    두 곳이 갈라져 **dry-run이 나오지도 않을 파일을 예고한다** - 이 함수가
+    닫으려는 바로 그 불일치다. 그래서 호출자가 `_review_path`(본 실행과 **같은
+    함수**)로 만든 완성된 매핑만 받는다. 빈 매핑이면 한 줄도 내지 않는다.
 
     ## 캐시 손상은 감지하지 못한다 (WP7b Task 6 리뷰 라운드 1 Minor b)
 
@@ -994,6 +1031,16 @@ def _dry_run_report(
                 f"  프롬프트 문자 system {system_chars:,} + user {user_chars:,}",
             ]
         )
+        review_path = review_paths.get(target)
+        if review_path is not None:
+            # **실제 실행의 문구와 같은 형태로 낸다**(`_translate_one`의
+            # `f"  리포트 {review_path}"`). 다르게 쓰면 두 출력을 눈으로
+            # 맞추려는 사용자가 서로 다른 것으로 읽는다.
+            #
+            # **"낸다"가 아니라 "낼 것이다"로 적는다.** dry-run은 파일을 쓰지
+            # 않고 디렉터리도 만들지 않는다(README의 조합 표) - 현재형으로
+            # 적으면 이미 있는 줄 알고 다음 단계가 빈손으로 진행한다.
+            lines.append(f"  리포트 {review_path} (아직 쓰지 않음)")
     lines.append("")
     lines.append("(토큰·비용은 내지 않는다 - 문자에서 토큰으로 가는 계수의 출처가 없다)")
     return lines
@@ -1142,6 +1189,52 @@ def _translate_one(
         # 경우까지는 명령줄 시점에 알 수 없어 이 try가 마지막 방어선이다.
         _echo(f"{out_path}: 출력 파일을 쓰지 못했다 - {exc}", err=True)
         return EXIT_BAD_INPUT
+    except Exception as exc:
+        # **`OSError` 하나로는 그물이 샌다 - 아래 `write_review`의 형제다.**
+        # LLM이 낸 문자열에 고립 서로게이트가 있으면 `subs.save`가
+        # `UnicodeEncodeError`(= `ValueError` 하위, `OSError`가 **아니다**)를
+        # 내고 그것이 미처리 traceback으로 새어 **exit 1**이 됐다(실측:
+        # 10큐 중 5번째만 오염시킨 실행에서 exit 1 + traceback). 도달 경로는
+        # 가정이 아니다 - `openai_compat.py`의 `response.json()`이 서로게이트를
+        # 그대로 통과시키고 `isinstance(content, str)`도 지나간다(§12 Q3가
+        # 백엔드 능력의 불균일을 전제한다).
+        #
+        # **exit 1이 최악인 이유는 여기서도 "구별되지 않는다"이다.** 1은 이
+        # CLI에서 "규격 위반 발견 또는 번역 일부 실패"라, 번역 실패가 함께
+        # 있는 흔한 실행에서는 **정상 종료와 종료 코드가 완전히 같다**(실측:
+        # 대조군도 1). CI는 자막을 그대로 쓰고 넘어간다.
+        #
+        # **70이지 66이 아니다 - 같은 오염 문자열이 두 산출물에 함께 간다.**
+        # 아래 `write_review`의 그물이 같은 `UnicodeEncodeError`를 70으로 받는데
+        # (근거는 그 주석), 그 문자열의 출처는 `translated.segments`의
+        # `target_text` 하나로 같다. 여기만 66이면 **같은 원인이 어느 쓰기가
+        # 먼저 죽느냐에 따라 다른 코드를 낸다.** 게다가 자막 쓰기가 먼저라
+        # (`write_review`는 트리아지 뒤다) 66이면 70은 영영 관측되지 않는다.
+        # 66은 "사용자가 준 파일이 틀렸다"인데 사용자의 자막은 멀쩡했다 -
+        # 틀린 것은 프로바이더의 응답을 그대로 파일로 보낸 **우리 쪽**이다.
+        # `OSError` 절이 66을 유지하는 것은 그쪽이 진짜 디스크 사정이기
+        # 때문이고, 이 절보다 **앞에** 와야 한다(뒤에 오면 죽은 코드가 된다).
+        #
+        # **"모든 실패가 70이 된다"는 열린 집합에 대한 단언이라 테스트로
+        # 완결할 수 없다** - 넓은 catch가 유일하게 구성상(by construction) 참인
+        # 선택이다. 이 파일의 `load_glossary` 그물과 `write_review` 그물이 같은
+        # 판정을 이미 내렸고 여기는 그 셋째다. `KeyboardInterrupt`·`SystemExit`은
+        # `BaseException`이라 삼키지 않는다. `typer.Exit`은 `Exception` 하위지만
+        # `try` 안의 호출이 `write_subtitle` 하나뿐이고 `ingest/writer.py`는
+        # typer를 import하지 않는다(`contextlib`·`copy`·`os`·`re`·`pathlib`·
+        # `cuesift.*`뿐) - **여기 줄을 보태면 그 전제가 깨진다.**
+        #
+        # **예외 타입명을 병기한다.** `{exc}`만 찍으면 `UnicodeEncodeError`
+        # (모델 출력이 오염됐다)와 `AttributeError`(버그를 신고해야 한다)가
+        # 사용자에게 같은 모양으로 보인다.
+        #
+        # **잘린 파일은 `write_subtitle`이 원자적 쓰기로 막는다.** 여기서
+        # 지우려 들면 지난 실행의 정상 자막까지 함께 지운다.
+        _echo(
+            f"{out_path}: 출력 파일을 쓰지 못했다 - {type(exc).__name__}: {exc}",
+            err=True,
+        )
+        return EXIT_NOT_IMPLEMENTED
 
     # `cache_dir`이 `None`이면(--no-cache 또는 신원 없음 경고) provider는
     # CachingProvider로 감싸이지 않아 hits·misses 속성 자체가 없다. 그때
