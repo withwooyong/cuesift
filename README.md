@@ -385,10 +385,14 @@ cuesift translate ep01.ko.srt --to en --review-budget 30% --review-out reports
 
 | 실행 | 남는 파일 |
 |---|---|
-| `translate ep01.ko.srt --to en,ja --review-out reports` | `reports/ep01.en.review.json` · `reports/ep01.ja.review.json` |
-| 이어서 `translate ep02.ko.srt --to en --review-out reports` | 위 둘 **그대로** + `reports/ep02.en.review.json` |
+| `translate ep01.ko.srt --to en,ja --review-budget 30% --review-out reports` | `reports/ep01.en.review.json` · `reports/ep01.ja.review.json` |
+| 이어서 `translate ep02.ko.srt --to en --review-budget 30% --review-out reports` | 위 둘 **그대로** + `reports/ep02.en.review.json` |
 
-파일은 이렇게 생겼습니다. **위 명령이 실제로 낸 것입니다.**
+**예산을 빼면 안 됩니다.** `--review-out` 단독은 아래 조합 표대로 **종료 코드 2**로 막혀
+파일이 하나도 나오지 않습니다 — 이 표의 두 명령에 `--review-budget`이 빠져 있던 판이
+있었고, 그대로 치면 "파일 2개가 남는다"가 아니라 exit 2였습니다(실측).
+
+파일은 이렇게 생겼습니다. **위 절 첫머리의 `--to en` 명령이 실제로 낸 것입니다.**
 
 ```json
 {
@@ -458,9 +462,49 @@ cuesift translate ep01.ko.srt --to en --review-budget 30% --review-out reports
 | `--review-out` 단독 + `--dry-run` | **여전히 종료 코드 2** — 옵션 조합 오류는 LLM을 부르기 전에 알아야 합니다 |
 | `--review-out` + 예산 + `--dry-run` | 종료 코드 0, **디렉터리조차 만들지 않습니다** — dry-run은 트리아지를 돌리지 않으므로 낼 것이 없습니다 |
 
-**규격 프로파일이 없는 대상 언어는 리포트를 내지 않습니다.** 위 표(`--to en,th`)대로
-번역은 그대로 나가지만 `th`의 `review.json`은 생기지 않습니다 — 빈 파일을 내면 소비자가
-"검수했고 걸린 것이 없다"로 읽는데 실제로는 **판정 자체를 못 한 것**입니다.
+##### "파일이 없다"와 "파일이 비어 있다"는 다른 사건입니다
+
+둘 다 검수 대상이 0개지만 **원인이 반대라서 대응도 반대**입니다. 아래 둘 다 실측입니다.
+
+| 무엇이 일어났나 | `review.json` | 무엇을 해야 하나 |
+|---|---|---|
+| **판정 자체를 못 했다** — 그 언어에 규격 프로파일이 없다 (`--to en,th`의 `th`) | **나오지 않습니다** | 프로파일을 만들거나 그 언어를 뺍니다 |
+| **판정했고 전부 실패했다** — 번역이 전량 실패해 트리아지 입력이 비었다 | **나옵니다. 비어 있지 않습니다** | **재번역**입니다. 자막에는 원문이 그대로 남아 있습니다 |
+
+**프로파일이 없는 언어에 빈 파일을 내지 않는 이유**는 소비자가 그것을 "검수했고 걸린
+것이 없다"로 읽기 때문입니다 — 실제로는 판정 자체를 못 한 것입니다. 번역은 그대로
+나가고 `ep01.th.srt`는 만들어집니다(실측). 리포트만 없습니다.
+
+**반대로 전량 실패에는 반드시 파일을 냅니다.** 파일이 아예 없으면 소비자가 "실행이 안
+됐다"와 "번역이 전량 실패했다"를 구분하지 못합니다. 그 파일은 **세 수치로 사실을
+말합니다** — `total`은 원래 개수를, `excluded_failures`는 몇 건이 실패했는지를,
+`segments: []`는 검수할 것이 남지 않았음을 각각 말합니다.
+
+```text
+[en] 트리아지: 번역된 세그먼트가 없어 건너뛴다 (전량 3건 실패)
+  리포트 reports\ep01.en.review.json
+```
+
+```json
+{
+  "summary": {
+    "total_segments": 3,
+    "triaged_segments": 0,
+    "excluded_failures": 3,
+    "selected_for_review": 0,
+    "review_ratio": 0.0,
+    "hard_fail_count": 0,
+    "signal_hits": {}
+  },
+  "segments": []
+}
+```
+
+(위 JSON은 `summary`에서 이 사건과 무관한 필드를 뺀 것입니다 — 실제 파일에는
+`source_lang`·`target_lang`·`profile`·`policy`·`cost`도 그대로 들어 있습니다.)
+
+**종료 코드는 `1`입니다** — 전량 실패는 "번역 일부 실패"의 극단이지 리포트의 실패가
+아닙니다. 리포트는 정상적으로 나왔습니다.
 
 **리포트를 쓰지 못하면 종료 코드로 알립니다.** 디렉터리 생성·쓰기 실패는 `66`,
 직렬화 실패(신호가 JSON으로 바꿀 수 없는 값을 담은 경우)는 `70`입니다. 파일이 없는데
