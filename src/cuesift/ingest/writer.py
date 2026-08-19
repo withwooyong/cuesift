@@ -10,7 +10,9 @@ pysubs2를 아는 곳이 둘로 늘어난다.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -45,6 +47,9 @@ def write_subtitle(
     `event_index`로 짝짓는 이유는 인제스트가 **표시되지 않는 이벤트를
     걸러냈기** 때문이다(`_keep_displayed`). 위치로 짝지으면 주석 이벤트가
     하나만 있어도 그 뒤가 전부 밀린다.
+
+    **예외를 잡지 않는다.** 호출자(`cli.py`)가 종료 코드로 바꾼다 - 디스크
+    사정(`OSError`)과 내용 결함은 성격이 달라 코드가 갈린다.
     """
     subs = copy.deepcopy(result.subs)
 
@@ -65,7 +70,34 @@ def write_subtitle(
         event.text = prefix + event.text
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # `format_`을 넘기지 않으면 pysubs2가 확장자로 판별하는데, 확장자가 없는
-    # 경로에서 예외가 난다. 원본 포맷을 명시하는 것이 FR-7.1의
-    # "입력과 동일 포맷 기본"과도 맞는다.
-    subs.save(str(out_path), format_=result.format)
+    # **임시 파일에 쓰고 `os.replace`로 갈아 끼운다 - 실패해도 잘린 자막이
+    # 남지 않는다.** `subs.save`는 대상을 먼저 truncate하며 열고 **그 다음에**
+    # 인코딩하므로, LLM이 낸 문자열에 고립 서로게이트가 하나만 있어도 그
+    # 지점까지 쓰인 파일이 디스크에 남는다(실측: 10큐 중 5번째만 오염시키면
+    # `ten_cues.en.srt`가 274바이트·큐 5개로 남고 **5번째는 타임코드만**
+    # 있다). 그 파일은 "번역이 다 됐다"로 읽히는데 실제로는 절반이 없다 -
+    # `report/json_report.py`가 막는 것과 **같은 병**이고, 산출물이 사용자가
+    # 실제로 내보내는 자막이라 결과는 더 무겁다.
+    #
+    # 고립 서로게이트에 도달 경로가 있다는 것은 실측이다 -
+    # `translate/openai_compat.py`의 `response.json()`이 `"\ud800"`을 그대로
+    # 통과시키고 `isinstance(content, str)`도 지나간다. 요구사항정의서 §12 Q3가
+    # **"로컬 LLM 백엔드의 능력이 균일하지 않다"**를 전제로 두고 있다.
+    #
+    # **`format_`을 명시하는 것이 이제 이 임시 파일의 전제이기도 하다.**
+    # 넘기지 않으면 pysubs2가 확장자로 판별해 `.tmp`에서 죽는다(원래도
+    # 확장자 없는 경로에서 죽었다). 원본 포맷을 명시하는 것이 FR-7.1의
+    # "입력과 동일 포맷 기본"과도 맞는다. **이 인자를 지우면 정상 경로가
+    # 통째로 깨진다** - 아래 `os.replace`가 아니라 `save`에서 깨진다.
+    #
+    # PID를 이름에 넣는 것은 동시 실행 때문이고, `finally`의 `unlink`를
+    # `contextlib.suppress(OSError)`로 감싸는 것은 정리 실패가 진행 중이던
+    # 예외를 **대체**하지 못하게 하기 위해서다 - 둘 다 `store/cache.py`의
+    # `store()`가 먼저 밟은 자리이고 그쪽에 상세한 기록이 있다.
+    tmp = out_path.parent / f"{out_path.name}.{os.getpid()}.tmp"
+    try:
+        subs.save(str(tmp), format_=result.format)
+        os.replace(tmp, out_path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)

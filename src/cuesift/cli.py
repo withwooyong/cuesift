@@ -13,7 +13,7 @@
 | 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패·출력 경로 충돌) | typer 관행 |
 | 66 | 파일 사정 (자막·용어집 파싱 실패, utf-8 아님, 읽거나 쓰지 못함) | `sysexits.h` EX_NOINPUT |
 | 69 | 외부 서비스(LLM 프로바이더)가 요청을 거부함 | `sysexits.h` EX_UNAVAILABLE |
-| 70 | 미구현 | |
+| 70 | 미구현(`transcribe`), 또는 산출물의 **내용** 결함 | `sysexits.h` EX_SOFTWARE |
 
 **1을 진단 실패에 쓰지 않는 것이 핵심이다.** 1은 "규격 위반 발견"이므로
 파일을 못 읽은 것을 1로 내면 CI가 "자막이 깨졌다"와 "경로가 틀렸다"에
@@ -27,7 +27,6 @@ import math
 import os
 import re
 import sys
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -38,8 +37,9 @@ import typer
 from cuesift import __version__
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
+from cuesift.report import TriageOutcome, write_review
 from cuesift.risk import fuse
-from cuesift.segment import SegmentRisk
+from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
 from cuesift.spec import (
     SpecProfile,
@@ -62,10 +62,29 @@ from cuesift.translate import (
     iter_batches,
     translate_segments,
 )
-from cuesift.triage import review_ratio, select_by_budget, select_by_threshold
+from cuesift.triage import select_by_budget, select_by_threshold
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
-# `translate`가 배선된 뒤로 70은 `transcribe` 하나의 표식이다.
+#
+# **발신처가 셋이다.** `transcribe`(미구현), `_translate_one`이 `write_review`의
+# 직렬화 실패를 받는 자리(review.json 배선 FR-7.2가 더했다), 그리고 같은 함수가
+# `write_subtitle`의 **내용** 실패를 받는 자리다. 따라서 CI는 셋을 **종료
+# 코드만으로는 구별하지 못한다**. 구별이 필요하면 stderr 메시지를 봐야 한다 -
+# 셋 다 예외 타입명을 병기한다. 이 사실이 여기 없으면 아무 데도 없다.
+#
+# **뒤의 둘은 `TypeError`·`OSError` 하나로 좁힐 수 없다.** `json.dumps`의 실패도
+# `subs.save`의 실패도 열린 집합이라 두 자리 모두 `except Exception`으로 받는다 -
+# 근거는 각 주석에 있다.
+#
+# **셋이 같은 코드인 것이 옳다.** `sysexits.h`의 EX_SOFTWARE는 "internal
+# software error"라 셋을 함께 덮는다 - 사용자가 입력이나 설정을 고쳐도 사라지지
+# 않는 우리 쪽 결함이라는 점이 같다. 66(EX_NOINPUT)으로 보내면 "사용자가 고칠
+# 수 있는 문제"가 되어 **"자막이 깨졌다"로 오독되고 멀쩡한 자막을 고치려 든다** -
+# 1을 진단 실패에 쓰지 않는 이유(파일 머리말)와 같은 사고다.
+#
+# **이름이 좁아졌다.** `EXIT_NOT_IMPLEMENTED`는 이제 발신처 셋 중 하나만 말한다.
+# 바꾸려면 `transcribe`와 그 테스트를 함께 건드려야 해 배선 태스크의 범위를
+# 넘는다 - 이 문단이 그때까지 이름을 대신한다.
 EXIT_NOT_IMPLEMENTED = 70
 
 # sysexits.h EX_NOINPUT — 파일 내용이 틀렸다는 뜻이다. 명령줄이 틀린 2와 구분한다.
@@ -419,6 +438,30 @@ def _output_path(
     return directory / f"{stem}.{target_lang}{input_path.suffix}"
 
 
+def _review_path(input_path: Path, review_dir: Path, source_lang: str, target_lang: str) -> Path:
+    """검수 리포트 경로를 정한다 (FR-7.2 · review.json 설계 D2).
+
+    stem 규칙은 바로 위 `_output_path`와 같다 - `.{source_lang}`으로 끝나면
+    치환하고 아니면 덧붙인다. 판정만 `casefold()`한다. **함께 바뀌는 것이라
+    함께 둔다** - 두 규칙이 갈라지면 같은 입력이 `ep01.en.srt`와
+    `ep01.ko.en.review.json`을 내 짝을 눈으로 못 맞춘다.
+
+    **고정 이름(`review.{lang}.json`)을 쓰지 않는 이유는 덮어쓰기다.** `ep01`과
+    `ep02`를 같은 `--review-out`으로 돌리면 뒤엣것이 앞엣것을 조용히 지우고,
+    종료 코드는 0이며 경고도 없다.
+
+    **`casefold()`가 양쪽에 걸려야 한다.** 파일명 쪽만 접으면 `--source-lang KO`
+    (`--source-lang`은 CLI 어디에서도 접히지 않고 여기까지 온다)가 치환에
+    실패해 `ep01.ko.en.review.json`이라는 이중 태그를 낸다 - `_output_path`가
+    겪은 사고의 거울상이다.
+    """
+    stem = input_path.stem
+    suffix = f".{source_lang}"
+    if stem.casefold().endswith(suffix.casefold()):
+        stem = stem[: -len(suffix)]
+    return review_dir / f"{stem}.{target_lang}.review.json"
+
+
 @app.command()
 def translate(
     input: Annotated[
@@ -487,6 +530,19 @@ def translate(
             help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). --review-budget과 함께 쓸 수 없다",
         ),
     ] = None,
+    review_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--review-out",
+            # `file_okay=False`는 `--out`과 같은 이유다 - 출력 디렉터리 자리에
+            # 이미 파일이 있으면 `FileExistsError`가 새어 exit 1로 오보된다.
+            # 1은 이 CLI에서 "규격 위반 발견"이라 설정 실수가 자막 결함이 된다.
+            file_okay=False,
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="검수 리포트(review.json) 출력 디렉터리. --review-budget 또는 "
+            "--review-threshold와 함께 써야 한다",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         # Task 4까지는 "경고 후 무시"(--review-budget과 같은 임시 처리)였다
@@ -521,6 +577,30 @@ def translate(
         # 표에서 1은 "규격 위반 발견"이라 **설정 실수가 자막 결함으로
         # 오보되고**, 사용자는 멀쩡한 자막을 고치려 든다.
         _echo("--review-threshold를 숫자로 읽지 못했다: nan", err=True)
+        raise typer.Exit(2)
+    if review_out is not None and review_budget is None and review_threshold is None:
+        # 리포트를 낼 트리아지 정책이 없다. 조용히 무시하면 사용자는 파일이
+        # 없다는 사실을 다음 단계(배포 스크립트·CI)에서야 만난다(설계 D10).
+        #
+        # **`--dry-run` 분기보다 앞에 둔다**(D11). 뒤로 미루면 dry-run으로
+        # 확인한 명령이 본 실행에서 처음 실패한다. 프로파일 전량 검사가 이미
+        # 같은 규칙을 따른다.
+        #
+        # **세 항을 모두 본다.** `review_out is not None` 하나로 줄이면 정상
+        # 조합까지 거부하고, 뒤의 두 항 중 하나만 보면 나머지 한 방식이
+        # 사용법 오류로 막힌다 - FR-6.3은 두 방식을 대등하게 둔다.
+        #
+        # **뒤의 두 항은 아래 `triage_requested`의 부정과 동치다.** 그것을
+        # 재사용하지 않고 여기서 다시 쓰는 이유는 순서다 - 이 검사는
+        # `triage_requested`가 만들어지기 **전에** 끝나야 하고(D11: 조합 오류는
+        # 파싱·프로파일 조달보다 앞이다), 변수를 앞으로 끌어올리면 그 정의가
+        # 예산 파싱과 멀어져 무엇을 근거로 만든 값인지 읽기 어려워진다.
+        # 동치라는 사실을 여기 적어 두는 것으로 중복을 감수한다 - 한쪽만
+        # 고치면 갈라지므로, 고칠 때 둘을 함께 본다.
+        _echo(
+            "--review-out은 --review-budget 또는 --review-threshold와 함께 써야 한다",
+            err=True,
+        )
         raise typer.Exit(2)
 
     triage_requested = review_budget is not None or review_threshold is not None
@@ -709,14 +789,34 @@ def translate(
             work_context=work_context,
             context_window=context_window,
             cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+            # **본 실행과 같은 규칙으로 여기서 조립한다** (브랜치 리뷰 코드 축 m1).
+            # 두 조건이 실제 실행의 두 가드와 하나씩 대응한다 - `review_out is
+            # not None`은 `_translate_one`의 `if review_out is not None`이고,
+            # `target in profiles`는 그 함수에 `triage_profile`이 넘어가는
+            # 조건(`profiles.get(target)`)이다. 프로파일이 없는 언어를 넣으면
+            # **dry-run이 나오지도 않을 파일을 예고한다**(D7).
+            #
+            # 경로 자체는 `_review_path` - 본 실행이 부르는 **같은 함수**다.
+            # 손으로 조립하면 stem 규칙이 갈라져도 드러나지 않는다.
+            review_paths=(
+                {}
+                if review_out is None
+                else {
+                    target: _review_path(input, review_out, source_lang, target)
+                    for target in targets
+                    if target in profiles
+                }
+            ),
         ):
             _echo(line)
         return
 
-    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69
-    # (설계 §6.6 표의 6종 중 70을 뺀 5종 - `_translate_one`은 70을 내지
-    # 않는다). 이 성질이 깨지면 아래 max()가 틀린 코드를 낸다 - 새 코드를
-    # 추가할 때 반드시 확인한다.
+    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69 < 70.
+    # 70(내부 오류)이 69(외부 서비스 거부)를 이기는 것이 옳다 - 한 언어가
+    # 프로바이더 거부이고 다른 언어가 직렬화 실패라면 보고할 것은 우리 쪽
+    # 결함이다. 사용자가 LLM 설정을 고쳐도 70은 사라지지 않는다.
+    # **이 성질이 깨지면 아래 max()가 틀린 코드를 낸다** - 새 코드를 추가할 때
+    # 반드시 확인한다. review.json 배선(FR-7.2)이 70을 추가하며 이 주석을 갱신했다.
     worst = 0
     for i, target in enumerate(targets):
         code = _translate_one(
@@ -734,6 +834,7 @@ def translate(
             budget_ratio=budget_ratio,
             threshold=review_threshold,
             policy_label=policy_label,
+            review_out=review_out,
         )
         worst = max(worst, code)
         if code == EXIT_UNAVAILABLE:
@@ -770,6 +871,7 @@ def _dry_run_report(
     work_context: str | None,
     context_window: int,
     cache_dir: Path | None,
+    review_paths: Mapping[str, Path],
 ) -> list[str]:
     """실행하지 않고 추정치를 낸다 (NFR-2 · 설계 §7).
 
@@ -838,6 +940,23 @@ def _dry_run_report(
     (`tests/test_cli_translate.py`) 3개가 매번 죽는다(WP7b Task 6 리뷰
     라운드 1에서 2개로 보고됐으나 라운드 1 수정에서 추가된 세 번째 테스트로
     재확인하면 3개다).
+
+    ## 리포트 경로는 **계산하지 않고 받는다** (브랜치 전체 리뷰 코드 축 m1)
+
+    이 함수는 자막 경로를 언어마다 찍으면서 `--review-out`의 산출물은 한 줄도
+    말하지 않았다 - `test_dry_run은_파일을_쓰지_않는다`가 "쓰지 **않는다**"는
+    **음성 방향만** 보고 "무엇을 낼 것인지 말한다"는 양성 방향은 아무도 안
+    봤기 때문이다. 위 D11 주석이 "dry-run으로 확인한 명령이 본 실행에서 처음
+    실패한다"를 막겠다고 선언했으므로 의도는 dry-run/본실행 정합인데, 산출물
+    목록만 그 정합에서 빠져 있었다.
+
+    **`review_out`과 `profiles`를 받아 여기서 조립하지 않는다.** 리포트를 내는
+    언어는 "규격 프로파일이 있는 언어"뿐이고(D7 - 없는 언어에 빈 파일을 내면
+    소비자가 "검수했고 걸린 것이 없다"로 읽는다), 그 규칙은 실제 실행에서
+    **호출자가** `profiles.get(target)`으로 판정한다. 여기서 규칙을 다시 쓰면
+    두 곳이 갈라져 **dry-run이 나오지도 않을 파일을 예고한다** - 이 함수가
+    닫으려는 바로 그 불일치다. 그래서 호출자가 `_review_path`(본 실행과 **같은
+    함수**)로 만든 완성된 매핑만 받는다. 빈 매핑이면 한 줄도 내지 않는다.
 
     ## 캐시 손상은 감지하지 못한다 (WP7b Task 6 리뷰 라운드 1 Minor b)
 
@@ -912,6 +1031,16 @@ def _dry_run_report(
                 f"  프롬프트 문자 system {system_chars:,} + user {user_chars:,}",
             ]
         )
+        review_path = review_paths.get(target)
+        if review_path is not None:
+            # **실제 실행의 문구와 같은 형태로 낸다**(`_translate_one`의
+            # `f"  리포트 {review_path}"`). 다르게 쓰면 두 출력을 눈으로
+            # 맞추려는 사용자가 서로 다른 것으로 읽는다.
+            #
+            # **"낸다"가 아니라 "낼 것이다"로 적는다.** dry-run은 파일을 쓰지
+            # 않고 디렉터리도 만들지 않는다(README의 조합 표) - 현재형으로
+            # 적으면 이미 있는 줄 알고 다음 단계가 빈손으로 진행한다.
+            lines.append(f"  리포트 {review_path} (아직 쓰지 않음)")
     lines.append("")
     lines.append("(토큰·비용은 내지 않는다 - 문자에서 토큰으로 가는 계수의 출처가 없다)")
     return lines
@@ -933,6 +1062,7 @@ def _translate_one(
     budget_ratio: float | None,
     threshold: float | None,
     policy_label: str | None,
+    review_out: Path | None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
 
@@ -1059,6 +1189,52 @@ def _translate_one(
         # 경우까지는 명령줄 시점에 알 수 없어 이 try가 마지막 방어선이다.
         _echo(f"{out_path}: 출력 파일을 쓰지 못했다 - {exc}", err=True)
         return EXIT_BAD_INPUT
+    except Exception as exc:
+        # **`OSError` 하나로는 그물이 샌다 - 아래 `write_review`의 형제다.**
+        # LLM이 낸 문자열에 고립 서로게이트가 있으면 `subs.save`가
+        # `UnicodeEncodeError`(= `ValueError` 하위, `OSError`가 **아니다**)를
+        # 내고 그것이 미처리 traceback으로 새어 **exit 1**이 됐다(실측:
+        # 10큐 중 5번째만 오염시킨 실행에서 exit 1 + traceback). 도달 경로는
+        # 가정이 아니다 - `openai_compat.py`의 `response.json()`이 서로게이트를
+        # 그대로 통과시키고 `isinstance(content, str)`도 지나간다(§12 Q3가
+        # 백엔드 능력의 불균일을 전제한다).
+        #
+        # **exit 1이 최악인 이유는 여기서도 "구별되지 않는다"이다.** 1은 이
+        # CLI에서 "규격 위반 발견 또는 번역 일부 실패"라, 번역 실패가 함께
+        # 있는 흔한 실행에서는 **정상 종료와 종료 코드가 완전히 같다**(실측:
+        # 대조군도 1). CI는 자막을 그대로 쓰고 넘어간다.
+        #
+        # **70이지 66이 아니다 - 같은 오염 문자열이 두 산출물에 함께 간다.**
+        # 아래 `write_review`의 그물이 같은 `UnicodeEncodeError`를 70으로 받는데
+        # (근거는 그 주석), 그 문자열의 출처는 `translated.segments`의
+        # `target_text` 하나로 같다. 여기만 66이면 **같은 원인이 어느 쓰기가
+        # 먼저 죽느냐에 따라 다른 코드를 낸다.** 게다가 자막 쓰기가 먼저라
+        # (`write_review`는 트리아지 뒤다) 66이면 70은 영영 관측되지 않는다.
+        # 66은 "사용자가 준 파일이 틀렸다"인데 사용자의 자막은 멀쩡했다 -
+        # 틀린 것은 프로바이더의 응답을 그대로 파일로 보낸 **우리 쪽**이다.
+        # `OSError` 절이 66을 유지하는 것은 그쪽이 진짜 디스크 사정이기
+        # 때문이고, 이 절보다 **앞에** 와야 한다(뒤에 오면 죽은 코드가 된다).
+        #
+        # **"모든 실패가 70이 된다"는 열린 집합에 대한 단언이라 테스트로
+        # 완결할 수 없다** - 넓은 catch가 유일하게 구성상(by construction) 참인
+        # 선택이다. 이 파일의 `load_glossary` 그물과 `write_review` 그물이 같은
+        # 판정을 이미 내렸고 여기는 그 셋째다. `KeyboardInterrupt`·`SystemExit`은
+        # `BaseException`이라 삼키지 않는다. `typer.Exit`은 `Exception` 하위지만
+        # `try` 안의 호출이 `write_subtitle` 하나뿐이고 `ingest/writer.py`는
+        # typer를 import하지 않는다(`contextlib`·`copy`·`os`·`re`·`pathlib`·
+        # `cuesift.*`뿐) - **여기 줄을 보태면 그 전제가 깨진다.**
+        #
+        # **예외 타입명을 병기한다.** `{exc}`만 찍으면 `UnicodeEncodeError`
+        # (모델 출력이 오염됐다)와 `AttributeError`(버그를 신고해야 한다)가
+        # 사용자에게 같은 모양으로 보인다.
+        #
+        # **잘린 파일은 `write_subtitle`이 원자적 쓰기로 막는다.** 여기서
+        # 지우려 들면 지난 실행의 정상 자막까지 함께 지운다.
+        _echo(
+            f"{out_path}: 출력 파일을 쓰지 못했다 - {type(exc).__name__}: {exc}",
+            err=True,
+        )
+        return EXIT_NOT_IMPLEMENTED
 
     # `cache_dir`이 `None`이면(--no-cache 또는 신원 없음 경고) provider는
     # CachingProvider로 감싸이지 않아 hits·misses 속성 자체가 없다. 그때
@@ -1089,7 +1265,7 @@ def _translate_one(
         # 먼저 나열하고, 트리아지 요약은 그것이 분모에서 빠졌다고 말한다.
         # 순서가 뒤집히면 "3건 제외"가 무엇을 가리키는지 알 수 없다.
         try:
-            for line in _run_triage(
+            outcome = _run_triage(
                 target_lang=target_lang,
                 profile=triage_profile,
                 glossary=glossary,
@@ -1098,8 +1274,7 @@ def _translate_one(
                 budget_ratio=budget_ratio,
                 threshold=threshold,
                 policy_label=policy_label,
-            ):
-                _echo(line)
+            )
         except ValueError as exc:
             # **정책 오류가 exit 1로 새는 것을 막는다.** 이 파일 머리말의 표에서
             # 1은 "규격 위반 발견"이라, 잡지 않으면 미처리 traceback이 exit 1이
@@ -1111,10 +1286,123 @@ def _translate_one(
             # 검사, `_run_triage`의 "budget·threshold가 둘 다 None" 불변식.
             # 셋 다 **설정이 틀린 것**이지 자막이 틀린 것이 아니므로 2다.
             #
+            # 넷째로 `TriageOutcome`의 생성자 불변식(id 집합 불일치·음수
+            # `excluded_failures`)도 `ValueError`라 이 그물에 걸린다. 그것만은
+            # 설정이 아니라 **내부 결함**이라 2가 정확한 표식은 아니지만,
+            # `_run_triage`가 `risks`와 `segments`를 같은 `kept`에서 만들므로
+            # 도달 경로가 없다. 도달한다면 그때는 코드가 틀린 것이다.
+            #
+            # **review.json 배선(FR-7.2)이 이 판정을 다시 했다.** 배선은
+            # `outcome`을 읽어 파일로 쓰기만 하고 생성에는 관여하지 않으므로
+            # 도달 불가가 유지된다 - 따라서 여기를 쪼개지 않았다. 나중에
+            # `TriageOutcome`을 다른 재료로 만드는 경로가 생기면 그때는 이
+            # `except`를 분리해 내부 결함을 70으로 내야 한다. 지금 미리
+            # 쪼개면 어떤 테스트도 밟지 못하는 가지가 생긴다.
+            #
             # 번역 파일은 이미 나갔다 - 트리아지만 못 돌린 것이고, 그 사실을
             # 말하지 않으면 사용자는 번역까지 실패한 줄 안다.
             _echo(f"[{target_lang}] 트리아지를 돌리지 못했다: {exc}", err=True)
             return 2
+
+        if not outcome.risks:
+            # **전량 실패를 화면에서 구별한다.** `review_ratio`는 이때 0.0을
+            # 내지만(빈 목록 가드, `policy.py:194-195`) "검수 대상 0개"는
+            # "볼 것이 없다"로 읽힌다 - 실제로는 **판정 자체를 못 한 것**이다.
+            # `_run_triage`가 아니라 여기서 만드는 것은, 결과 객체는 전량
+            # 실패에서도 나와야 `review.json`이 "왜 비었나"를 남길 수 있기
+            # 때문이다(설계 D8).
+            _echo(
+                f"[{target_lang}] 트리아지: 번역된 세그먼트가 없어 건너뛴다 "
+                f"(전량 {outcome.excluded_failures}건 실패)"
+            )
+        else:
+            for line in _format_triage_summary(outcome):
+                _echo(line)
+
+        if review_out is not None:
+            # **요약 출력 뒤에 온다.** 화면이 먼저 수치를 말하고 그 다음
+            # 줄이 "그 수치가 어느 파일에 들어갔다"를 말한다. 순서를
+            # 뒤집으면 경로가 수치보다 먼저 나와 어느 실행의 산출물인지
+            # 눈으로 못 맞춘다.
+            #
+            # **전량 실패도 파일을 낸다 - 조건을 달지 않는다.** 그때
+            # `segments`가 비고 `excluded_failures`가 사실을 말한다. 파일이
+            # 아예 없으면 소비자는 "실행이 안 됐다"와 "번역이 전량
+            # 실패했다"를 구분하지 못한다(설계 D8).
+            #
+            # `outcome.risks or outcome.excluded_failures`로 감싸는 형태를 쓰지
+            # 않은 이유는 그 조건이 **여기서 언제나 참**이기 때문이다. 항상 참인
+            # `if`는 거짓 가지를 어떤 테스트도 밟지 못하고, `pyproject.toml`에
+            # branch coverage 설정이 없어 커버리지에도 안 잡혀 "검사하지 않고
+            # 통과하는 게이트"가 된다.
+            #
+            # **증명 사슬은 네 고리다. 하나라도 끊기면 이 주석이 거짓이 된다** -
+            # 넷 중 셋이 이 파일 밖에 있으므로 그쪽을 고치는 사람이 여기가
+            # 자기 변경의 영향권임을 알아야 한다(실측: Task 6 리뷰 계약 축).
+            #
+            # 1. `select_by_*`가 **전체 목록**을 반환한다(`triage/policy.py:95`·`:114`).
+            #    선별분만 반환하도록 바뀌면 `risks`가 비고 `excluded_failures`가
+            #    0인 조합이 생긴다.
+            # 2. `translate_segments`가 **길이를 보존**한다(`translate/engine.py:197`).
+            #    실패분을 `segments`에서 빼도록 바뀌면 `translated.segments`가 빈다.
+            # 3. 1·2에서 `risks`가 빈다 ⟺ `kept`가 빈다 ⟺ 전량 실패이거나 트랙이 0개다.
+            # 4. 트랙 0개는 `load_subtitle`이 `IngestError("empty")`로 거부한다
+            #    (`ingest/loader.py:68-73`). 이것이 없으면 0큐 트랙이 여기까지 온다.
+            #
+            # 사슬이 끊겨도 **동작은 안전하다** - 조건이 거짓이어도 리포트를 내는
+            # 것이 설계 의도다. 깨지는 것은 이 주석의 주장이지 동작이 아니다.
+            #
+            # **트리아지를 돌린 언어만 여기 온다.** 프로파일이 없어 건너뛴
+            # 언어는 바깥 `if triage_profile is not None`에서 이미 걸러졌다 -
+            # 그 언어에 빈 리포트를 내면 소비자가 "검수했고 걸린 것이 없다"로
+            # 읽는데 실제로는 판정 자체를 못 한 것이다(D7).
+            review_path = _review_path(input_path, review_out, source_lang, target_lang)
+            try:
+                write_review(outcome, review_path)
+            except OSError as exc:
+                # 디스크 상태의 문제다. 번역 파일은 이미 나갔다(설계 §3.4) -
+                # 그 사실을 말하지 않으면 사용자는 번역까지 실패한 줄 알고
+                # LLM 호출을 통째로 다시 쓴다.
+                _echo(f"{review_path}: 검수 리포트를 쓰지 못했다 - {exc}", err=True)
+                return EXIT_BAD_INPUT
+            except Exception as exc:
+                # **`Exception`까지 넓힌다 - `TypeError` 하나로는 그물이 샌다.**
+                # `json.dumps`의 실패는 열린 집합이다(실측, Task 6 리뷰 계약 축 I1):
+                # 순환 참조는 **`ValueError`**("Circular reference detected")이고
+                # 깊은 중첩은 `RecursionError`, `write_text`의 서로게이트는
+                # `UnicodeEncodeError`(= `ValueError` 하위)다. `TypeError`만 잡으면
+                # 셋 다 미처리 traceback이 되어 **exit 1**로 나간다.
+                #
+                # **exit 1이 최악인 이유가 바로 여기 있다.** 이 CLI에서 1은 "규격
+                # 위반 발견 또는 번역 일부 실패"라, 번역 실패가 함께 있는 흔한
+                # 실행에서는 **정상 종료와 종료 코드가 완전히 같아진다**(실측:
+                # 대조군도 exit 1). CI는 번역을 재시도하고 리포트는 영영 안 나온다.
+                # 66도 안 된다 - 66은 "사용자가 준 파일이 틀렸다"이고 이것은 우리
+                # 코드가 틀린 것이다.
+                #
+                # **"모든 직렬화 실패가 70이 된다"는 열린 집합에 대한 단언이라
+                # 테스트로 완결할 수 없다** - 넓은 catch가 유일하게 구성상
+                # (by construction) 참인 선택이다. 이 파일의 `load_glossary` 그물
+                # (위쪽 `except Exception`)이 같은 판정을 이미 내려 두었고 여기는
+                # 그 형제다.
+                #
+                # **삼킬 위험 둘을 확인했다.** `KeyboardInterrupt`·`SystemExit`은
+                # `BaseException`이라 이 catch가 잡지 않는다 - Ctrl+C는 정상
+                # 동작한다. `typer.Exit`은 `Exception` 하위라 삼킬 수 있지만
+                # `try` 안의 호출이 `write_review` 하나뿐이고 `json_report.py`는
+                # typer를 import하지 않는다(`json`·`pathlib`·`typing`·`cuesift.*`뿐).
+                # **여기 줄을 보태면 그 전제가 깨진다.**
+                #
+                # **예외 타입명을 병기한다.** `{exc}`만 찍으면 `ValueError`(리포트
+                # 구조에 순환이 생겼다)와 `NameError`(버그를 신고해야 한다)가
+                # 사용자에게 같은 모양으로 보인다. 넓은 catch를 택한 대가를 이 한
+                # 줄이 줄인다 - `load_glossary` 그물이 같은 이유로 같은 형식을 쓴다.
+                _echo(
+                    f"{review_path}: 검수 리포트를 직렬화하지 못했다 - {type(exc).__name__}: {exc}",
+                    err=True,
+                )
+                return EXIT_NOT_IMPLEMENTED
+            _echo(f"  리포트 {review_path}")
 
     return 1 if translated.failures else 0
 
@@ -1172,45 +1460,39 @@ def _format_translate_summary(
     return lines
 
 
-def _format_triage_summary(
-    *,
-    target_lang: str,
-    policy_label: str,
-    profile_name: str,
-    risks: Sequence[SegmentRisk],
-    excluded: int,
-) -> list[str]:
+def _format_triage_summary(outcome: TriageOutcome) -> list[str]:
     """트리아지 결과를 요약한다 (FR-7.4 · 설계 §7.1).
 
-    **`risks`는 `select_by_*`가 돌려준 전체 목록이다.** 선별분만 넘기면
-    `review_ratio`가 언제나 1.0이 되고, 그 값이 스펙 §6.2의 "실제 검수
-    비율"이자 README 배수의 분모라 조용히 틀리면 프로젝트의 핵심 주장이
-    무너진다(`triage/policy.py` 모듈 독스트링).
+    **수치를 여기서 세지 않는다.** `TriageOutcome`의 프로퍼티를 읽는다 -
+    `review.json`이 같은 수치를 내는데 두 곳에서 각자 세면 화면과 파일이
+    갈라지고, 갈라져도 프로그램은 정상 종료하고 파일도 정상이라 종료 코드로는
+    알 수 없다(review.json 설계 D8). 이 함수가 세던 넷(대상 수·검수 대상
+    수·hard fail 수·신호별 집계)이 전부 그쪽 프로퍼티로 옮겨졌고, **"`risks`는
+    `select_by_*`가 돌려준 전체 목록이다"**라는 계약도 함께 옮겨졌다
+    (`report/models.py`의 `TriageOutcome` 독스트링 · `triage/policy.py`
+    모듈 독스트링). 선별분만 담으면 `review_ratio`가 언제나 1.0이 되고, 그
+    값이 스펙 §6.2의 "실제 검수 비율"이자 README 배수의 분모다.
 
     **요청 예산과 실제 비율을 함께 낸다.** hard fail이 quota를 소진하므로
     (`policy.py:92`) 둘은 정기적으로 어긋나고, `ceil` 하나로도 어긋난다
     (26건에 10%면 실제 11.5%). 요청만 찍으면 사용자가 배수를 틀린 분모로
     재계산한다.
 
-    `excluded`가 0이면 괄호를 내지 않는다 - 실패가 없는 정상 실행에서
-    "(번역 실패 0건 제외)"는 없는 문제를 있는 것처럼 보이게 한다. 실패 ID
-    자체는 `_format_translate_summary`가 바로 위에서 나열했으므로 여기서
-    반복하지 않는다(설계 §7.1).
+    `excluded_failures`가 0이면 괄호를 내지 않는다 - 실패가 없는 정상
+    실행에서 "(번역 실패 0건 제외)"는 없는 문제를 있는 것처럼 보이게 한다.
+    실패 ID 자체는 `_format_translate_summary`가 바로 위에서 나열했으므로
+    여기서 반복하지 않는다(설계 §7.1).
     """
-    total = len(risks)
-    selected = sum(1 for r in risks if r.selected)
-    hard = sum(1 for r in risks if r.hard_fail)
+    total = outcome.triaged_segments
+    selected = outcome.selected_for_review
+    hard = outcome.hard_fail_count
+    # `reasons`가 0점 신호를 담지 않으므로 이 집계가 곧 "적발 건수"라는 근거는
+    # `signal_hits` 프로퍼티의 독스트링에 있다(`report/models.py`).
+    counts = outcome.signal_hits
 
     scope = f"  대상 세그먼트 {total}개"
-    if excluded:
-        scope += f" (번역 실패 {excluded}건 제외)"
-
-    # `reasons`는 0점 신호를 담지 않는다(`fuse.py:73` - "0점 신호를 사유에
-    # 넣으면 리포트가 '이것 때문에 뽑혔다'고 거짓말한다"). 따라서 이 집계가
-    # 곧 "적발 건수"다.
-    counts: Counter[str] = Counter()
-    for risk in risks:
-        counts.update(risk.reasons)
+    if outcome.excluded_failures:
+        scope += f" (번역 실패 {outcome.excluded_failures}건 제외)"
 
     lines = [
         # **프로파일 이름을 낸다.** 이것이 없으면 `profiles[target]`에 **다른 언어의**
@@ -1218,7 +1500,8 @@ def _format_triage_summary(
         # `profiles[target] = load_builtin("ko")` 변이로 실측했다: 키 집합만 검증되고
         # 값은 검증되지 않아 전 스위트가 통과한다. 사용자에게도 "어느 규격으로
         # 검사했는가"가 필요한 정보다(FR-5.1이 규격을 언어별로 정의한다).
-        f"[{target_lang}] 트리아지 ({policy_label}, 프로파일 {profile_name})",
+        f"[{outcome.target_lang}] 트리아지 "
+        f"({outcome.policy_label}, 프로파일 {outcome.profile_name})",
         scope,
         # **`_format_ratio`를 재사용한다 - `f"{x:.1%}"`로 직접 찍지 않는다.**
         # 직접 찍으면 세그먼트 2001개 중 검수 대상 1개(0.05%)가 `"0.0%"`가 되는데,
@@ -1231,14 +1514,16 @@ def _format_triage_summary(
         # (`percent < 0.05`가 0.05%를 뜻한다) `review_ratio`는 0~1 **비율**을 낸다.
         # 빼먹으면 실제 10%가 `"0.1%"`로 찍히고 프로그램은 정상 종료한다 -
         # 종료 코드로는 알 수 없는 조용한 100배 축소다.
-        f"  검수 대상 {selected}개 (실제 {_format_ratio(review_ratio(risks) * 100)})",
+        f"  검수 대상 {selected}개 (실제 {_format_ratio(outcome.review_ratio * 100)})",
         f"  hard fail {hard}개",
     ]
     if counts:
         lines.append("  신호별 적발")
-        # 정렬은 NFR-3(재현성)이다 - Counter의 순서는 삽입 순이라 세그먼트
-        # 순서가 바뀌면 화면이 달라지고 테스트가 흔들린다.
-        lines.extend(f"    {name} {count}개" for name, count in sorted(counts.items()))
+        # **정렬을 여기서 다시 하지 않는다.** `signal_hits`가 이미 정렬해
+        # 반환한다(NFR-3 재현성 - Counter의 순서는 삽입 순이라 세그먼트 순서가
+        # 바뀌면 화면이 달라지고 테스트가 흔들린다). 정렬이 두 곳에 있으면
+        # 한쪽만 고쳐지고, 그때 화면과 `review.json`의 신호 순서가 갈라진다.
+        lines.extend(f"    {name} {count}개" for name, count in counts.items())
     return lines
 
 
@@ -1252,8 +1537,8 @@ def _run_triage(
     budget_ratio: float | None,
     threshold: float | None,
     policy_label: str,
-) -> list[str]:
-    """번역 결과를 트리아지해 요약 줄을 낸다 (FR-6.1~6.3 · 설계 §4).
+) -> TriageOutcome:
+    """번역 결과를 트리아지해 결과 객체를 낸다 (FR-6.1~6.3 · 설계 §4).
 
     **번역 실패분을 입력에서 뺀다.** `TranslationResult`가 독스트링으로
     요구하는 계약이다 - 실패분은 `segments`에 `target_text=None`으로 남아
@@ -1267,17 +1552,55 @@ def _run_triage(
     전체를 넘긴다 - `spec.overlap`이 `BatchCollector`라 이웃을 봐야 판정되고,
     실패분을 수집 단계에서 빼면 그것과 겹치는 **성공한** 큐의 겹침까지 함께
     사라진다. 본문의 두 층 주석을 참고할 것.
+
+    **전량 실패에서도 객체를 낸다.** 요약 문자열을 조기 반환하면 `review.json`이
+    "왜 비었나"를 말할 수 없다 - `risks=()`와 `excluded_failures=N`이 그 사실을
+    파일에 남긴다. 화면 문구는 호출자가 만든다(설계 D8).
     """
     failed_ids = {f.segment_id for f in translated.failures}
     kept = [seg for seg in translated.segments if seg.id not in failed_ids]
+
+    # **정책 판정이 전량 실패 검사보다 앞에 온다.** `TriageOutcome`은 전량
+    # 실패에서도 `policy_kind`/`policy_value`를 요구한다 - `review.json`이
+    # "무슨 정책으로 돌렸는데 비었나"를 말해야 하기 때문이다. 순서를 되돌리면
+    # 전량 실패 경로가 두 값이 정해지지 않은 채 객체를 만들게 된다.
+    if budget_ratio is not None:
+        policy_kind, policy_value = "budget", budget_ratio
+    elif threshold is not None:
+        policy_kind, policy_value = "threshold", threshold
+    else:
+        # 호출자가 트리아지를 요청하지 않았는데 여기 도달한 것이다.
+        # 조용히 빈 결과를 내면 "트리아지가 돌았고 아무것도 안 걸렸다"로
+        # 읽혀 미배선을 정상으로 오인한다.
+        raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
+
+    def _outcome(risks: tuple[SegmentRisk, ...], segments: tuple[Segment, ...]) -> TriageOutcome:
+        """두 반환 지점이 같은 필드 조합을 쓰게 묶는다.
+
+        전량 실패 경로와 정상 경로가 각자 생성자를 부르면 필드 하나가 한쪽에서만
+        채워져도 타입 검사와 화면 테스트를 모두 통과한다 - `usage`가 정확히 그런
+        필드다(화면은 읽지 않고 `review.json`만 읽는다).
+        """
+        return TriageOutcome(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            profile_name=profile.name,
+            policy_label=policy_label,
+            policy_kind=policy_kind,
+            policy_value=policy_value,
+            risks=risks,
+            segments=segments,
+            excluded_failures=len(failed_ids),
+            usage=translated.usage,
+        )
+
     if not kept:
         # 전량 실패에서 `review_ratio`는 0.0을 내지만(빈 목록 가드,
         # `policy.py:194-195`) "검수 대상 0개"는 "볼 것이 없다"로 읽힌다.
-        # 실제로는 **판정 자체를 못 한 것**이므로 구별해 말한다.
-        return [
-            f"[{target_lang}] 트리아지: 번역된 세그먼트가 없어 건너뛴다 "
-            f"(전량 {len(failed_ids)}건 실패)"
-        ]
+        # 실제로는 **판정 자체를 못 한 것**이라 화면은 그것을 구별해 말해야
+        # 하는데, 그 문구는 이제 호출자가 만든다 - 여기서는 `risks=()`로
+        # 사실만 남긴다.
+        return _outcome((), ())
 
     ctx = SignalContext(
         profile=profile,
@@ -1304,23 +1627,20 @@ def _run_triage(
     # (`signals/base.py`) - KeyError 없이 전량을 돌 수 있다는 보장이다.
     risks = [fuse(seg.id, signals[seg.id]) for seg in kept]
 
-    if budget_ratio is not None:
-        scored = select_by_budget(risks, budget_ratio)
-    elif threshold is not None:
-        scored = select_by_threshold(risks, threshold)
+    # **위에서 정한 `policy_kind`로 분기한다 - `budget_ratio`를 다시 보지
+    # 않는다.** 두 번 판정하면 `review.json`이 "budget으로 돌렸다"고 적어 둔
+    # 채 실제로는 임계값 선별이 도는 조합이 생길 수 있고, 그때 파일은 문법상
+    # 정상이라 어떤 게이트에도 걸리지 않는다.
+    if policy_kind == "budget":
+        scored = select_by_budget(risks, policy_value)
     else:
-        # 호출자가 트리아지를 요청하지 않았는데 여기 도달한 것이다.
-        # 조용히 빈 목록을 내면 "트리아지가 돌았고 아무것도 안 걸렸다"로
-        # 읽혀 미배선을 정상으로 오인한다.
-        raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
+        scored = select_by_threshold(risks, policy_value)
 
-    return _format_triage_summary(
-        target_lang=target_lang,
-        policy_label=policy_label,
-        profile_name=profile.name,
-        risks=scored,
-        excluded=len(failed_ids),
-    )
+    # `scored`는 위험도 내림차순이고 `kept`는 트랙 원본 순서다. 둘의 순서가
+    # 다른 것이 정상이라 `TriageOutcome`은 id 집합으로만 검증한다
+    # (`report/models.py`) - 순서까지 고정하면 이 정상 입력이 거부돼 트리아지
+    # 경로가 통째로 죽는다.
+    return _outcome(tuple(scored), tuple(kept))
 
 
 def _parse_review_budget(raw: str) -> float:

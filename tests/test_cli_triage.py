@@ -6,16 +6,16 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-from tests.fakes.provider import EchoProvider, ScriptedProvider
+from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
-from conftest import normalize_rich_message
+from conftest import blank_at, normalize_rich_message
 from cuesift.cli import _format_triage_summary, _parse_review_budget, app
-from cuesift.segment import SegmentRisk
+from cuesift.report import TriageOutcome
+from cuesift.segment import Segment, SegmentRisk
 from cuesift.spec import SpecProfile, available_builtins, load_builtin
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
@@ -455,19 +455,6 @@ def test_dry_run에서도_프로파일_검증은_돈다(
     assert provider.calls == []
 
 
-def _blank_at(indices: set[int], count: int) -> ScriptedProvider:
-    """지정한 인덱스만 **공백 번역**으로 답하는 가짜.
-
-    공백 번역은 `engine.py:419`가 `reason="empty_translation"`으로 실패
-    처리한다 - 응답 형식은 올바르므로 개별 폴백이 개입하지 않아 호출이
-    배치 1회로 끝난다. `EchoProvider(drop_last=True)`는 이 목적에 쓸 수
-    없다: 배치가 개수 불일치로 실패하면 폴백이 개별 호출로 재시도하고
-    거기서는 `len(items) > 1`이 거짓이라 **전부 성공한다**.
-    """
-    items = [{"id": i, "text": "   " if i in indices else f"EN{i}"} for i in range(count)]
-    return ScriptedProvider([json.dumps({"translations": items}, ensure_ascii=False)])
-
-
 def _risk_free(source: str) -> str:
     """Tier 0 신호를 **하나도** 내지 않는 번역문을 만든다.
 
@@ -513,7 +500,7 @@ def test_번역_실패분은_트리아지에서_빠진다(tmp_path: Path, monkey
     (`remaining = max(0, 1-3) = 0`). 실측으로는 실패 20건에서 Recall@10%가
     0%까지 떨어진다(`TranslationResult` 독스트링).
     """
-    _patch_provider(monkeypatch, _blank_at({2, 5, 9}, 10))
+    _patch_provider(monkeypatch, blank_at({2, 5, 9}, 10))
 
     result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
 
@@ -533,7 +520,7 @@ def test_전량_실패면_건너뛴다고_말한다(tmp_path: Path, monkeypatch:
     것이 없다는 뜻으로 읽히지만 실제로는 **아무것도 판정하지 못한 것**이고
     처방이 정반대다(재검수가 아니라 재실행이다).
     """
-    _patch_provider(monkeypatch, _blank_at(set(range(10)), 10))
+    _patch_provider(monkeypatch, blank_at(set(range(10)), 10))
 
     result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
 
@@ -616,7 +603,7 @@ def test_실패분_제외가_배치_신호를_눈멀게_하지_않는다(
     **겹침 자체는 산출 파일에 그대로 남아 출고된다.** 요약만 침묵하고 exit는
     0이라 종료 코드로는 알 수 없다.
     """
-    _patch_provider(monkeypatch, _blank_at({0}, 2))
+    _patch_provider(monkeypatch, blank_at({0}, 2))
 
     result = runner.invoke(app, _args(tmp_path, "overlap.vtt", "--review-budget", "50%"))
 
@@ -720,6 +707,33 @@ def _risk(seg_id: str, *, selected: bool, reasons: list[str] | None = None) -> S
     )
 
 
+def _outcome(risks: list[SegmentRisk], *, policy_label: str, excluded: int = 0) -> TriageOutcome:
+    """`_format_triage_summary`가 받는 객체를 만든다.
+
+    포매터는 `risks`·`policy_label`·`profile_name`·`excluded_failures`만 읽으므로
+    나머지 필드는 이 테스트의 판정에 관여하지 않는다.
+    """
+    return TriageOutcome(
+        source_lang="ko",
+        target_lang="en",
+        profile_name="en",
+        policy_label=policy_label,
+        policy_kind="budget",
+        policy_value=0.1,
+        risks=tuple(risks),
+        # **`segments=()`를 쓸 수 없다.** 포매터는 이 필드를 읽지 않지만
+        # `__post_init__`이 `risks`와 같은 세그먼트 집합을 요구하므로
+        # (`report/models.py`) 빈 튜플은 `ValueError`로 거부된다.
+        # 대응하는 더미를 만든다 - 값은 판정에 관여하지 않는다.
+        segments=tuple(
+            Segment(id=r.segment_id, index=i, start_ms=0, end_ms=1000, source_text="원문")
+            for i, r in enumerate(risks)
+        ),
+        excluded_failures=excluded,
+        usage=None,
+    )
+
+
 def test_검수_대상이_있으면_0퍼센트로_보이지_않는다() -> None:
     """`_format_ratio` 재사용을 잠근다 (리뷰 축B 변이 C).
 
@@ -739,9 +753,7 @@ def test_검수_대상이_있으면_0퍼센트로_보이지_않는다() -> None:
     """
     risks = [_risk(f"{i:05d}", selected=(i == 0)) for i in range(2001)]
 
-    lines = _format_triage_summary(
-        target_lang="en", policy_label="예산 0.1%", profile_name="en", risks=risks, excluded=0
-    )
+    lines = _format_triage_summary(_outcome(risks, policy_label="예산 0.1%"))
 
     assert "  검수 대상 1개 (실제 <0.1%)" in lines
     # 이 단언이 실질이다 - 위 줄만 보면 문자열을 손으로 만든 구현도 통과한다.
@@ -764,9 +776,7 @@ def test_신호별_적발은_선별되지_않은_것도_센다() -> None:
         _risk("00001", selected=False, reasons=["struct.empty"]),
     ]
 
-    lines = _format_triage_summary(
-        target_lang="en", policy_label="예산 50%", profile_name="en", risks=risks, excluded=0
-    )
+    lines = _format_triage_summary(_outcome(risks, policy_label="예산 50%"))
 
     assert "    spec.violation 1개" in lines
     assert "    struct.empty 1개" in lines, "선별되지 않은 세그먼트의 신호가 집계에서 빠졌다"
