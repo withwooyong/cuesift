@@ -6,6 +6,7 @@ import pytest
 
 from cuesift.report import TriageOutcome
 from cuesift.segment import Segment, SegmentRisk, Signal
+from cuesift.translate.provider import TokenUsage
 
 
 def _risk(
@@ -43,12 +44,17 @@ def _outcome(
     risks: tuple[SegmentRisk, ...],
     excluded_failures: int = 0,
     segments: tuple[Segment, ...] | None = None,
+    cost_includes: tuple[str, ...] | None = None,
 ) -> TriageOutcome:
     """기본값은 `segments`를 `risks`에서 파생해 불변식을 만족시킨다.
 
     `segments`를 명시하면 그 파생을 우회한다 - 길이 불일치 방어를 실제로
     발동시키려면 헬퍼가 대신 맞춰 주지 않아야 한다.
+
+    **`cost_includes`도 `None`일 때는 아예 넘기지 않는다.** 헬퍼가 언제나
+    명시하면 `TriageOutcome`의 기본값이 한 번도 실행되지 않는다.
     """
+    extra: dict[str, object] = {} if cost_includes is None else {"cost_includes": cost_includes}
     return TriageOutcome(
         source_lang="ko",
         target_lang="en",
@@ -64,6 +70,7 @@ def _outcome(
         ),
         excluded_failures=excluded_failures,
         usage=None,
+        **extra,
     )
 
 
@@ -226,3 +233,45 @@ def test_excluded_failures가_음수면_거부한다() -> None:
     """
     with pytest.raises(ValueError, match="음수다"):
         _outcome(risks=(_risk("00000"),), excluded_failures=-5)
+
+
+def test_cost_includes는_기본값이_있다() -> None:
+    """기존 생성부 전부가 이 인자 없이 계속 동작해야 한다."""
+    outcome = _outcome(risks=(_risk("00000"),))
+
+    assert outcome.cost_includes == ("translation",)
+
+
+def test_등록되지_않은_계층은_생성_시점에_거부된다() -> None:
+    """**범위를 넓히면 규약도 함께 선언하게 만든다** (Task 3 리뷰 이월).
+
+    막지 않으면 `cost_includes=("translation", "tier2")` 같은 값이 그대로 파일에
+    실리고, 그 계층이 캐시 적중을 세는지 아닌지는 아무 데도 적히지 않은 채
+    소비자가 추측하게 된다. 여기서 던지면 계층을 늘린 사람이 `COST_BASIS`에
+    한 줄을 더할 수밖에 없다.
+    """
+    with pytest.raises(ValueError, match="tier2"):
+        _outcome(risks=(_risk("00000"),), cost_includes=("translation", "tier2"))
+
+
+def test_token_counts_reported가_계측_불능을_구별한다() -> None:
+    """§12 Q3 - 백엔드 능력이 균일하지 않으므로 **탐지**가 필요하다.
+
+    `calls > 0`인데 토큰 합이 0인 것은 "공짜로 돌았다"가 아니라 "백엔드가 usage를
+    안 냈다"이다. 이 구별이 없으면 `cost`가 0을 사실로 보고한다(NFR-2).
+    """
+    assert _outcome(risks=(_risk("00000"),)).token_counts_reported is True
+
+    silent = TriageOutcome(
+        source_lang="ko",
+        target_lang="en",
+        profile_name="en",
+        policy_label="예산 10%",
+        policy_kind="budget",
+        policy_value=0.1,
+        risks=(_risk("00000"),),
+        segments=(_segment("00000"),),
+        excluded_failures=0,
+        usage=TokenUsage(0, 0, calls=3),
+    )
+    assert silent.token_counts_reported is False

@@ -14,6 +14,34 @@ from cuesift.segment import Segment, SegmentRisk
 from cuesift.translate.provider import TokenUsage
 from cuesift.triage import review_ratio as _review_ratio
 
+# 집계 범위를 **결과 객체가 들고 다닌다** (설계 D8 · 이월 5번).
+#
+# 이 값이 상수로 고정돼 있으면 Tier 1을 켠 실행에서 `cost`가 번역 토큰만
+# 세면서 전체인 척하고, 그 사실을 소비자가 알 수단이 없다. 필드로 두면
+# **집계를 늘린 자리가 이 값도 함께 바꾸게 된다** - 갈라질 자리가 구조적으로
+# 없어진다(NFR-2 · FR-7.4).
+COST_INCLUDES_TRANSLATION: tuple[str, ...] = ("translation",)
+
+# 계층별 **계측 규약**. `includes`는 "무엇을 셌나"(범위)만 말하고 "어떻게 셌나"는
+# 말하지 않는데, 이 프로젝트에서 두 계층의 규약이 **서로 반대다**(Task 3 리뷰 이월).
+#
+# | 계층 | 캐시 적중을 | 근거 |
+# | --- | --- | --- |
+# | translation | 포함해서 센다 | `store/provider.py`가 저장된 usage를 그대로 낸다 |
+# | tier1 | 제외하고 센다 | `CountingProvider`가 캐시 **안쪽**에 놓인다 (D7) |
+#
+# 양쪽 다 의도된 것이라 일치시킬 수 없다. 번역 쪽에서 캐시 적중을 0으로 만들면
+# `calls`가 0이 되어 "호출당 토큰"을 영영 계산할 수 없고(설계 §3.5.1), Tier 1 쪽을
+# 캐시 바깥으로 옮기면 *요청한* 호출을 세어 `cost`가 청구서와 어긋난다(설계 D7).
+#
+# 둘이 하나의 `prompt_tokens`로 합쳐지므로 **범위만 밝히면 그 숫자가 청구서와 왜
+# 다른지 알 방법이 없다.** 여기에 없는 계층을 `cost_includes`에 넣으면 생성 시점에
+# 거부된다 - 그래야 범위를 넓힌 사람이 규약도 함께 선언한다.
+COST_BASIS: dict[str, str] = {
+    "translation": "cached-included",
+    "tier1": "sent-only",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class TriageOutcome:
@@ -43,6 +71,7 @@ class TriageOutcome:
     segments: tuple[Segment, ...]
     excluded_failures: int
     usage: TokenUsage | None
+    cost_includes: tuple[str, ...] = COST_INCLUDES_TRANSLATION
 
     def __post_init__(self) -> None:
         # 형제 모델 넷(`Span`·`Segment`·`Signal`·`SegmentRisk`)과 같은 자리의 방어다.
@@ -78,6 +107,18 @@ class TriageOutcome:
         # 0이라 어떤 게이트에도 걸리지 않는다.
         if self.excluded_failures < 0:
             raise ValueError(f"excluded_failures({self.excluded_failures})가 음수다")
+        # **범위를 넓히려면 규약도 함께 선언해야 한다.** 이 검사가 없으면
+        # `cost_includes=("translation", "tier2")`가 그대로 파일에 실리고, 그
+        # 계층이 캐시 적중을 세는지 아닌지는 아무 데도 적히지 않은 채 소비자가
+        # 추측한다 - `cost`의 세 수치는 계층별로 나뉘어 있지 않아 파일 안에서
+        # 되짚을 수도 없다. 여기서 던지면 계층을 늘린 사람이 `COST_BASIS`에
+        # 한 줄을 더할 수밖에 없다.
+        unknown = [layer for layer in self.cost_includes if layer not in COST_BASIS]
+        if unknown:
+            raise ValueError(
+                f"cost_includes에 계측 규약이 없는 계층이 있다: {unknown} - "
+                f"COST_BASIS에 등록하라(알려진 계층: {sorted(COST_BASIS)})"
+            )
 
     @property
     def triaged_segments(self) -> int:
@@ -124,6 +165,39 @@ class TriageOutcome:
         for risk in self.risks:
             counts.update(risk.reasons)
         return dict(sorted(counts.items()))
+
+    @property
+    def cost_basis(self) -> dict[str, str]:
+        """`cost_includes`의 각 계층이 **어떻게** 세어졌나. 순서는 `cost_includes`를 따른다.
+
+        **손으로 쓰지 않고 파생시킨다.** 범위와 규약을 따로 실으면 한쪽만
+        고쳐져 갈라지는데, 갈라져도 파일은 정상이고 종료 코드도 0이다.
+        `__post_init__`이 미등록 계층을 막으므로 `KeyError`는 도달 불가다.
+        """
+        return {layer: COST_BASIS[layer] for layer in self.cost_includes}
+
+    @property
+    def token_counts_reported(self) -> bool:
+        """`cost`의 토큰 수치를 믿을 수 있나 (요구사항정의서 §12 Q3 · NFR-2).
+
+        OpenAI 호환 엔드포인트라도 **능력은 균일하지 않다.** `_extract_usage`
+        (`translate/openai_compat.py`)는 `usage`가 없거나 키 이름이 다르거나
+        값이 문자열인 응답을 전부 `(0, 0)`으로 떨어뜨린다 - 실측으로
+        `{"usage": {"total_tokens": 99}}`도 `(0, 0, calls=1)`이 된다. 이 판별이
+        없으면 그 실행의 `cost`가 **"토큰 0개를 썼다"** 는 사실 주장으로 읽힌다.
+
+        **`calls == 0`은 참인 0이다.** 전량 캐시 적중이나 dry-run이 여기 걸리면
+        정상 실행 대부분이 "비용 불명"으로 찍혀 이 신호가 무시된다 - 무시되는
+        경고는 없는 경고와 같다.
+
+        **부분 열화는 잡지 못한다.** 번역 계층은 토큰을 내고 Tier 1만 못 내는
+        실행은 합이 0이 아니라 `True`가 된다. `usage`가 계층별로 나뉘어 있지
+        않기 때문이고, 여기서 더 조이려면 `TriageOutcome`이 계층별 usage를
+        따로 실어야 한다 - 그것은 스키마 변경이라 §8.4를 먼저 고쳐야 한다.
+        """
+        if self.usage is None or self.usage.calls == 0:
+            return True
+        return self.usage.prompt_tokens + self.usage.completion_tokens > 0
 
     @property
     def review_ratio(self) -> float:
