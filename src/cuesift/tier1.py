@@ -283,8 +283,8 @@ def _diagnose_empty_candidates(
     candidate_ids: set[str],
     max_ratio: float,
     *,
-    total: int = 0,
-    excluded_count: int = 0,
+    total: int,
+    excluded_count: int,
 ) -> str:
     """Tier 1 후보가 0건인 이유를 구분한다 (Task 4 리뷰 조건).
 
@@ -293,10 +293,12 @@ def _diagnose_empty_candidates(
     "후보가 전부 번역 실패분"이 전부 같은 무음 침묵으로 보여 무음
     열화(Q3)가 된다.
 
-    `total`·`excluded_count`가 기본값 0인 것은 이 함수를 직접 부르는 단위
-    테스트를 위해서다 - 둘 다 0이면 "전량 제외" 분기가 발동하지 않아
-    옛 거동 그대로다. **호출부는 반드시 둘을 넘겨야 한다**; 안 넘기면
-    번역 전량 실패가 다시 "입력 자체를 봐야 한다"로 오진된다. `gray_zone()`을
+    `total`·`excluded_count`에 기본값이 없는 것은 위 `warn`과 같은 이유다
+    (Ruling P12) - 기본값을 주면 넘기지 않은 호출부도 멀쩡한 문자열을
+    돌려받아 **반환 형태가 같은 채로** 번역 전량 실패가 "입력 자체를 봐야
+    한다"로 오진된다. 실측 - 호출부의 두 인자를 지우면 이 파일의 테스트
+    8건이 `TypeError`로 죽는다. 무음 열화를 시끄러운 실패로 바꾸는 것이
+    기본값을 빼는 목적이다. `gray_zone()`을
     `select_tier1_candidates`와 공유해 회색지대 정의가 두 곳에서 갈라지지
     않게 한다(2라운드 리뷰 C3) - 복제했다면 그 함수가 제외 조건을 하나
     더 넣을 때 이 진단이 조용히 틀린 원인을 말하게 됐을 것이다.

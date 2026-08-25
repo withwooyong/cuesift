@@ -472,23 +472,29 @@ def test_diagnose_empty_candidates가_여섯_사유를_구분한다():
     picked = SegmentRisk(segment_id="p", signals=[], risk_score=0.9, hard_fail=False, selected=True)
     gray = SegmentRisk(segment_id="g", signals=[], risk_score=0.1, hard_fail=False, selected=False)
 
-    # ① 빈 입력 - "전부 hard_fail이거나 선별됨"으로 오진하면(2라운드 리뷰
-    # C2) 파서가 자막을 하나도 못 읽은 사고가 "전량 hard_fail"로 보인다.
-    assert "0건" in _diagnose_empty_candidates([], set(), 0.5)
+    # ① 빈 입력(total=0 - 파서가 하나도 못 읽었다) - "전부 hard_fail이거나
+    # 선별됨"으로 오진하면(2라운드 리뷰 C2) 그 사고가 "전량 hard_fail"로 보인다.
+    assert "0건" in _diagnose_empty_candidates([], set(), 0.5, total=0, excluded_count=0)
 
     # ② max_ratio=0.0 - candidate_ids·scored 내용과 무관하게 최우선이다.
-    assert "껐다" in _diagnose_empty_candidates([gray], set(), 0.0)
+    assert "껐다" in _diagnose_empty_candidates([gray], set(), 0.0, total=1, excluded_count=0)
 
     # ③ candidate_ids가 비지 않았는데 후보가 0건 -> target_text 필터가
     # 전부 걸렀다.
-    assert "번역 실패분" in _diagnose_empty_candidates([gray], {"g"}, 0.2)
+    assert "번역 실패분" in _diagnose_empty_candidates(
+        [gray], {"g"}, 0.2, total=1, excluded_count=0
+    )
 
     # ④ candidate_ids가 비었고 회색지대(비-hard_fail·비-selected)가 남아
     # 있다 -> 상한이 내림으로 0이 됐다.
-    assert "상한" in _diagnose_empty_candidates([hard, gray], set(), 0.01)
+    assert "상한" in _diagnose_empty_candidates(
+        [hard, gray], set(), 0.01, total=2, excluded_count=0
+    )
 
     # ⑤ candidate_ids가 비었고 회색지대도 비었다(전부 hard_fail 또는 selected).
-    assert "회색지대" in _diagnose_empty_candidates([hard, picked], set(), 0.5)
+    assert "회색지대" in _diagnose_empty_candidates(
+        [hard, picked], set(), 0.5, total=2, excluded_count=0
+    )
 
     # ⑥ 입력은 있는데 전량이 excluded_ids로 빠졌다 - ①과 **원인이 정반대**다.
     # ①은 파서가 자막을 못 읽은 것이고 ⑥은 번역이 전량 실패한 것이라,
@@ -496,9 +502,6 @@ def test_diagnose_empty_candidates가_여섯_사유를_구분한다():
     전량제외 = _diagnose_empty_candidates([], set(), 0.5, total=5, excluded_count=5)
     assert "번역이 전량 실패" in 전량제외
     assert "입력 자체" not in 전량제외
-
-    # 기본값(둘 다 0)이면 옛 거동 그대로다 - ①이 그 경로를 이미 덮는다.
-    assert "0건" in _diagnose_empty_candidates([], set(), 0.5, total=0, excluded_count=0)
 
 
 # --- 게이트 3개 (3라운드 재리뷰 A1·A2·A3) ---
