@@ -484,28 +484,20 @@ def test_정리_실패가_원래_예외를_가리지_않는다(
         store(tmp_path, _request(), _completion())
 
 
-def test_attempt가_None이면_거부한다():
-    """`None`은 키 생성의 falsy 분기를 타 `attempt=0`과 같은 키가 된다."""
+def test_attempt가_None이면_거부한다() -> None:
+    """`None`은 키 생성의 falsy 분기를 타 `attempt=0`과 같은 키가 된다.
+
+    키가 뭉치면 자가일관성의 N회 호출이 한 캐시 항목을 공유해 샘플이 1개가
+    되고, `SelfConsistency`의 `len(samples) < 2 -> None` 가드가 우회되어
+    "판정 불가"가 아니라 **점수 0.0(안전)** 이 나온다 (설계 D11).
+
+    키가 실제로 갈리는지는 `test_attempt가_다르면_키가_갈린다`가 본다 -
+    여기서 다시 단언하지 않는다.
+    """
     with pytest.raises(ValueError, match="attempt는 int여야 한다"):
         CacheRequest(identity="m", temperature=0.0, max_tokens=None, messages=(), attempt=None)
 
 
-def test_attempt가_음수면_거부한다():
+def test_attempt가_음수면_거부한다() -> None:
     with pytest.raises(ValueError, match="attempt는 0 이상"):
         CacheRequest(identity="m", temperature=0.0, max_tokens=None, messages=(), attempt=-1)
-
-
-def test_attempt가_다르면_키가_갈라진다():
-    """**자가일관성의 생사가 여기 걸린다.**
-
-    키가 뭉치면 N회 호출이 한 캐시 항목을 공유해 샘플이 1개가 되고,
-    `SelfConsistency`의 `len(samples) < 2 -> None` 가드가 우회되어
-    "판정 불가"가 아니라 **점수 0.0(안전)** 이 나온다.
-    """
-
-    def req(attempt: int) -> CacheRequest:
-        return CacheRequest(
-            identity="m", temperature=0.0, max_tokens=None, messages=(), attempt=attempt
-        )
-
-    assert len({req(i).key for i in range(3)}) == 3

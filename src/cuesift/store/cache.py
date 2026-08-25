@@ -86,15 +86,23 @@ class CacheRequest:
         그 가드가 보는 것은 "샘플이 몇 개인가"이지 "몇 번 불렀나"가 아니다.
         결과는 "판정 불가"가 아니라 **점수 0.0**, 곧 "안전"이다.
 
-        | 값 | 호출 수 | score | 무엇으로 보이나 |
+        아래 수치는 WP8b 착수 시점(2026-08-25)에 자가일관성 신호를 실제로
+        돌려 얻은 것이다. **자가일관성 구현이 바뀌면 score는 달라진다** -
+        고정 계약이 아니라 열화의 모양을 보이는 예시로 읽어라. 계약인 것은
+        "호출 수"뿐이다.
+
+        | 값 | 호출 수 | score(당시 실측) | 무엇으로 보이나 |
         | --- | --- | --- | --- |
         | `attempt=i` (정상) | 3회 | 0.0286 | 판정됨 |
         | `attempt=None` | 1회 | 0.0000 | **"판정했고 안전"** |
 
-        bool은 int의 서브클래스라 `attempt=True`가 이 검사를 통과하지만,
-        `key`에서 `attempt=1`과 **같은 문자열**을 만들므로 뭉침이 일어나지
-        않는다 - 별도로 막지 않는다(`Tier1Context.samples`가 bool을 `< 2`로
-        걸러 내는 것과 같은 판단이다).
+        bool은 int의 서브클래스라 `attempt=True`가 이 검사를 통과한다.
+        그래도 **뭉침은 일어나지 않는다** - 아래 `key`의 `f"attempt={...}"`가
+        빈 포맷 스펙이라 `bool.__str__`을 타 `"attempt=True"`라는 별개
+        문자열을 만들고, 그래서 `key(True) != key(1)`이다(실측). 위험한
+        방향은 키가 뭉치는 쪽이고 갈리는 쪽은 최악이라야 캐시 미스 하나다.
+        `attempt=False`는 falsy라 `key(False) == key(0)`인데(실측) 의미가
+        같으므로 이 역시 무해하다. 별도로 막지 않는다.
         """
         if not isinstance(self.attempt, int):
             raise ValueError(f"attempt는 int여야 한다 (받은 타입: {type(self.attempt).__name__})")
