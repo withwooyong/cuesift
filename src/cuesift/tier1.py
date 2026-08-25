@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
 
 from cuesift.risk.fuse import fuse
@@ -31,6 +31,7 @@ def triage_with_tier1(
     temperature: float = 1.0,
     cache_dir: Path | None = None,
     identity: str | None = None,
+    excluded_ids: Collection[str] = (),
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -42,6 +43,27 @@ def triage_with_tier1(
     기본값이라 **출처가 있기 때문이다**(§11 R8 - 출처 없는 수치를 기본값으로
     넣지 않는다). 0.0이면 재번역이 전부 같아 신호가 죽는데, 그 방어는
     `Tier1Context`가 한다.
+
+    ## `excluded_ids` - 수집과 융합의 입력이 다르다 (설계 D5)
+
+    **수집(`collect_all`)은 전량을 본다. 융합(`fuse`)은 `excluded_ids`를 뺀
+    것만 본다.** 둘은 서로 다른 층의 요구다.
+
+    | 단계 | 입력 | 이 입력이 아니면 무엇이 깨지나 |
+    | --- | --- | --- |
+    | 수집 | 전량 | 이웃을 봐야 판정되는 배치 신호가 이웃을 못 본다 |
+    | 융합·선별 | 뺀 것 | 실패분의 hard fail이 예산 quota를 먹는다 |
+
+    **융합에 넣으면** 실패분의 hard fail이 예산을 우회해 quota를 소진하고
+    진짜 오류가 큐에서 밀린다 - 실측(트리아지 CLI 설계 D12) 200큐·진짜
+    오류 20건·예산 10%에서 실패 20건이면 **Recall@10%가 0%** 가 된다.
+
+    **수집에서 빼면** `spec.overlap`이 실패분과 겹친 **성공한** 큐의
+    겹침까지 놓친다 - 실측으로 같은 2큐 파일에서 실패 1건이면 미출력이
+    됐다. **요약도 종료 코드도 침묵하는** 조용한 실패라 더 나쁘다.
+
+    **기본값이 빈 튜플이라 이 인자를 주지 않는 호출부는 거동이 완전히
+    불변이다** - 그 성질이 이 인자를 하위 호환으로 만든다.
 
     ## `warn`은 기본값이 없다 (Ruling P12)
 
@@ -139,8 +161,16 @@ def triage_with_tier1(
     # ① Tier 0 - 비용 0, 전량
     tier0 = collect_all(segments, ctx)
 
-    # ② 1차 융합
-    risks = [fuse(seg.id, tier0[seg.id]) for seg in segments]
+    # **`set`으로 정규화한다.** 호출자가 list를 넘기면 아래 `in`이 O(n)이 되어
+    # 전체가 O(n^2)가 된다 - 1000큐 트랙에서 실제로 느려진다. 인자 타입을
+    # `Collection`으로 넓게 받고 여기서 좁히는 것이 호출부에 set을 강요하지
+    # 않으면서 성능을 지키는 방법이다.
+    excluded = set(excluded_ids)
+    kept = [seg for seg in segments if seg.id not in excluded]
+
+    # ② 1차 융합 - **`kept`만** 본다(설계 D5). `segments`를 그대로 두면
+    # 번역 실패분이 hard fail로 예산 quota를 먹어 진짜 오류가 큐에서 밀린다.
+    risks = [fuse(seg.id, tier0[seg.id]) for seg in kept]
 
     # ③ 예산 적용 - ④가 "이미 큐에 든 것"을 알아야 한다
     scored = select_by_budget(risks, budget_ratio)
@@ -176,7 +206,11 @@ def triage_with_tier1(
     # 이름은 "re-scored"다 - 두 신호 출처를 **더한다**(신호 소실 없음)는
     # 것이 노이즈-오 융합의 전제다 - 한쪽만 남기면 이미 확보한 Tier 0
     # 신호(예: struct.number_missing)가 조용히 사라진다.
-    rescored = [fuse(seg.id, tier0[seg.id] + tier1.get(seg.id, [])) for seg in segments]
+    #
+    # **여기도 `kept`다.** ②만 고치고 여기를 두면 Tier 1이 실제로 도는
+    # 경로에서만 실패분이 되살아난다 - 후보 0건일 때는 조기 반환이라
+    # 드러나지 않아, Tier 1을 켰을 때와 안 켰을 때의 분모가 갈라진다.
+    rescored = [fuse(seg.id, tier0[seg.id] + tier1.get(seg.id, [])) for seg in kept]
 
     # ⑦ 예산 재적용
     return select_by_budget(rescored, budget_ratio)

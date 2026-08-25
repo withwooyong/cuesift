@@ -61,6 +61,28 @@ def _plain_segments(n: int) -> list[Segment]:
     ]
 
 
+def _겹치는_두_세그먼트() -> list[Segment]:
+    """시간이 겹쳐 `spec.overlap`(배치 신호)이 발화하는 두 개.
+
+    `check_overlaps`는 겹침을 **뒤에 오는 세그먼트**에 기록하므로
+    (`spec/check.py`의 "겹침은 뒤에 오는 세그먼트에 기록한다"), id="1"에만
+    신호가 붙는다. 앞의 id="0"을 수집 입력에서 빼면 id="1"의 겹침 신호가
+    같이 사라진다 - `excluded_ids`가 수집까지 좁히면 안 되는 이유다(D5).
+
+    `end_ms`가 `start_ms`보다 커야 하고 겹침 구간이 0보다 커야 한다.
+    1000ms 겹침이 아니라 경계가 맞닿기만 하면(`end == start`)
+    `check_overlaps`가 "겹침이 아니다"로 넘겨 이 픽스처가 죽는다.
+    """
+    return [
+        Segment(
+            id="0", index=0, start_ms=0, end_ms=2000, source_text="원문0", target_text="Target 0"
+        ),
+        Segment(
+            id="1", index=1, start_ms=1000, end_ms=3000, source_text="원문1", target_text="Target 1"
+        ),
+    ]
+
+
 def test_tier1은_후보에만_불린다(signal_ctx):
     """**비용 통제의 핵심 게이트다** (FR-4.3).
 
@@ -560,3 +582,118 @@ def test_공백뿐인_번역은_후보에서_빠져_호출을_아낀다(signal_c
     )
 
     assert len(provider.calls) == 24
+
+
+def test_excluded_ids는_융합에서_빠진다(signal_ctx):
+    """번역 실패분이 hard fail로 예산 quota를 먹으면 진짜 오류가 큐에서 밀린다.
+
+    실측(트리아지 CLI 설계 D12): 200큐·진짜 오류 20건·예산 10%에서
+    실패 20건이면 **Recall@10%가 0%** 가 된다.
+
+    `max_ratio=0.0`인 것은 이 테스트가 융합·선별 입력만 본다는 뜻이다 -
+    Tier 1을 실제로 태우면 LLM 호출이 섞여 무엇이 결과를 바꿨는지 흐려진다.
+    """
+    segments = _plain_segments(10)
+    빠질_id = segments[0].id
+
+    전체 = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.5,
+        provider=EchoProvider(),
+        max_ratio=0.0,
+        warn=_ignore,
+    )
+    일부 = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.5,
+        provider=EchoProvider(),
+        max_ratio=0.0,
+        warn=_ignore,
+        excluded_ids={빠질_id},
+    )
+
+    assert 빠질_id in {r.segment_id for r in 전체}
+    assert 빠질_id not in {r.segment_id for r in 일부}
+    assert len(일부) == len(전체) - 1
+
+
+def test_excluded_ids여도_수집은_전량을_본다(signal_ctx):
+    """**이것이 반대 방향의 게이트다.**
+
+    수집에서 실패분을 빼면 그와 겹치는 **성공한** 큐의 겹침까지 사라진다
+    (실측: 같은 2큐 파일에서 실패 1건이면 `spec.overlap` 미출력).
+    요약도 종료 코드도 침묵하는 조용한 실패다.
+    """
+    # 이웃을 봐야 판정되는 배치 신호(`spec.overlap`)가 잡히도록 시간이 겹치는
+    # 두 세그먼트를 만든다. 앞의 것을 excluded_ids로 빼도, 뒤의 것에서
+    # 겹침 신호가 **여전히** 나와야 한다.
+    a, b = _겹치는_두_세그먼트()
+
+    결과 = triage_with_tier1(
+        [a, b],
+        signal_ctx,
+        budget_ratio=1.0,
+        provider=EchoProvider(),
+        max_ratio=0.0,
+        warn=_ignore,
+        excluded_ids={a.id},
+    )
+
+    (남은,) = 결과
+    assert 남은.segment_id == b.id
+    assert any("overlap" in name for name in 남은.reasons)
+
+
+def test_excluded_ids를_주지_않으면_기존과_같다(signal_ctx):
+    """기본값이 빈 튜플이라 기존 호출부 전부가 거동 불변이어야 한다."""
+    segments = _plain_segments(10)
+    공통 = {"budget_ratio": 0.5, "max_ratio": 0.0, "warn": _ignore}
+
+    없이 = triage_with_tier1(segments, signal_ctx, provider=EchoProvider(), **공통)
+    빈값 = triage_with_tier1(segments, signal_ctx, provider=EchoProvider(), excluded_ids=(), **공통)
+
+    assert [r.segment_id for r in 없이] == [r.segment_id for r in 빈값]
+
+
+def test_Tier1이_실제로_도는_경로에서도_excluded_ids가_유지된다(signal_ctx):
+    """⑥ 재융합의 게이트다 (G12 - 변이로 확인함).
+
+    **위의 세 테스트는 전부 `max_ratio=0.0`이라 후보 0건 조기 반환을 타서
+    ⑥에 도달하지 않는다.** 실측(변이): ⑥의 `kept`를 `segments`로 되돌려도
+    `tests/test_tier1.py` 18건이 전부 통과했다 - 게이트가 없었다는 뜻이다.
+    ②만 고치고 ⑥을 두면 Tier 1을 **켰을 때만** 실패분이 되살아나 켰을
+    때와 안 켰을 때의 분모(`review_ratio`)가 갈라진다.
+
+    `max_ratio=0.2`가 필수다. 0.0이면 조기 반환이라 ⑥을 지나지 않아
+    이 테스트가 무엇도 잡지 못한다 - `provider.calls`를 단언하는 것은
+    "정말 ⑥까지 갔는가"를 확인하기 위해서다.
+    """
+    segments = _plain_segments(10)
+    provider = _VaryingProvider()
+    messages: list[str] = []
+
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        warn=messages.append,
+        excluded_ids={"9"},
+    )
+
+    # kept 9건 -> cap=floor(9×0.2)=1 -> 후보 1건 × samples=3 = 3회.
+    # 0회면 조기 반환을 탄 것이라 ⑥을 검증하지 못한다.
+    assert len(provider.calls) == 3
+    assert messages == []
+    assert any("llm.self_consistency" in [s.name for s in r.signals] for r in risks)
+
+    # ⑥이 `segments`를 쓰면 여기서 "9"가 되살아나 10건이 된다.
+    # **순서로 단언하지 않는다** - `select_by_budget`이 위험도순으로 재정렬해
+    # 입력 순서가 보존되지 않는다(실측: id="1"이 맨 앞).
+    ids = [r.segment_id for r in risks]
+    assert len(ids) == 9
+    assert "9" not in ids
