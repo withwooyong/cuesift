@@ -253,7 +253,15 @@ cost_includes = ("translation", "tier1")
 **로컬 venv는 3.14이고 CI는 3.11·3.12다.** 로컬 통과가 CI 통과를 보장하지 않는다 —
 전례가 있어 `main`에 직접 푸시하지 않고 PR을 경유한다.
 
-**이 브랜치는 아직 CI를 한 번도 안 거쳤다.** 푸시가 첫 실행이다.
+**이 브랜치는 아직 CI를 한 번도 안 거쳤고, 푸시해도 안 돈다.**
+`.github/workflows/ci.yml`의 트리거는 `push: branches: [main]` · `pull_request:` ·
+`workflow_dispatch:`다 — **기능 브랜치 푸시는 어느 것도 건드리지 않는다.**
+CI를 돌리려면 PR을 열거나(`gh pr create --base main --draft`) `workflow_dispatch`로
+이 ref를 지정해야 한다.
+
+**이것이 "푸시했으니 검증됐다"는 착각의 자리다.** 로컬은 3.14이고 CI는 3.11·3.12라
+로컬 통과는 서로 다른 버전에서의 통과를 보장하지 않는다. 이 저장소가 PR을 경유하는
+이유가 정확히 이것인데(CLAUDE.md "PR 절차"), **PR을 안 열면 그 게이트가 아예 없다.**
 
 ### 사고 기록 — 커밋 전에 게이트를 안 돌렸다
 
