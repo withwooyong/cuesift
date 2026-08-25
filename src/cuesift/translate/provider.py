@@ -207,6 +207,13 @@ class CountingProvider:
     `SelfConsistency`가 `FatalProviderError`를 일부러 다시 던지는 설계
     (`signals/llm.py`)가 무력해져, 401이 난 실행이 **"Tier 1이 돌았고
     아무것도 안 걸렸다"** 로 보인다.
+
+    **`usage.calls`는 "네트워크 요청 수"가 아니라 "성공 응답 수"다.** 예외는
+    누적 줄 위에서 빠져나가므로 실패한 시도는 한 건도 안 센다 - 재시도 경로
+    (`engine._call_with_retry`)가 세 번 시도해 셋 다 죽으면 `usage`는
+    `(0, 0, 0)` 그대로다. 청구 관점에서는 이쪽이 맞지만 **`CachingProvider.misses`는
+    실패해도 증가**하므로 두 수치를 나란히 놓으면 어긋난다 - 그 차이가 곧
+    실패한 시도 수이지 계측 버그가 아니다.
     """
 
     inner: Provider
@@ -214,11 +221,45 @@ class CountingProvider:
     # 동결하면 첫 `complete`에서 `FrozenInstanceError`가 난다.
     usage: TokenUsage = field(default_factory=TokenUsage)
 
+    # --- 위임 표면 셋 ---
+    # `__getattr__` 통과가 아니라 **명시적 위임**을 골랐다. `__getattr__`은
+    # `copy`/`pickle`이 인스턴스에 직접 묻는 `__deepcopy__`·`__getstate__`
+    # 같은 탐침까지 `inner`로 넘겨 엉뚱한 객체의 답을 돌려주고, 오타
+    # (`counting.usaage`)마저 `inner`에서 해결돼 `AttributeError`가 사라진다.
+    # 명시적 위임이 낡을 위험(참조 구현에 다섯 번째 표면이 생기는 것)은
+    # `test_참조_구현의_공개_표면을_빠짐없이_덮는다`가 대신 잡는다.
+
     @property
     def name(self) -> str:
-        # 래퍼 이름이 새면 `identity` 조립이 달라져 **캐시가 통째로 갈라진다** -
-        # 이전 실행의 캐시를 한 건도 못 읽는다.
+        # **캐시가 갈라지는 것을 막는 장치가 아니다.** identity는
+        # `OpenAICompatibleProvider.cache_identity`가 자기 `self.name`으로
+        # 조립하므로 래퍼를 씌워도 그대로다. 여기서 위임하지 않으면 깨지는 것은
+        # `cli.py`의 경고 두 줄("...이 cache_identity를 제공하지 않아 캐시를 끈다")로,
+        # 사용자가 자기가 지정한 프로바이더가 아니라 래퍼 이름을 보게 된다.
         return self.inner.name
+
+    @property
+    def cache_identity(self) -> str | None:
+        # **위임하지 않으면 캐시가 실행 전체에서 조용히 꺼진다** (NFR-3).
+        # `cli._cache_identity`가 `getattr(provider, "cache_identity", None)`으로
+        # 읽어 예외 없이 `None`으로 강등되고, 캐시가 꺼지면 같은 후보에 매번
+        # 새 호출이 나가 **Tier 1 비용이 실제보다 부풀어 오른다** - 토큰을
+        # 정확히 세겠다는 이 클래스의 목적과 정반대 실패다.
+        #
+        # `getattr` 기본값이 `None`인 것은 이 속성이 `Provider` 프로토콜에
+        # **없기** 때문이다. 안 가진 프로바이더가 실재하고(`tests/fakes`의
+        # `EchoProvider`), 그때 `None`으로 떨어져 캐시만 꺼지는 것이 정상
+        # 동작이다 - `AttributeError`로 바꾸면 그 프로바이더가 실행 불가가 된다.
+        return getattr(self.inner, "cache_identity", None)
+
+    def close(self) -> None:
+        # 위임하지 않으면 `cli.py`의 dry-run 경로가 `getattr(provider, "close", None)`
+        # 에서 `None`을 받아 **연결 풀을 정리하지 않고 끝난다.**
+        # 안쪽이 `close`를 안 가진 경우(테스트 가짜가 대부분)는 할 일이 없는
+        # 것이지 오류가 아니다 - 여기서 `AttributeError`를 내면 dry-run이 죽는다.
+        close = getattr(self.inner, "close", None)
+        if close is not None:
+            close()
 
     def complete(
         self,

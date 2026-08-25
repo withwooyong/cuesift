@@ -9,10 +9,14 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import get_args
 
 import pytest
 
+from cuesift.cli import _cache_identity
+from cuesift.store.provider import CachingProvider
+from cuesift.translate.openai_compat import OpenAICompatibleProvider
 from cuesift.translate.provider import (
     ChatMessage,
     Completion,
@@ -232,5 +236,118 @@ def test_예외를_삼키지_않는다() -> None:
 
 
 def test_name을_위임한다() -> None:
-    """`identity` 조립이 프로바이더 이름을 읽으므로 래퍼 이름이 새면 캐시가 갈라진다."""
+    """래퍼 이름이 새면 `cli.py`의 경고가 **사용자가 지정하지 않은 이름**을 찍는다.
+
+    캐시가 갈라지는 것과는 무관하다 - identity는
+    `OpenAICompatibleProvider.cache_identity`가 자기 `self.name`으로 조립하므로
+    래퍼를 씌워도 그대로다. `provider.name` 소비처는 경고 문구 두 곳뿐이다.
+    """
     assert CountingProvider(_고정프로바이더(TokenUsage())).name == "fake"
+
+
+# --- CountingProvider: 위임 표면 (리뷰 1축·2축 공통 지적) ---
+
+
+class _풀표면프로바이더:
+    """`OpenAICompatibleProvider`처럼 공개 표면 넷을 전부 가진 가짜.
+
+    `_고정프로바이더`는 반대쪽 극이다 - `cache_identity`도 `close`도 없는
+    테스트 더블(`tests/fakes/provider.py`의 `EchoProvider`가 그렇다)이라
+    `getattr(..., None)`이 `None`을 받는 것이 **정상 동작**인 경우를 맡는다.
+    """
+
+    name = "full"
+
+    def __init__(self) -> None:
+        self.closed = 0
+
+    @property
+    def cache_identity(self) -> str:
+        return "full|http://h/v1|m"
+
+    def complete(self, messages, *, temperature, max_tokens) -> Completion:
+        usage = TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1)
+        return Completion(text="ok", usage=usage)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_cache_identity를_위임한다() -> None:
+    """위임하지 않으면 `cli._cache_identity`가 `None`을 받아 **캐시가 실행 전체에서 꺼진다.**"""
+    assert CountingProvider(_풀표면프로바이더()).cache_identity == "full|http://h/v1|m"
+
+
+def test_cli의_신원_탐지가_래퍼를_통과한다() -> None:
+    """회귀 게이트 (리뷰 1번). 래퍼를 씌워도 신원이 **글자 하나까지 같아야** 한다.
+
+    달라지면 이전 실행의 캐시를 한 건도 못 읽고, 같지 않고 `None`이면
+    캐시가 통째로 꺼진 채 경고에는 진짜 프로바이더 이름이 찍혀 원인이 안 보인다.
+    """
+    raw = OpenAICompatibleProvider(base_url="http://h/v1", model="qwen2.5:3b")
+    try:
+        wrapped = _cache_identity(CountingProvider(raw))
+        assert wrapped is not None
+        assert wrapped == _cache_identity(raw)
+    finally:
+        raw.close()
+
+
+def test_신원이_없는_안쪽은_None으로_떨어진다() -> None:
+    """`getattr`이 `None`을 받는 것이 정상인 프로바이더가 실재한다 - 예외로 바꾸면 안 된다."""
+    assert _cache_identity(CountingProvider(_고정프로바이더(TokenUsage()))) is None
+
+
+def test_close를_위임한다() -> None:
+    """dry-run 경로(`cli.py`)가 소켓을 정리하는 유일한 통로다."""
+    inner = _풀표면프로바이더()
+    CountingProvider(inner).close()
+    assert inner.closed == 1
+
+
+def test_close가_없는_안쪽에서도_조용히_끝난다() -> None:
+    """`close`를 안 가진 가짜가 흔하다. 여기서 `AttributeError`가 나면 dry-run이 죽는다."""
+    CountingProvider(_고정프로바이더(TokenUsage())).close()
+
+
+def test_참조_구현의_공개_표면을_빠짐없이_덮는다() -> None:
+    """명시적 위임을 고른 대가를 게이트로 갚는다 - 표면이 다섯 번째로 늘면 여기서 터진다."""
+    표면 = {n for n in dir(OpenAICompatibleProvider) if not n.startswith("_")}
+    assert 표면 <= {n for n in dir(CountingProvider) if not n.startswith("_")}
+
+
+# --- CountingProvider의 배치 (설계 D6·D7) ---
+
+
+def _캐시된_두_번(provider, tmp_path: Path) -> None:
+    for _ in range(2):
+        provider.complete(_메시지(), temperature=0.0, max_tokens=None)
+
+
+def test_캐시_안쪽에_놓으면_히트를_토큰으로_세지_않는다(tmp_path: Path) -> None:
+    """**정답 배치**(D7). Task 6이 이 순서로 조립해야 `cost`가 청구서와 맞는다."""
+    raw = _고정프로바이더(TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1))
+    counting = CountingProvider(raw)
+    cached = CachingProvider(counting, identity="i|u|m", cache_dir=tmp_path)
+
+    _캐시된_두_번(cached, tmp_path)
+
+    assert (raw.calls, cached.hits, cached.misses) == (1, 1, 1)
+    # 두 번 요청했지만 나간 것은 한 번이다. 히트는 토큰을 쓰지 않았다.
+    assert counting.usage == TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1)
+
+
+def test_캐시_바깥에_놓으면_히트까지_토큰으로_센다(tmp_path: Path) -> None:
+    """**오답 배치를 수치로 못박는다.** 위 테스트의 숫자가 우연이 아님을 증명한다.
+
+    네트워크는 똑같이 1회인데 `usage`는 2회분이다 - 쓰지 않은 토큰을 청구서에
+    올리는 것이고, "실제로 쓴 토큰을 센다"는 이 클래스의 존재 이유와 정반대다.
+    """
+    raw = _고정프로바이더(TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1))
+    cached = CachingProvider(raw, identity="i|u|m", cache_dir=tmp_path)
+    counting = CountingProvider(cached)
+
+    _캐시된_두_번(counting, tmp_path)
+
+    assert raw.calls == 1
+    assert counting.usage == TokenUsage(prompt_tokens=20, completion_tokens=10, calls=2)
