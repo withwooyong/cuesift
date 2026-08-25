@@ -97,9 +97,24 @@ def test_token_usage_합산_결과도_가드를_지난다() -> None:
 
 
 def test_completion은_사용량을_동반한다() -> None:
-    c = Completion(text="hello", usage=TokenUsage(prompt_tokens=1))
+    c = Completion(text="hello", usage=TokenUsage(prompt_tokens=1, calls=1))
     assert c.text == "hello"
     assert c.usage.prompt_tokens == 1
+
+
+def test_calls가_0인데_토큰이_실리면_거부한다() -> None:
+    """**`layer_tokens_reported`의 단축이 이 불변식에 얹혀 있다.**
+
+    `report/models.py`가 `calls == 0`을 "토큰 0이 참이다"로 읽고 곧바로
+    "계측 정상"을 낸다. 이 방어가 없으면 토큰을 쓴 실행이 그 단축을 타고
+    검사를 통째로 우회한다 - 음수는 막으면서 이쪽만 열어 두면 방어가
+    반쪽이다.
+    """
+    with pytest.raises(ValueError, match="calls가 0인데"):
+        TokenUsage(prompt_tokens=100, completion_tokens=100, calls=0)
+
+    # 0 호출 0 토큰은 정상이다 - 배치 루프의 누적 시작값이 이것이다.
+    assert TokenUsage().calls == 0
 
 
 def test_예외_계층_두_갈래가_공통_조상을_갖는다() -> None:

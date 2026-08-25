@@ -37,7 +37,7 @@ import typer
 from cuesift import __version__
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
-from cuesift.report import TriageOutcome, write_review
+from cuesift.report import TriageOutcome, layer_tokens_reported, write_review
 from cuesift.risk import fuse
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
@@ -1447,12 +1447,27 @@ def _format_translate_summary(
     total = len(result.segments)
     failed = len(result.failures)
     cache_line = f"  캐시 히트 {hits}개 · 실제 호출 {misses}개" if cache_enabled else "  캐시 꺼짐"
+    # **화면은 침묵하지 않고 0을 사실로 주장한다.** usage를 안 내는 백엔드에서
+    # 이 줄은 `토큰 prompt 0 · completion 0 · calls 8`이 되는데, 한 줄 안에
+    # 모순이 있는데도 아무도 지적하지 않는다(§12 Q3의 "탐지·명시").
+    #
+    # **`review.json`으로는 이 사람을 못 구한다** - 그 파일은 `--review-out`이
+    # 있어야 생기므로 기본 경로 사용자는 신호를 전혀 보지 못한다.
+    #
+    # 판별식을 여기 두지 않고 `layer_tokens_reported`를 부르는 이유는 화면과
+    # 파일이 같은 실행에서 다른 말을 하면 사용자가 둘 중 하나를 오작동으로
+    # 읽기 때문이다.
+    token_line = (
+        f"  토큰 prompt {result.usage.prompt_tokens} · completion "
+        f"{result.usage.completion_tokens} · calls {result.usage.calls}"
+    )
+    if not layer_tokens_reported(result.usage):
+        token_line += " (백엔드가 토큰 수치를 내지 않았다. 0은 실제 사용량이 아니다)"
     lines = [
         f"[{target_lang}] {out_path}",
         f"  세그먼트 {total}개 · 성공 {total - failed}개 · 실패 {failed}개",
         cache_line,
-        f"  토큰 prompt {result.usage.prompt_tokens} · completion "
-        f"{result.usage.completion_tokens} · calls {result.usage.calls}",
+        token_line,
     ]
     if result.failures:
         ids = ", ".join(f.segment_id for f in result.failures)

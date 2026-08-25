@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from cuesift.segment import Segment, SegmentRisk
@@ -42,6 +43,85 @@ COST_BASIS: dict[str, str] = {
     "tier1": "sent-only",
 }
 
+# 규약 어휘는 **닫힌 집합이고 단일 출처는 §8.4다.**
+#
+# 키를 파생시킨 것만으로는 절반만 닫힌다 - `"tier2": "cached-incuded"`(오타)나
+# `"estimated"`(§8.4에 없는 제3의 어휘)를 등록해도 그대로 JSON에 실리고, 소비자는
+# 그 낱말이 무엇을 뜻하는지 물어볼 데가 없다. 기존 두 값은 리포트 테스트의 등식
+# 단언이 지키지만 **새로 등록되는 계층은 무방비**다(mypy가 없어 `Literal`은
+# 강제되지 않는다). `tests/test_report_models.py`가 이 집합과 §8.4 본문이
+# 일치하는지 따로 검사한다 - 코드만 고치고 문서를 안 고치면 거기서 걸린다.
+COST_BASIS_VOCABULARY: frozenset[str] = frozenset({"cached-included", "sent-only"})
+
+
+def _validate_basis_vocabulary(basis: dict[str, str]) -> None:
+    """`COST_BASIS`의 **값**이 닫힌 어휘 안에 있나. 모듈 적재 시점에 돈다.
+
+    `__post_init__`에서 보면 **실제로 쓰인 계층만** 검사돼 등록만 해 둔 오타가
+    통과한다. 여기서 던지면 잘못된 등록이 import를 막아 첫 테스트에서 드러난다.
+    """
+    strays = sorted(v for v in basis.values() if v not in COST_BASIS_VOCABULARY)
+    if strays:
+        raise ValueError(
+            f"COST_BASIS에 §8.4에 없는 규약 어휘가 있다: {strays} - "
+            f"허용: {sorted(COST_BASIS_VOCABULARY)}"
+        )
+
+
+_validate_basis_vocabulary(COST_BASIS)
+
+
+def layer_tokens_reported(usage: TokenUsage | None) -> bool:
+    """계층 하나가 토큰 수치를 실었나 (요구사항정의서 §12 Q3 · NFR-2).
+
+    **판별식을 여기 한 곳에만 둔다.** 화면(`cli.py`)과 파일(`review.json`)이
+    각자 판별하면 같은 실행에서 한쪽만 경고하게 되고, 그것은 경고가 없는 것보다
+    나쁘다 - 사용자는 둘 중 하나를 오작동으로 읽는다.
+
+    | 입력 | 결과 | 근거 |
+    | --- | --- | --- |
+    | `None` | `False` | **"모른다"는 "믿을 수 있다"가 아니다.** 수치가 없으면 뒷받침할 것도 없다 |
+    | `calls == 0` | `True` | 성공 호출이 0이면 토큰 0이 **참이다** |
+    | `calls > 0`, 토큰 합 0 | `False` | 백엔드가 usage를 안 냈다 |
+
+    **`calls == 0`의 실제 도달 경로는 번역 전량 실패와 Tier 1 후보 0뿐이다**(실측).
+    전량 캐시 적중은 여기 오지 않는다 - `store/provider.py`가 저장된 usage를
+    그대로 내므로 `calls > 0`이다. dry-run도 오지 않는다 - `cli.py`의 반환이
+    대상별 루프보다 앞이라 `TriageOutcome`을 아예 만들지 않는다. **이 두 경로를
+    근거로 적으면 안 된다**(이전 판의 오류) - 다음 사람이 그 주석을 믿고 판정을
+    고친다.
+
+    전량 실패는 "믿을 수 있다"보다 "아무것도 성공 못 했다"에 가깝지만 `False`로
+    내지 않는다. **그 사실은 `total_segments`·`triaged_segments`·`excluded_failures`가
+    이미 말한다** - 여기서 겹쳐 말하면 이 신호가 "실패했다"와 "계측이 죽었다"를
+    한 낱말로 섞어 어느 쪽인지 알 수 없게 된다.
+    """
+    if usage is None:
+        return False
+    if usage.calls == 0:
+        # `TokenUsage.__post_init__`이 "calls 0인데 토큰 > 0"을 거부하므로
+        # 여기서 토큰이 0임이 보장된다. 그 방어가 사라지면 이 줄이 **토큰을
+        # 쓴 실행을 "계측 정상"으로 통과시킨다.**
+        return True
+    return usage.prompt_tokens + usage.completion_tokens > 0
+
+
+def resolve_cost_scope(
+    usages: Mapping[str, TokenUsage | None],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """계층별 usage에서 `cost_includes`와 `cost_unreported`를 **함께** 만든다.
+
+    **배선부가 이 함수를 부르면 범위와 판정이 갈라질 수 없다.** 둘을 따로 적으면
+    계층을 늘린 쪽이 판정을 빠뜨리고, 그때 그 계층의 무음 열화는 `True`에
+    가려진다 - 정확히 이 필드가 막으려던 것이다.
+
+    입력 순서를 그대로 보존한다(NFR-3 재현성). `dict`의 삽입 순서가 곧
+    `includes`의 순서이고 그것이 파일에 나간다.
+    """
+    includes = tuple(usages)
+    unreported = tuple(name for name, usage in usages.items() if not layer_tokens_reported(usage))
+    return includes, unreported
+
 
 @dataclass(frozen=True, slots=True)
 class TriageOutcome:
@@ -72,6 +152,15 @@ class TriageOutcome:
     excluded_failures: int
     usage: TokenUsage | None
     cost_includes: tuple[str, ...] = COST_INCLUDES_TRANSLATION
+    # `cost_includes` 중 **토큰 수치를 못 낸** 계층. 기본은 빈 튜플이다.
+    #
+    # **계층별 usage를 싣지 않고 판정 bool만 계층별로 남긴다.** `usage` 슬롯은
+    # 하나뿐이라 배선부가 `+`로 합치는 순간 어느 계층이 0을 냈는지 복원할 수
+    # 없는데(실측: `TokenUsage(1, 0, calls=1000)`은 합이 0이 아니라 통과한다),
+    # 원천에서는 이미 나뉘어 있다(`translated.usage` vs `CountingProvider.usage`).
+    # 판정만 여기로 올리면 **1토큰이 999회 무음 호출을 가리는 것**이 막히면서
+    # `review.json`의 키 개수는 그대로다.
+    cost_unreported: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # 형제 모델 넷(`Span`·`Segment`·`Signal`·`SegmentRisk`)과 같은 자리의 방어다.
@@ -107,6 +196,29 @@ class TriageOutcome:
         # 0이라 어떤 게이트에도 걸리지 않는다.
         if self.excluded_failures < 0:
             raise ValueError(f"excluded_failures({self.excluded_failures})가 음수다")
+        # **문자열을 그대로 넘긴 것을 먼저 가른다.** `cost_includes="translation"`은
+        # 문자 단위로 쪼개져 `['t','r','a',...]`가 되는데, 아래 검사가 우연히
+        # 거부하더라도 메시지가 원인을 가리키지 못한다. `Segment` 계열이 같은
+        # 자리에서 같은 방식으로 가른다.
+        for name, value in (
+            ("cost_includes", self.cost_includes),
+            ("cost_unreported", self.cost_unreported),
+        ):
+            if isinstance(value, str):
+                raise ValueError(f"{name}에 문자열이 왔다({value!r}). 튜플이어야 한다")
+        # **빈 범위는 정당한 경우가 없다.** `includes`는 "무엇이 돌았나"가 아니라
+        # "이 숫자가 무엇을 덮나"이고, 트리아지가 도는 실행에 번역 계층은 언제나
+        # 있다. 비어 있으면 `{"includes": [], "prompt_tokens": 1234}`가 종료 코드
+        # 0으로 나가 **NFR-2 비용 투명성이 정확히 뒤집힌다.** "호출자가 그러지
+        # 않는다"에 기대지 않는 것은 `triage_with_tier1`이 중복 id를 검사하는
+        # 이유와 같다 - `TriageOutcome`도 공개 데이터클래스다.
+        if not self.cost_includes:
+            raise ValueError("cost_includes가 비었다. 비용 수치가 무엇을 덮는지 말하지 못한다")
+        # 중복은 `includes`와 `basis`의 길이를 갈라놓는다 - `cost_basis`가 dict라
+        # 조용히 dedupe되어 `includes` 2개 / `basis` 1개가 나간다. 파일만 보는
+        # 소비자에게는 둘 중 무엇이 맞는지 판정할 근거가 없다.
+        if len(set(self.cost_includes)) != len(self.cost_includes):
+            raise ValueError(f"cost_includes에 중복 계층이 있다: {list(self.cost_includes)}")
         # **범위를 넓히려면 규약도 함께 선언해야 한다.** 이 검사가 없으면
         # `cost_includes=("translation", "tier2")`가 그대로 파일에 실리고, 그
         # 계층이 캐시 적중을 세는지 아닌지는 아무 데도 적히지 않은 채 소비자가
@@ -118,6 +230,14 @@ class TriageOutcome:
             raise ValueError(
                 f"cost_includes에 계측 규약이 없는 계층이 있다: {unknown} - "
                 f"COST_BASIS에 등록하라(알려진 계층: {sorted(COST_BASIS)})"
+            )
+        # 범위 밖 계층의 판정은 파일에 실릴 자리가 없다 - 실리지 않는 판정을
+        # 받아 두면 배선부는 "신고했다"고 믿는데 리포트는 아무 말도 하지 않는다.
+        outside = [layer for layer in self.cost_unreported if layer not in self.cost_includes]
+        if outside:
+            raise ValueError(
+                f"cost_unreported에 cost_includes 밖의 계층이 있다: {outside} - "
+                f"범위: {list(self.cost_includes)}"
             )
 
     @property
@@ -172,7 +292,10 @@ class TriageOutcome:
 
         **손으로 쓰지 않고 파생시킨다.** 범위와 규약을 따로 실으면 한쪽만
         고쳐져 갈라지는데, 갈라져도 파일은 정상이고 종료 코드도 0이다.
-        `__post_init__`이 미등록 계층을 막으므로 `KeyError`는 도달 불가다.
+        **정상 생성 경로에서는** `__post_init__`이 미등록 계층을 막으므로
+        `KeyError`가 나지 않는다 - `object.__setattr__`로 frozen을 우회해
+        필드를 갈아 끼우면 그 보장은 깨진다(실측: `KeyError: 'tier9'`).
+        frozen+slots의 한계이지 이 프로퍼티의 결함이 아니다.
         """
         return {layer: COST_BASIS[layer] for layer in self.cost_includes}
 
@@ -186,18 +309,22 @@ class TriageOutcome:
         `{"usage": {"total_tokens": 99}}`도 `(0, 0, calls=1)`이 된다. 이 판별이
         없으면 그 실행의 `cost`가 **"토큰 0개를 썼다"** 는 사실 주장으로 읽힌다.
 
-        **`calls == 0`은 참인 0이다.** 전량 캐시 적중이나 dry-run이 여기 걸리면
-        정상 실행 대부분이 "비용 불명"으로 찍혀 이 신호가 무시된다 - 무시되는
-        경고는 없는 경고와 같다.
+        **두 층으로 본다. 순서가 중요하다.**
 
-        **부분 열화는 잡지 못한다.** 번역 계층은 토큰을 내고 Tier 1만 못 내는
-        실행은 합이 0이 아니라 `True`가 된다. `usage`가 계층별로 나뉘어 있지
-        않기 때문이고, 여기서 더 조이려면 `TriageOutcome`이 계층별 usage를
-        따로 실어야 한다 - 그것은 스키마 변경이라 §8.4를 먼저 고쳐야 한다.
+        1. `cost_unreported`가 비지 않았으면 `False`. 계층별 신고는 합계가
+           숨기는 것을 본다 - `TokenUsage(1, 0, calls=1000)`은 합이 0이 아니라
+           2번을 통과하지만, **1토큰이 999회 무음 호출을 가린 것**이다. Q3가
+           경고한 "번역=상용 API · Tier 1=로컬"이 정확히 이 모양이고 그것이
+           가장 흔한 구성이다.
+        2. 그 다음 합계를 본다. 배선부가 계층별 신고를 아직 안 하는 동안에도
+           전량 무음은 잡힌다 - **1번만 두면 미배선이 곧 "이상 없음"이 된다.**
+
+        2번은 1번이 채워져도 남긴다. 판정을 **좁히지는 못하고 넓히기만** 하므로
+        중복이 해가 되지 않는다.
         """
-        if self.usage is None or self.usage.calls == 0:
-            return True
-        return self.usage.prompt_tokens + self.usage.completion_tokens > 0
+        if self.cost_unreported:
+            return False
+        return layer_tokens_reported(self.usage)
 
     @property
     def review_ratio(self) -> float:

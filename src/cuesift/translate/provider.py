@@ -68,6 +68,17 @@ class TokenUsage:
         ):
             if value < 0:
                 raise ValueError(f"{name}({value})은 음수일 수 없다")
+        # **`calls == 0`이면 토큰도 0이어야 한다.** 성공 응답이 없는데 토큰이
+        # 실린 것은 어느 경로로도 만들어지지 않는다(`_extract_usage`는 언제나
+        # `calls=1`을 내고 캐시는 저장된 값을 그대로 낸다 - 실측).
+        #
+        # 이 불변식에 **판정 하나가 얹혀 있다.** `report/models.py`의
+        # `layer_tokens_reported`가 `calls == 0`을 "토큰 0이 참이다"로 단축하는데,
+        # 그 단축이 성립하는 근거가 여기다. 이 검사가 사라지면 토큰을 쓴 실행이
+        # "계측 정상"으로 통과한다.
+        used = self.prompt_tokens + self.completion_tokens
+        if self.calls == 0 and used > 0:
+            raise ValueError(f"calls가 0인데 토큰이 {used}개 실렸다")
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
         """배치 루프가 빈 값부터 누적할 수 있게 한다."""

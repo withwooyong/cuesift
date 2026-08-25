@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from cuesift.report import TriageOutcome
+from cuesift.report.models import (
+    COST_BASIS,
+    COST_BASIS_VOCABULARY,
+    _validate_basis_vocabulary,
+    layer_tokens_reported,
+    resolve_cost_scope,
+)
 from cuesift.segment import Segment, SegmentRisk, Signal
 from cuesift.translate.provider import TokenUsage
 
@@ -45,16 +55,22 @@ def _outcome(
     excluded_failures: int = 0,
     segments: tuple[Segment, ...] | None = None,
     cost_includes: tuple[str, ...] | None = None,
+    cost_unreported: tuple[str, ...] | None = None,
+    usage: TokenUsage | None = None,
 ) -> TriageOutcome:
     """기본값은 `segments`를 `risks`에서 파생해 불변식을 만족시킨다.
 
     `segments`를 명시하면 그 파생을 우회한다 - 길이 불일치 방어를 실제로
     발동시키려면 헬퍼가 대신 맞춰 주지 않아야 한다.
 
-    **`cost_includes`도 `None`일 때는 아예 넘기지 않는다.** 헬퍼가 언제나
-    명시하면 `TriageOutcome`의 기본값이 한 번도 실행되지 않는다.
+    **`cost_includes`·`cost_unreported`도 `None`일 때는 아예 넘기지 않는다.**
+    헬퍼가 언제나 명시하면 `TriageOutcome`의 기본값이 한 번도 실행되지 않는다.
     """
-    extra: dict[str, object] = {} if cost_includes is None else {"cost_includes": cost_includes}
+    extra: dict[str, object] = {}
+    if cost_includes is not None:
+        extra["cost_includes"] = cost_includes
+    if cost_unreported is not None:
+        extra["cost_unreported"] = cost_unreported
     return TriageOutcome(
         source_lang="ko",
         target_lang="en",
@@ -69,8 +85,27 @@ def _outcome(
             else segments
         ),
         excluded_failures=excluded_failures,
-        usage=None,
+        usage=usage,
         **extra,
+    )
+
+
+def _usage_outcome(
+    usage: TokenUsage,
+    *,
+    cost_includes: tuple[str, ...] | None = None,
+    cost_unreported: tuple[str, ...] | None = None,
+) -> TriageOutcome:
+    """`usage`가 **있는** 결과. 계측 판정 테스트는 전부 이것을 쓴다.
+
+    `usage=None`을 참 케이스로 쓰면 판정이 첫 절에서 단락돼 나머지 절을
+    한 번도 밟지 않는다.
+    """
+    return _outcome(
+        risks=(_risk("00000"),),
+        usage=usage,
+        cost_includes=cost_includes,
+        cost_unreported=cost_unreported,
     )
 
 
@@ -259,19 +294,138 @@ def test_token_counts_reported가_계측_불능을_구별한다() -> None:
 
     `calls > 0`인데 토큰 합이 0인 것은 "공짜로 돌았다"가 아니라 "백엔드가 usage를
     안 냈다"이다. 이 구별이 없으면 `cost`가 0을 사실로 보고한다(NFR-2).
-    """
-    assert _outcome(risks=(_risk("00000"),)).token_counts_reported is True
 
-    silent = TriageOutcome(
-        source_lang="ko",
-        target_lang="en",
-        profile_name="en",
-        policy_label="예산 10%",
-        policy_kind="budget",
-        policy_value=0.1,
-        risks=(_risk("00000"),),
-        segments=(_segment("00000"),),
-        excluded_failures=0,
-        usage=TokenUsage(0, 0, calls=3),
+    **세 갈래를 한 테스트가 다 밟는다.** 이전 판은 참 케이스가 `usage=None`이라
+    첫 절에서 단락됐고, `calls == 0` 절을 지워도 이 파일은 전원 통과했다 -
+    죽는 것이 `test_report_json.py` 하나뿐이라 **게이트가 다른 계층 파일에
+    의존**하는 상태였다.
+    """
+    assert _usage_outcome(TokenUsage(12, 34, calls=2)).token_counts_reported is True
+    assert _usage_outcome(TokenUsage(0, 0, calls=0)).token_counts_reported is True
+    assert _usage_outcome(TokenUsage(0, 0, calls=3)).token_counts_reported is False
+
+
+def test_usage가_없으면_계측을_믿을_수_없다고_본다() -> None:
+    """**"모른다"를 "믿을 수 있다"로 보고하지 않는다.**
+
+    수치가 아예 없으면 신뢰성을 뒷받침할 것이 없다. 소음 우려가 없는 것은
+    실측으로 확인했다 - 생산 경로의 `TriageOutcome` 생성부는 `cli.py` 한
+    곳이고 언제나 `usage=translated.usage`를 넘기며 `TranslationResult.usage`는
+    `TokenUsage`라 `None`이 될 수 없다. 즉 `None`은 테스트에서만 온다.
+    """
+    assert _outcome(risks=(_risk("00000"),)).usage is None
+    assert _outcome(risks=(_risk("00000"),)).token_counts_reported is False
+    assert layer_tokens_reported(None) is False
+
+
+def test_계층별_신고가_합계에_가려진_무음을_잡는다() -> None:
+    """**A: 1토큰이 999회 무음 호출을 가린다.**
+
+    번역은 상용 API(토큰을 낸다)이고 Tier 1은 로컬 Ollama(안 낸다)인 구성이
+    §12 Q3가 경고한 바로 그것이고 가장 흔하다. 합계만 보면 토큰이 0이 아니라
+    통과하는데, 실제로는 Tier 1 호출 전량의 비용을 모른다.
+
+    **부분 열화를 직접 조립해서 잰다** - 합이 0인 케이스만 덮으면 이 회귀를
+    영영 놓친다.
+    """
+    합계는_0이_아니다 = TokenUsage(prompt_tokens=1, completion_tokens=0, calls=1000)
+
+    가려짐 = _usage_outcome(합계는_0이_아니다, cost_includes=("translation", "tier1"))
+    assert 가려짐.token_counts_reported is True, "이 줄이 바로 결함의 모양이다"
+
+    신고됨 = _usage_outcome(
+        합계는_0이_아니다,
+        cost_includes=("translation", "tier1"),
+        cost_unreported=("tier1",),
     )
-    assert silent.token_counts_reported is False
+    assert 신고됨.token_counts_reported is False
+
+
+def test_resolve_cost_scope가_범위와_판정을_함께_만든다() -> None:
+    """배선부가 둘을 따로 적으면 계층을 늘린 쪽이 판정을 빠뜨린다.
+
+    입력 순서를 보존해야 한다 - 그 순서가 곧 `includes`의 순서이고 파일에
+    나간다(NFR-3 재현성).
+    """
+    includes, unreported = resolve_cost_scope(
+        {
+            "translation": TokenUsage(10, 20, calls=2),
+            "tier1": TokenUsage(0, 0, calls=9),
+        }
+    )
+
+    assert includes == ("translation", "tier1")
+    assert unreported == ("tier1",)
+    # 그대로 생성자에 넣을 수 있어야 한다 - 넣을 수 없으면 헬퍼가 아니다.
+    outcome = _outcome(risks=(_risk("00000"),), cost_includes=includes, cost_unreported=unreported)
+    assert outcome.token_counts_reported is False
+
+
+def test_cost_unreported는_범위_밖_계층을_거부한다() -> None:
+    """실리지 않는 판정을 받아 두면 배선부는 "신고했다"고 믿는데 리포트는 침묵한다."""
+    with pytest.raises(ValueError, match="tier1"):
+        _outcome(risks=(_risk("00000"),), cost_unreported=("tier1",))
+
+
+def test_빈_cost_includes를_거부한다() -> None:
+    """**C1: `includes`의 존재 이유가 정확히 뒤집힌 채로 파일이 나간다.**
+
+    `{"includes": [], "prompt_tokens": 1234}`는 종료 코드 0으로 통과하면서
+    NFR-2 비용 투명성을 부정한다. "호출자가 그러지 않는다"에 기대지 않는 것은
+    `triage_with_tier1`이 중복 id를 검사하는 이유와 같다 - 공개 데이터클래스다.
+    """
+    with pytest.raises(ValueError, match="비었다"):
+        _outcome(risks=(_risk("00000"),), cost_includes=())
+
+
+def test_중복_계층을_거부한다() -> None:
+    """중복이면 `cost_basis`의 dict 컴프리헨션이 조용히 dedupe해
+    `includes` 2개 / `basis` 1개가 나간다 - 파일만 보는 소비자는 판정할 수 없다.
+    """
+    with pytest.raises(ValueError, match="중복"):
+        _outcome(risks=(_risk("00000"),), cost_includes=("translation", "translation"))
+
+
+def test_문자열을_그대로_넘기면_원인을_말해_준다() -> None:
+    """**D2: 우연히 거부되는 것과 원인을 말하는 것은 다르다.**
+
+    `"translation"`은 문자 단위로 쪼개져 `['t','r','a',...]`가 된다. 가드가
+    없으면 미등록 계층 메시지가 그 글자 목록을 뱉어 사람이 원인을 못 찾는다.
+    """
+    with pytest.raises(ValueError, match="문자열이 왔다"):
+        _outcome(risks=(_risk("00000"),), cost_includes="translation")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="문자열이 왔다"):
+        _outcome(risks=(_risk("00000"),), cost_unreported="translation")  # type: ignore[arg-type]
+
+
+def test_규약_어휘는_닫혀_있다() -> None:
+    """**C2: 키만 파생시키면 절반만 닫힌다.**
+
+    값에는 검사가 없어 오타(`cached-incuded`)나 §8.4에 없는 제3의 어휘
+    (`estimated`)를 등록해도 그대로 JSON에 실린다. 기존 두 값은 리포트
+    테스트가 지키지만 **새 계층은 무방비**였다.
+    """
+    assert set(COST_BASIS.values()) <= COST_BASIS_VOCABULARY
+
+    with pytest.raises(ValueError, match="cached-incuded"):
+        _validate_basis_vocabulary({"tier2": "cached-incuded"})
+    with pytest.raises(ValueError, match="estimated"):
+        _validate_basis_vocabulary({"tier2": "estimated"})
+
+
+def test_규약_어휘의_단일_출처는_요구사항정의서_8_4다() -> None:
+    """코드만 고치고 문서를 안 고치면 여기서 걸린다.
+
+    소비자는 `review.json`의 낱말을 §8.4에서 찾는다. 문서에 없는 낱말이 파일에
+    실리면 그 낱말은 **아무 데도 정의돼 있지 않다** - `basis`를 더한 이유가
+    "규약을 밝힌다"였는데 밝힌 곳이 없어지는 것이다.
+    """
+    본문 = (Path(__file__).resolve().parents[1] / "docs" / "요구사항정의서.md").read_text(
+        encoding="utf-8"
+    )
+    선언 = [line for line in 본문.splitlines() if "cost.basis`의 어휘는" in line]
+    assert len(선언) == 1, f"§8.4의 어휘 선언 줄을 1개 찾아야 한다 (찾은 것: {len(선언)})"
+
+    문서_어휘 = set(re.findall(r"`([a-z-]+)`", 선언[0].split(":", 1)[1]))
+    assert 문서_어휘 == set(COST_BASIS_VOCABULARY)
