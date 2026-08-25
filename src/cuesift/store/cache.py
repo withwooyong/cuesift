@@ -76,6 +76,34 @@ class CacheRequest:
     **0은 키 문자열에 넣지 않는다** - 아래 `key` 참고.
     """
 
+    def __post_init__(self) -> None:
+        """`attempt`의 도메인을 생성 시점에 고정한다 (FR-4.1 · 설계 D11).
+
+        **`None`이 들어오면 무음 열화가 된다.** 아래 `key`가 falsy를 만나
+        `attempt` 조각을 붙이지 않으므로 `key(None) == key(0)`이다. 그러면
+        자가일관성의 N회 호출이 한 캐시 항목으로 뭉쳐 샘플이 1개가 되고,
+        `SelfConsistency`의 `len(samples) < 2 -> None` 가드는 **우회된다** -
+        그 가드가 보는 것은 "샘플이 몇 개인가"이지 "몇 번 불렀나"가 아니다.
+        결과는 "판정 불가"가 아니라 **점수 0.0**, 곧 "안전"이다.
+
+        | 값 | 호출 수 | score | 무엇으로 보이나 |
+        | --- | --- | --- | --- |
+        | `attempt=i` (정상) | 3회 | 0.0286 | 판정됨 |
+        | `attempt=None` | 1회 | 0.0000 | **"판정했고 안전"** |
+
+        bool은 int의 서브클래스라 `attempt=True`가 이 검사를 통과하지만,
+        `key`에서 `attempt=1`과 **같은 문자열**을 만들므로 뭉침이 일어나지
+        않는다 - 별도로 막지 않는다(`Tier1Context.samples`가 bool을 `< 2`로
+        걸러 내는 것과 같은 판단이다).
+        """
+        if not isinstance(self.attempt, int):
+            raise ValueError(f"attempt는 int여야 한다 (받은 타입: {type(self.attempt).__name__})")
+        # 음수는 `attempt=-1`로 키에 그대로 실려 **유효한 키를 만든다** -
+        # 뭉치지는 않지만 시도 번호의 도메인 밖이라 호출부가 `range()`를 잘못
+        # 조립했다는 신호다. 통과시키면 그 실수가 캐시 파일로 굳는다.
+        if self.attempt < 0:
+            raise ValueError(f"attempt는 0 이상이어야 한다 (받은 값: {self.attempt})")
+
     @property
     def messages_sha(self) -> str:
         return _sha256(_messages_material(self.messages))
