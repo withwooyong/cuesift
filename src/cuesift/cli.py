@@ -37,7 +37,12 @@ import typer
 from cuesift import __version__
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
-from cuesift.report import TriageOutcome, layer_tokens_reported, write_review
+from cuesift.report import (
+    TriageOutcome,
+    layer_tokens_reported,
+    resolve_cost_scope,
+    write_review,
+)
 from cuesift.risk import fuse
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
@@ -1420,6 +1425,15 @@ def _cache_identity(provider: Provider) -> str | None:
     return str(identity) if identity else None
 
 
+# 계측 불능을 알리는 **공용 문구.** 번역 요약과 트리아지 요약이 각자 적으면
+# 같은 실행에서 두 문장이 다른 말을 하게 되고, 사용자는 그것을 서로 다른 두
+# 문제로 읽는다. 한쪽만 고쳐지는 것도 같은 결과다.
+#
+# **출력 문자열이라 em dash를 쓰지 않는다**(`test_help_output_has_no_em_dash`와
+# 같은 규율). 마침표로 끊는다.
+_UNREPORTED_TOKENS_NOTE = "백엔드가 토큰 수치를 내지 않았다. 0은 실제 사용량이 아니다"
+
+
 def _format_translate_summary(
     *,
     target_lang: str,
@@ -1462,7 +1476,7 @@ def _format_translate_summary(
         f"{result.usage.completion_tokens} · calls {result.usage.calls}"
     )
     if not layer_tokens_reported(result.usage):
-        token_line += " (백엔드가 토큰 수치를 내지 않았다. 0은 실제 사용량이 아니다)"
+        token_line += f" ({_UNREPORTED_TOKENS_NOTE})"
     lines = [
         f"[{target_lang}] {out_path}",
         f"  세그먼트 {total}개 · 성공 {total - failed}개 · 실패 {failed}개",
@@ -1539,6 +1553,16 @@ def _format_triage_summary(outcome: TriageOutcome) -> list[str]:
         # 바뀌면 화면이 달라지고 테스트가 흔들린다). 정렬이 두 곳에 있으면
         # 한쪽만 고쳐지고, 그때 화면과 `review.json`의 신호 순서가 갈라진다.
         lines.extend(f"    {name} {count}개" for name, count in counts.items())
+    # **번역 요약의 경고만으로는 이 사람을 구하지 못한다.** 그쪽은
+    # `result.usage`, 즉 **번역 계층만** 본다. "번역은 상용 API라 토큰을 내고
+    # Tier 1만 로컬이라 못 내는" 구성에서는 번역 줄이 정상으로 보이고,
+    # `review.json`은 `--review-out`이 있어야 생기므로 **기본 경로 사용자는
+    # Tier 1의 무음을 어디서도 못 본다**(§12 Q3 · NFR-2).
+    #
+    # **비어 있으면 아무 줄도 내지 않는다.** 언제나 붙는 경고는 읽히지 않는다.
+    if outcome.cost_unreported:
+        층 = ", ".join(outcome.cost_unreported)
+        lines.append(f"  토큰 수치를 못 받은 계층: {층} ({_UNREPORTED_TOKENS_NOTE})")
     return lines
 
 
@@ -1596,6 +1620,7 @@ def _run_triage(
         채워져도 타입 검사와 화면 테스트를 모두 통과한다 - `usage`가 정확히 그런
         필드다(화면은 읽지 않고 `review.json`만 읽는다).
         """
+        scope = resolve_cost_scope({"translation": translated.usage})
         return TriageOutcome(
             source_lang=source_lang,
             target_lang=target_lang,
@@ -1606,7 +1631,15 @@ def _run_triage(
             risks=risks,
             segments=segments,
             excluded_failures=len(failed_ids),
-            usage=translated.usage,
+            # **범위·판정·합계를 한 곳에서 받는다.** 셋을 손으로 적으면 계층을
+            # 늘린 쪽이 판정을 빠뜨리고, 그 계층의 무음 열화는 `tokens_reported`의
+            # `True`에 가려진다(실측: 합쳐 넘긴 `{"translation": tr + t1}`은
+            # `includes=("translation",)`·`unreported=()`를 내 Tier 1을 통째로
+            # 지운다). Tier 1을 켜는 배선은 이 매핑에 `"tier1"` 한 줄을 더한다 -
+            # 다른 곳은 건드릴 필요가 없다.
+            usage=scope.usage,
+            cost_includes=scope.includes,
+            cost_unreported=scope.unreported,
         )
 
     if not kept:

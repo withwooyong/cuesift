@@ -341,24 +341,75 @@ def test_계층별_신고가_합계에_가려진_무음을_잡는다() -> None:
     assert 신고됨.token_counts_reported is False
 
 
-def test_resolve_cost_scope가_범위와_판정을_함께_만든다() -> None:
-    """배선부가 둘을 따로 적으면 계층을 늘린 쪽이 판정을 빠뜨린다.
+def test_resolve_cost_scope가_합계까지_함께_낸다() -> None:
+    """**합계를 여기서 내지 않으면 호출자가 손으로 합치고, 그 순간 함정이 열린다.**
+
+    합친 값을 키 하나로 넘기면 `{"translation": tr + t1}` → `includes=("translation",)`
+    이 되어 Tier 1이 범위에서 조용히 사라지고 판정도 통과한다(실측). 함수는
+    호출자가 무엇을 합쳤는지 알 수 없어 **검증으로는 막을 수 없다** - 손으로
+    합칠 이유를 없애는 것이 유일한 방어다.
 
     입력 순서를 보존해야 한다 - 그 순서가 곧 `includes`의 순서이고 파일에
     나간다(NFR-3 재현성).
     """
-    includes, unreported = resolve_cost_scope(
+    scope = resolve_cost_scope(
         {
             "translation": TokenUsage(10, 20, calls=2),
             "tier1": TokenUsage(0, 0, calls=9),
         }
     )
 
-    assert includes == ("translation", "tier1")
-    assert unreported == ("tier1",)
+    assert scope.includes == ("translation", "tier1")
+    assert scope.unreported == ("tier1",)
+    # 합계는 두 계층을 다 담는다 - 호출자가 따로 더할 것이 남으면 안 된다.
+    assert scope.usage == TokenUsage(10, 20, calls=11)
+
     # 그대로 생성자에 넣을 수 있어야 한다 - 넣을 수 없으면 헬퍼가 아니다.
-    outcome = _outcome(risks=(_risk("00000"),), cost_includes=includes, cost_unreported=unreported)
+    outcome = _outcome(
+        risks=(_risk("00000"),),
+        usage=scope.usage,
+        cost_includes=scope.includes,
+        cost_unreported=scope.unreported,
+    )
     assert outcome.token_counts_reported is False
+
+
+def test_돌지_않은_계층은_범위에서_빠진다() -> None:
+    """**`None`은 "안 돌았다"이지 "돌았는데 계측이 죽었다"가 아니다.**
+
+    Tier 1을 끈 실행에서 `"tier1"`이 `includes`에 남으면 파일이 "이 숫자는 Tier 1도
+    덮는다"고 말하고, `unreported`에까지 실리면 사용자가 **없는 비용을 의심한다.**
+    호출자가 dict를 조건부로 조립하지 않아도 되게 하려는 것이 이 특례다.
+    """
+    scope = resolve_cost_scope({"translation": TokenUsage(10, 20, calls=2), "tier1": None})
+
+    assert scope.includes == ("translation",)
+    assert scope.unreported == ()
+    assert scope.usage == TokenUsage(10, 20, calls=2)
+
+
+def test_돈_계층이_하나도_없으면_거부한다() -> None:
+    """`TriageOutcome`도 빈 범위를 거부하지만 그 메시지는 **생성부**를 가리켜
+    원인이 여기(잘못 조립한 매핑)라는 것을 감춘다.
+    """
+    with pytest.raises(ValueError, match="실제로 돈 계층이 없다"):
+        resolve_cost_scope({"translation": None, "tier1": None})
+
+
+def test_CostScope는_이름으로_받는다() -> None:
+    """**`includes`와 `unreported`는 둘 다 `tuple[str, ...]`이다.**
+
+    위치로 받으면 둘이 뒤바뀌어도 타입으로는 드러나지 않고, 그때 "범위"와
+    "무음 계층"이 통째로 맞바뀐 채 파일에 실린다. 필드 이름이 그 실수를
+    성립하지 않게 한다.
+    """
+    scope = resolve_cost_scope({"translation": TokenUsage(1, 1, calls=1)})
+
+    assert (scope.usage, scope.includes, scope.unreported) == (
+        TokenUsage(1, 1, calls=1),
+        ("translation",),
+        (),
+    )
 
 
 def test_cost_unreported는_범위_밖_계층을_거부한다() -> None:
@@ -424,8 +475,18 @@ def test_규약_어휘의_단일_출처는_요구사항정의서_8_4다() -> Non
     본문 = (Path(__file__).resolve().parents[1] / "docs" / "요구사항정의서.md").read_text(
         encoding="utf-8"
     )
-    선언 = [line for line in 본문.splitlines() if "cost.basis`의 어휘는" in line]
+    # **§8.4 안에서만 찾는다.** 문서 어디에 있든 통과하면 어휘 선언이 §8.4에서
+    # 다른 절로 옮겨가도 게이트가 침묵한다 - 소비자는 `review.json`의 계약을
+    # §8.4에서 찾으므로 그 절에 없는 선언은 없는 것과 같다.
+    시작 = 본문.index("### 8.4 `review.json` 구조")
+    절 = 본문[시작 : 본문.index("\n## ", 시작)]
+
+    선언 = [line for line in 절.splitlines() if "cost.basis`의 어휘는" in line]
     assert len(선언) == 1, f"§8.4의 어휘 선언 줄을 1개 찾아야 한다 (찾은 것: {len(선언)})"
 
-    문서_어휘 = set(re.findall(r"`([a-z-]+)`", 선언[0].split(":", 1)[1]))
+    # **콜론으로 자르지 않는다.** 문장에 콜론이 하나 더 들어오면 파싱이 어긋난다.
+    # 어휘는 하이픈으로 이어진 소문자라 그 형태로 직접 집는다 - 같은 줄의
+    # `cost.basis`(점)와 `COST_BASIS_VOCABULARY`(대문자)는 걸리지 않는다.
+    # 하이픈 없는 어휘가 새로 생기면 이 단언이 불일치로 시끄럽게 실패한다.
+    문서_어휘 = set(re.findall(r"`([a-z]+(?:-[a-z]+)+)`", 선언[0]))
     assert 문서_어휘 == set(COST_BASIS_VOCABULARY)

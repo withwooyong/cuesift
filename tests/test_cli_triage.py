@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from cuesift.cli import _format_triage_summary, _parse_review_budget, app
 from cuesift.report import TriageOutcome
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.spec import SpecProfile, available_builtins, load_builtin
+from cuesift.translate.provider import Completion, TokenUsage
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 runner = CliRunner()
@@ -805,3 +807,73 @@ def test_트리아지가_던지면_exit_2다(tmp_path: Path, monkeypatch: pytest
     assert result.exit_code == 2, result.output
     assert "트리아지를 돌리지 못했다: 정책이 터졌다" in result.output
     assert (tmp_path / "ten_cues.en.srt").exists(), "번역까지 잃었다"
+
+
+class _무음백엔드:
+    """번역은 정상이지만 **usage를 안 내는** 백엔드 (요구사항정의서 §12 Q3).
+
+    `_extract_usage`가 `usage` 키가 없거나 형식이 다른 응답을 전부 `(0, 0)`으로
+    떨어뜨리므로 성공 호출은 세어지는데 토큰은 0으로 남는다. 로컬 Ollama 계열이
+    실제로 이 모양이다.
+    """
+
+    name = "silent"
+
+    def __init__(self) -> None:
+        self._inner = EchoProvider()
+
+    def complete(self, messages, *, temperature, max_tokens):  # type: ignore[no-untyped-def]
+        completion = self._inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        return Completion(text=completion.text, usage=TokenUsage(0, 0, calls=1))
+
+    def close(self) -> None:
+        return None
+
+
+def test_무음_계층은_트리아지_요약에도_실린다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**번역 요약의 경고만으로는 이 사람을 구하지 못한다.**
+
+    그쪽은 `result.usage`, 즉 번역 계층만 본다. "번역은 상용 API·Tier 1만 로컬"인
+    구성에서는 번역 줄이 정상으로 보이고, `review.json`은 `--review-out`이 있어야
+    생기므로 기본 경로 사용자는 무음을 어디서도 못 본다(§12 Q3 · NFR-2).
+
+    **실제 CLI를 돌려 잰다** - 포매터 단위 호출만으로는 `_run_triage`가
+    `cost_unreported`를 실제로 채우는지 확인되지 않는다.
+    """
+    _patch_provider(monkeypatch, _무음백엔드())
+
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-budget", "50%"))
+
+    assert result.exit_code == 0, result.output
+    트리아지 = [line for line in result.output.splitlines() if "토큰 수치를 못 받은 계층" in line]
+    assert len(트리아지) == 1, result.output
+    assert "translation" in 트리아지[0]
+    # 두 요약이 같은 말을 해야 한다 - 다르면 사용자가 다른 문제로 읽는다.
+    assert result.output.count("백엔드가 토큰 수치를 내지 않았다") == 2
+
+
+def test_토큰을_낸_백엔드는_트리아지_요약에_그_줄이_없다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """언제나 붙는 경고는 읽히지 않는다 - 무시되는 경고는 없는 경고와 같다."""
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-budget", "50%"))
+
+    assert result.exit_code == 0, result.output
+    assert "토큰 수치를 못 받은 계층" not in result.output
+    assert "백엔드가 토큰 수치를 내지 않았다" not in result.output
+
+
+def test_트리아지_요약의_무음_줄은_계층을_나열한다() -> None:
+    """Tier 1이 배선되면 계층이 둘이 된다 - 이름을 안 내면 어느 쪽인지 알 수 없다."""
+    outcome = _outcome([_risk("00000", selected=True)], policy_label="예산 10%")
+    무음 = replace(outcome, cost_includes=("translation", "tier1"), cost_unreported=("tier1",))
+
+    줄 = [line for line in _format_triage_summary(무음) if "토큰 수치를 못 받은 계층" in line]
+
+    assert len(줄) == 1
+    assert "tier1" in 줄[0]
+    assert "translation" not in 줄[0], "무음이 아닌 계층까지 나열하면 범인이 흐려진다"

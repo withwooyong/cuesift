@@ -106,21 +106,82 @@ def layer_tokens_reported(usage: TokenUsage | None) -> bool:
     return usage.prompt_tokens + usage.completion_tokens > 0
 
 
-def resolve_cost_scope(
-    usages: Mapping[str, TokenUsage | None],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """계층별 usage에서 `cost_includes`와 `cost_unreported`를 **함께** 만든다.
+@dataclass(frozen=True, slots=True)
+class CostScope:
+    """`cost` 블록에 필요한 셋을 **한 번에** 낸다 (설계 D8 · 리뷰 라운드 2).
 
-    **배선부가 이 함수를 부르면 범위와 판정이 갈라질 수 없다.** 둘을 따로 적으면
-    계층을 늘린 쪽이 판정을 빠뜨리고, 그때 그 계층의 무음 열화는 `True`에
-    가려진다 - 정확히 이 필드가 막으려던 것이다.
+    **왜 합계까지 여기서 내는가.** 범위·판정만 내면 호출자가 usage를 손으로
+    합치게 되고, 그러면 합친 값을 키 하나로 다시 넘기는 경로가 열린다.
+    실측이 그 함정이다.
+
+    ```python
+    resolve_cost_scope({"translation": translated.usage + counting.usage})
+    # -> includes=("translation",) · unreported=()
+    ```
+
+    **Tier 1이 범위에서 조용히 사라지고 판정도 통과한다** - `cost_unreported`가
+    막으려던 바로 그 사각이 되돌아온다. 그리고 함수는 호출자가 무엇을 합쳤는지
+    알 수 없으므로 **검증으로는 막을 수 없다.** 합치는 일 자체를 여기로
+    가져오면 손으로 합칠 이유가 없어져 그 경로가 애초에 생기지 않는다.
+
+    **세 값을 튜플이 아니라 필드로 낸다.** `includes`와 `unreported`는 둘 다
+    `tuple[str, ...]`이라 위치가 바뀌어도 타입으로는 드러나지 않는다 - 그때
+    "범위"와 "무음 계층"이 통째로 뒤바뀌어 파일에 실린다. 이름으로 받으면
+    그 실수가 성립하지 않는다.
+    """
+
+    usage: TokenUsage
+    includes: tuple[str, ...]
+    unreported: tuple[str, ...]
+
+
+def resolve_cost_scope(usages: Mapping[str, TokenUsage | None]) -> CostScope:
+    """계층별 usage에서 `cost` 블록의 입력 셋을 만든다.
+
+    ```python
+    scope = resolve_cost_scope(
+        {"translation": translated.usage, "tier1": counting_usage_or_none}
+    )
+    TriageOutcome(
+        ...,
+        usage=scope.usage,
+        cost_includes=scope.includes,
+        cost_unreported=scope.unreported,
+    )
+    ```
+
+    **값이 `None`이면 그 계층은 이 실행에서 돌지 않았다** - 범위에서 빠지고
+    합계에도 안 들어간다. Tier 1을 끈 실행이 그 모양이고, 호출자가 dict를
+    조건부로 조립하지 않아도 되게 하려는 것이다. 계층이 **돌았는데** 토큰을
+    못 낸 경우는 `None`이 아니라 `TokenUsage(0, 0, calls=N)`으로 오고, 그때는
+    범위에 들어가면서 `unreported`에 실린다. 둘을 섞으면 "안 돌았다"가
+    "돌았는데 계측이 죽었다"로 보고돼 사용자가 없는 비용을 의심한다.
+
+    **`TriageOutcome.usage`의 `None`과는 다른 질문이다.** 그쪽은 "합계가 있느냐"를
+    묻고 여기 키는 후보 계층의 이름일 뿐이다. 두 곳의 `None`이 같은 뜻이라고
+    읽으면 꺼진 계층이 무음 계층으로 둔갑한다.
 
     입력 순서를 그대로 보존한다(NFR-3 재현성). `dict`의 삽입 순서가 곧
     `includes`의 순서이고 그것이 파일에 나간다.
     """
-    includes = tuple(usages)
-    unreported = tuple(name for name, usage in usages.items() if not layer_tokens_reported(usage))
-    return includes, unreported
+    돈_계층 = {name: usage for name, usage in usages.items() if usage is not None}
+    # 전부 `None`이면 `cost`가 무엇을 덮는지 말할 수 없다. `TriageOutcome`도
+    # 빈 범위를 거부하지만 그 시점의 메시지는 **생성부**를 가리켜 원인이
+    # 여기(잘못 조립한 매핑)라는 것을 감춘다.
+    if not 돈_계층:
+        raise ValueError(f"usages에 실제로 돈 계층이 없다: {sorted(usages)}")
+
+    usage = TokenUsage()
+    for layer_usage in 돈_계층.values():
+        usage = usage + layer_usage
+
+    return CostScope(
+        usage=usage,
+        includes=tuple(돈_계층),
+        unreported=tuple(
+            name for name, layer_usage in 돈_계층.items() if not layer_tokens_reported(layer_usage)
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
