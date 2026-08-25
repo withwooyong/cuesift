@@ -462,7 +462,7 @@ def test_회색지대가_비면_사유를_warn한다(signal_ctx):
 def test_diagnose_empty_candidates가_여섯_사유를_구분한다():
     """`_diagnose_empty_candidates`를 직접 단위 테스트한다.
 
-    다섯째(후보로 뽑혔지만 전부 번역 실패분)는
+    「후보로 뽑혔지만 전부 번역 실패분」은
     `test_공백_원문은_회색지대를_거쳐_target_text_필터에_걸린다`가 통합
     시나리오로 이미 재현했다 - 여기서는 순수 함수의 각 분기를 직접
     겨냥한다(빈 입력은 통합 테스트로 재현할 이유가 없는 사소한 경계라
@@ -480,7 +480,10 @@ def test_diagnose_empty_candidates가_여섯_사유를_구분한다():
     assert "껐다" in _diagnose_empty_candidates([gray], set(), 0.0, total=1, excluded_count=0)
 
     # ③ candidate_ids가 비지 않았는데 후보가 0건 -> target_text 필터가
-    # 전부 걸렀다.
+    # 전부 걸렀다. **이 인자 조합 자체는 파이프라인에서 안 나온다** -
+    # select_tier1_candidates([gray], 0.2)는 cap=floor(0.2)=0이라 []를 낸다
+    # (재리뷰 축2 실측). 순수 함수의 분기를 직접 겨냥한 것이고, 분기 ③의
+    # 실제 도달성은 test_공백_원문은_회색지대를_거쳐...가 따로 지킨다.
     assert "번역 실패분" in _diagnose_empty_candidates(
         [gray], {"g"}, 0.2, total=1, excluded_count=0
     )
@@ -690,16 +693,24 @@ def test_이_트랙에_없는_id는_조용히_무시된다(signal_ctx):
     assert [r.risk_score for r in 빈값] == [r.risk_score for r in 미지]
 
 
-def test_excluded_ids에_str을_그대로_주면_거부한다(signal_ctx):
-    """`str`도 타입상 유효한 `Collection[str]`이라 조용히 글자 단위로 쪼개진다.
+@pytest.mark.parametrize("나쁜_값", ["10", b"10"])
+def test_excluded_ids에_str이나_bytes를_그대로_주면_거부한다(signal_ctx, 나쁜_값):
+    """둘 다 타입상 유효한 `Collection[str]`이라 조용히 원소 단위로 쪼개진다.
 
     실측 - 12큐에 `excluded_ids="10"`을 주면 `set("10") == {"1", "0"}`이라
     **"10"은 남고 "0"·"1"이 사라진다.** 이 게이트에는 mypy가 없어 타입으로는
     안 걸리고, 이 저장소에는 정수 id 계약 사고(커밋 817ed64)가 이미 있다.
+
+    `bytes`는 더 나쁘다 - `set(b"10") == {49, 48}`으로 **정수**를 내므로
+    어떤 id와도 안 맞아 제외가 통째로 무음 실패한다(재리뷰 축2). str은
+    일부라도 맞아 티가 나는데 bytes는 전혀 안 난다.
+
+    `frozenset`·`dict.keys()`·제너레이터가 막히면 안 되므로 이 둘만 지목한다 -
+    `test_excluded_ids는_집합연산이면_충분하다` 계열이 그 통과를 지킨다.
     """
     segments = _plain_segments(12)
 
-    with pytest.raises(TypeError, match="글자 단위"):
+    with pytest.raises(TypeError, match="원소 단위"):
         triage_with_tier1(
             segments,
             signal_ctx,
@@ -707,7 +718,7 @@ def test_excluded_ids에_str을_그대로_주면_거부한다(signal_ctx):
             provider=EchoProvider(),
             max_ratio=0.0,
             warn=_ignore,
-            excluded_ids="10",
+            excluded_ids=나쁜_값,
         )
 
 
@@ -716,8 +727,9 @@ def test_전량이_excluded_ids로_빠지면_번역_실패를_가리킨다(signa
 
     실측(리뷰어) - 5큐를 전부 제외하면 `scored`가 비어 "세그먼트가 0건이다 -
     입력 자체를 봐야 한다"가 나갔다. 그런데 이 경로의 진짜 원인은 파서 사고가
-    아니라 **번역 전량 실패**다. CLI가 실패분 id를 넘기는 구조에서 프로바이더가
-    죽으면 정확히 여기로 오고, 그때 "입력을 봐라"는 사람을 반대쪽으로 보낸다.
+    아니라 **번역 전량 실패**다. 호출자가 실패분 id를 넘기면 프로바이더가
+    죽었을 때 정확히 여기로 오고, 그때 "입력을 봐라"는 사람을 반대쪽으로
+    보낸다(그 배선은 WP8b Task 6이 한다 - 아직 리포에 없다).
 
     `_diagnose_empty_candidates`의 존재 이유가 원인 구분이고, 그 함수의 주석은
     바로 이 실수의 **반대 방향**(빈 입력을 전량 hard_fail로 오진)을 막으려고
