@@ -1,4 +1,10 @@
-"""프로바이더 계약과 예외 계층 (요구사항정의서 FR-2.5, FR-2.6)."""
+"""프로바이더 계약과 예외 계층 (요구사항정의서 FR-2.5, FR-2.6).
+
+파일 뒤쪽 절반은 `CountingProvider` 검증이다 (FR-7.4 · 설계 D6·D7).
+**"몇 번 불렀나"가 아니라 "몇 토큰을 썼나"를 센다.** 캐시 히트는 실제로
+토큰을 쓰지 않으므로 잡히지 않는 것이 정확한 동작이다 - `cost`는 청구서에
+가까운 물건이다(D7).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,7 @@ import pytest
 from cuesift.translate.provider import (
     ChatMessage,
     Completion,
+    CountingProvider,
     FatalProviderError,
     ProviderError,
     RetryableProviderError,
@@ -144,3 +151,86 @@ def test_nan은_비교만으로는_걸러지지_않는다() -> None:
     # 바뀌지 않는 한 isfinite를 빼면 안 된다.
     assert not (math.nan < 0)
     assert not (math.nan >= 0)
+
+
+# --- CountingProvider (FR-7.4 · 설계 D6·D7) ---
+
+
+class _고정프로바이더:
+    """호출마다 같은 usage를 내는 가짜."""
+
+    name = "fake"
+
+    def __init__(self, usage: TokenUsage) -> None:
+        self._usage = usage
+        self.calls = 0
+
+    def complete(self, messages, *, temperature, max_tokens) -> Completion:
+        self.calls += 1
+        return Completion(text="ok", usage=self._usage)
+
+
+def _메시지() -> list[ChatMessage]:
+    return [ChatMessage(role="user", content="안녕")]
+
+
+def test_통과한_토큰을_누적한다() -> None:
+    inner = _고정프로바이더(TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1))
+    counting = CountingProvider(inner)
+
+    for _ in range(3):
+        counting.complete(_메시지(), temperature=1.0, max_tokens=None)
+
+    assert counting.usage.prompt_tokens == 30
+    assert counting.usage.completion_tokens == 15
+    assert counting.usage.calls == 3
+
+
+def test_한_번도_안_부르면_0이다() -> None:
+    """Tier 1을 켰지만 후보가 0건인 실행이 이 상태다."""
+    counting = CountingProvider(_고정프로바이더(TokenUsage()))
+    assert counting.usage.prompt_tokens == 0
+    assert counting.usage.completion_tokens == 0
+    assert counting.usage.calls == 0
+
+
+def test_결과를_그대로_돌려준다() -> None:
+    inner = _고정프로바이더(TokenUsage(prompt_tokens=1, completion_tokens=1, calls=1))
+    completion = CountingProvider(inner).complete(_메시지(), temperature=0.5, max_tokens=99)
+    assert completion.text == "ok"
+
+
+def test_인자를_그대로_넘긴다() -> None:
+    """`temperature`·`max_tokens`를 바꿔 넘기면 캐시 키가 어긋나 전량 미스가 된다."""
+    받은: dict[str, object] = {}
+
+    class _기록프로바이더:
+        name = "rec"
+
+        def complete(self, messages, *, temperature, max_tokens) -> Completion:
+            받은.update(temperature=temperature, max_tokens=max_tokens, n=len(messages))
+            return Completion(text="", usage=TokenUsage())
+
+    CountingProvider(_기록프로바이더()).complete(_메시지(), temperature=0.7, max_tokens=4096)
+    assert 받은 == {"temperature": 0.7, "max_tokens": 4096, "n": 1}
+
+
+def test_예외를_삼키지_않는다() -> None:
+    """**삼키면 `SelfConsistency`가 `FatalProviderError`를 다시 던지는 설계가 죽는다.**
+
+    401을 삼키면 그 실행은 "Tier 1이 돌았고 아무것도 안 걸렸다"로 보인다.
+    """
+
+    class _터지는프로바이더:
+        name = "boom"
+
+        def complete(self, messages, *, temperature, max_tokens) -> Completion:
+            raise FatalProviderError("401")
+
+    with pytest.raises(FatalProviderError):
+        CountingProvider(_터지는프로바이더()).complete(_메시지(), temperature=1.0, max_tokens=None)
+
+
+def test_name을_위임한다() -> None:
+    """`identity` 조립이 프로바이더 이름을 읽으므로 래퍼 이름이 새면 캐시가 갈라진다."""
+    assert CountingProvider(_고정프로바이더(TokenUsage())).name == "fake"

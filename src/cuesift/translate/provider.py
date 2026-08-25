@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 Role = Literal["system", "user", "assistant"]
@@ -186,3 +186,47 @@ class Provider(Protocol):
         `openai_compat.py`가 이 셋을 지키는 참조 구현이다.
         """
         ...
+
+
+@dataclass
+class CountingProvider:
+    """통과한 `Completion`의 토큰을 누적하는 위임 래퍼 (FR-7.4 · 설계 D6·D7).
+
+    **`collect_tier1`의 반환형을 바꾸지 않고 Tier 1 비용을 얻는 수단이다.**
+    `Tier1Context.provider_for`가 팩토리라 CLI가 넘긴 프로바이더가 그대로
+    아래로 내려간다 - 그 성질을 이용한다(설계 §3.3).
+
+    **`CachingProvider`의 안쪽에 놓인다**(D7). 캐시 히트는 `complete`를
+    부르지 않으므로 여기 잡히지 않고, 그것이 정확한 동작이다 - 실제로 쓰지
+    않은 토큰이다. 바깥에 두면 *요청한* 호출을 세게 되어 `cost`가 청구서와
+    어긋난다.
+
+    **예외를 잡지 않는다.** `Provider.complete`의 계약 셋(오류는
+    `Retryable`/`Fatal`로 던진다 · `text`는 반드시 `str` · 재시도하지
+    않는다)을 위임으로 그대로 통과시킨다. 여기서 `except`를 달면
+    `SelfConsistency`가 `FatalProviderError`를 일부러 다시 던지는 설계
+    (`signals/llm.py`)가 무력해져, 401이 난 실행이 **"Tier 1이 돌았고
+    아무것도 안 걸렸다"** 로 보인다.
+    """
+
+    inner: Provider
+    # `frozen=True`를 붙이면 안 된다 - `usage`는 호출마다 갈아 끼우는 누적값이라
+    # 동결하면 첫 `complete`에서 `FrozenInstanceError`가 난다.
+    usage: TokenUsage = field(default_factory=TokenUsage)
+
+    @property
+    def name(self) -> str:
+        # 래퍼 이름이 새면 `identity` 조립이 달라져 **캐시가 통째로 갈라진다** -
+        # 이전 실행의 캐시를 한 건도 못 읽는다.
+        return self.inner.name
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> Completion:
+        completion = self.inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        self.usage = self.usage + completion.usage
+        return completion
