@@ -17,8 +17,10 @@ from cuesift.store.provider import CachingProvider
 from cuesift.translate.openai_compat import OpenAICompatibleProvider
 from cuesift.translate.provider import (
     ChatMessage,
+    Completion,
     FatalProviderError,
     RetryableProviderError,
+    TokenUsage,
 )
 
 _MESSAGES = (ChatMessage(role="system", content="지시"), ChatMessage(role="user", content="안녕"))
@@ -263,3 +265,55 @@ def test_캐시_파일에_사람이_읽을_재료가_남는다(tmp_path: Path) -
 
     assert raw["identity"] == "i|u|qwen2.5:3b"
     assert raw["created_at"]
+
+
+# --- 위임 사슬 (재리뷰 1번) ---
+
+
+class _닫히는프로바이더:
+    """`close`를 가진 가짜. 진짜 프로바이더는 여기서 httpx 커넥션 풀을 정리한다."""
+
+    name = "closable"
+
+    def __init__(self) -> None:
+        self.closed = 0
+
+    def complete(self, messages, *, temperature, max_tokens) -> Completion:
+        return Completion(text="ok", usage=TokenUsage())
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_close를_안쪽으로_위임한다(tmp_path: Path) -> None:
+    """위임하지 않으면 **사슬이 절반만 이어진다.**
+
+    D7 정답 배치는 `CachingProvider(CountingProvider(raw))`인데, 안쪽
+    `CountingProvider`만 `close`를 넘기고 바깥이 안 넘기면 `cli`의
+    `getattr(provider, "close", None)`이 다시 `None`을 받아 raw의 커넥션 풀이
+    정리되지 않는다. 절반만 이어진 사슬은 양극단보다 나쁘다 - 안쪽이 위임하는
+    것을 본 독자가 사슬 전체가 통한다고 가정한다.
+    """
+    inner = _닫히는프로바이더()
+    _cached(inner, tmp_path).close()
+    assert inner.closed == 1
+
+
+def test_close가_없는_안쪽에서도_조용히_끝난다(tmp_path: Path) -> None:
+    """`close`를 안 가진 가짜가 흔하다(`ScriptedProvider`). 여기서 터지면 dry-run이 죽는다."""
+    _cached(ScriptedProvider(["응답1"]), tmp_path).close()
+
+
+def test_cache_identity는_의도적으로_없다() -> None:
+    """**이것을 더하면 이중 래핑이 조용히 가능해진다** - 어느 identity가 이기는지 불명확해진다.
+
+    `CachingProvider`는 identity를 **생성자 인자로 받는다**. 그것이 설계다.
+    `inner`에서 파생시켜 노출하면 `CachingProvider`를 또 감쌀 때 바깥이 안쪽의
+    identity를 물려받아, 호출자가 지정한 값과 파생된 값 중 무엇이 키에 들어가는지
+    코드를 파야 알 수 있게 된다. `close`를 위임하면서 이것만 뺀 이유가 여기 있다 -
+    "캐시 래퍼를 닫으면 inner를 닫는다"는 해석이 하나뿐인 것과 대조된다.
+
+    호출자는 **raw provider에서 identity를 먼저 뽑고 그 다음에 감싼다**
+    (`cli.py`의 `_cache_identity(provider)` → `CachingProvider(provider, identity=...)`).
+    """
+    assert not hasattr(CachingProvider, "cache_identity")

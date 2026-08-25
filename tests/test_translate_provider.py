@@ -319,7 +319,7 @@ def test_참조_구현의_공개_표면을_빠짐없이_덮는다() -> None:
 # --- CountingProvider의 배치 (설계 D6·D7) ---
 
 
-def _캐시된_두_번(provider, tmp_path: Path) -> None:
+def _두_번_부른다(provider) -> None:
     for _ in range(2):
         provider.complete(_메시지(), temperature=0.0, max_tokens=None)
 
@@ -330,7 +330,7 @@ def test_캐시_안쪽에_놓으면_히트를_토큰으로_세지_않는다(tmp_
     counting = CountingProvider(raw)
     cached = CachingProvider(counting, identity="i|u|m", cache_dir=tmp_path)
 
-    _캐시된_두_번(cached, tmp_path)
+    _두_번_부른다(cached)
 
     assert (raw.calls, cached.hits, cached.misses) == (1, 1, 1)
     # 두 번 요청했지만 나간 것은 한 번이다. 히트는 토큰을 쓰지 않았다.
@@ -347,7 +347,21 @@ def test_캐시_바깥에_놓으면_히트까지_토큰으로_센다(tmp_path: P
     cached = CachingProvider(raw, identity="i|u|m", cache_dir=tmp_path)
     counting = CountingProvider(cached)
 
-    _캐시된_두_번(counting, tmp_path)
+    _두_번_부른다(counting)
 
     assert raw.calls == 1
     assert counting.usage == TokenUsage(prompt_tokens=20, completion_tokens=10, calls=2)
+
+
+def test_D7_스택_전체가_close를_raw까지_전달한다(tmp_path: Path) -> None:
+    """**단독 위임 테스트로는 못 잡는 구멍이다** (재리뷰 1번).
+
+    `test_close를_위임한다`는 `CountingProvider`만 재기 때문에, 정답 배치
+    `CachingProvider(CountingProvider(raw))`의 **바깥 고리**가 끊겨 있어도 통과한다.
+    사슬은 끝에서 끝까지 재야 이어진 것이다.
+    """
+    raw = _풀표면프로바이더()
+
+    CachingProvider(CountingProvider(raw), identity="i|u|m", cache_dir=tmp_path).close()
+
+    assert raw.closed == 1
