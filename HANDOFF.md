@@ -1,18 +1,16 @@
 # Session Handoff
 
 > Last updated: 2026-08-27 (KST)
-> Branch: **`feat/tier1-cli`** — **PR [#10](https://github.com/withwooyong/cuesift/pull/10)이
-> 열려 있고 CI 3잡이 통과했다. 머지는 이 커밋 직후다.**
-> 아래 "이 브랜치의 배포 상태"를 명령까지 그대로 읽어라. 커밋 수는 매 커밋마다
-> 자신을 포함하지 못해 여기 적은 숫자가 항상 낡는다 —
-> `git rev-list --count main..HEAD`로 직접 센다(이 문서를 쓴 시점 **41**).
-> **WP8b는 완료다.** 태스크 10개와 최종 브랜치 리뷰 2축, fix 1라운드, 재리뷰 2축까지 닫혔다.
+> **WP8b는 `main`에 머지됐다** — PR [#10](https://github.com/withwooyong/cuesift/pull/10),
+> merge commit `5970143`. 태스크 10개와 최종 브랜치 리뷰 2축, fix 1라운드, 재리뷰 2축,
+> CI 3잡까지 전부 닫혔다. **작업 중인 브랜치가 없다.**
+> 다음 작업은 **WP5의 FR-7.3**(`report.html`)이다.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
 ## Current Status
 
-**WP8b가 끝났고 다음 행동은 PR이다.** 이 브랜치는 **CI를 한 번도 안 거쳤다** — 아래
-"다음 세션이 가장 먼저 할 일"을 보라.
+**WP8b가 끝났고 `main`에 들어갔다.** 아래 표의 커밋들은 merge commit `5970143` 아래에
+그대로 남아 있다 — squash가 아니라 merge commit을 고른 이유가 그것이다(아래 "영구 기록").
 
 | Task | 무엇 | 커밋 |
 | --- | --- | --- |
@@ -73,36 +71,43 @@ $ cuesift translate 입력.srt --target en --review-budget 10% \
 **마지막 행이 최종 리뷰가 잡은 결함이다.** 자세한 것은 아래 "이 브랜치가 마지막에
 배운 것"을 보라.
 
-## 이 브랜치의 배포 상태 — **값이 아니라 명령을 돌려서 확인해라**
+## 배포 절차 — **"푸시했다"와 "CI가 돌았다"는 다르다**
 
-**"푸시했다"와 "CI가 돌았다"가 이 저장소에서는 분리돼 있다.** 보통 리포에서는 둘이
-같아서 산문으로 쓰면 매번 도로 붙는다 — **이 문단이 두 번 틀렸다**(아래 ⑥). 그래서
-표로 가르고 확인 명령을 함께 둔다.
+WP8b의 결과는 아래와 같고 **전부 닫혔다.**
 
-| 상태 | 이 문서를 쓴 시점 | 확인 명령 |
-| --- | --- | --- |
-| PR | ✅ **[#10](https://github.com/withwooyong/cuesift/pull/10)** | `gh pr list --head feat/tier1-cli --state all` |
-| CI | ✅ **3잡 전부 통과** — `test 3.11` · `test 3.12` · `docs` | `gh pr checks 10` |
-| 머지 | **이 커밋 직후 merge commit으로 진행** | `git log --oneline main \| head -3` |
-| 브랜치 잔존 | 머지되면 지운다 | `git ls-remote origin feat/tier1-cli` |
+| 항목 | 결과 |
+| --- | --- |
+| PR | [#10](https://github.com/withwooyong/cuesift/pull/10) MERGED (2026-08-27T11:53:58Z) |
+| merge commit | `5970143` — 41커밋이 그 아래 그대로 남아 있다 |
+| CI | `test 3.11` · `test 3.12`(**1269 passed / 1 skipped**) · `docs` 전부 pass |
+| 브랜치 | 로컬·원격 모두 삭제 |
 
-**세 번째 줄이 유일하게 미래형이다** — 이 문서를 커밋한 뒤에 머지하므로 그렇게 적을
-수밖에 없다. **확인 명령으로 실제 상태를 봐라.**
+**다음 브랜치도 같은 절차를 밟아라. 이 문단은 두 번 틀렸다**(아래 ⑥) — 보통 리포에서는
+푸시와 CI가 같아서 산문으로 쓰면 매번 도로 붙는다. **값이 아니라 명령으로 확인해라.**
+
+| 무엇 | 확인 명령 |
+| --- | --- |
+| 원격에 브랜치가 있나 | `git ls-remote origin <브랜치>` |
+| 미푸시 커밋 | `git rev-list --count origin/<브랜치>..HEAD` |
+| PR이 있나 | `gh pr list --head <브랜치> --state all` |
+| CI가 돌았나 | `gh pr checks <번호>` — **PR이 없으면 안 돌았다** |
 
 **푸시만으로는 CI가 안 돈다.** `.github/workflows/ci.yml`의 트리거는
 `push: branches: [main]` · `pull_request:` · `workflow_dispatch:`뿐이라
 **기능 브랜치 푸시는 어느 것도 건드리지 않는다.** PR을 열거나 `workflow_dispatch`로
-이 ref를 지정해야 한다.
+그 ref를 지정해야 한다.
 
 **이것이 "푸시했으니 검증됐다"는 착각의 자리다.** 로컬 venv는 3.14이고 CI는 3.11·3.12라
 로컬 통과는 서로 다른 버전에서의 통과를 보장하지 않는다 — **이번에 실제로 갈렸다**(아래 ⑦).
+`main` 직접 푸시가 금지된 이유가 그것이다. 직접 푸시하면 **머지된 뒤에야** CI가 돌아
+게이트가 아니라 사후 통보가 된다.
 
 ### 다음 작업은 WP5의 FR-7.3이다
 
 `report.html`. **렌더러 하나다** — `TriageOutcome`을 HTML로 그리면 되고
-`spans[].side`가 이미 실려 있다. 자세한 순위는 아래 "PR이 머지된 뒤의 순위"를 보라.
+`spans[].side`가 이미 실려 있다. 자세한 순위는 아래 "남은 작업 순위"를 보라.
 
-### PR이 머지된 뒤의 순위
+### 남은 작업 순위
 
 | WP | 상태 | 근거 |
 | --- | --- | --- |
@@ -113,7 +118,7 @@ $ cuesift translate 입력.srt --target en --review-budget 10% \
 
 ## 파킹된 finding 8건 — **원장이 아니라 여기가 영구 기록이다**
 
-원장(`.superpowers/sdd/2026-08-25-tier1-cli/progress.md`, 1671줄)은 gitignore 안이라
+원장(`.superpowers/sdd/2026-08-25-tier1-cli/progress.md`, **1813줄**)은 gitignore 안이라
 **`git clean -fdx`가 지운다.** 판정 근거까지 여기 옮긴다.
 
 **"아직 안 봤다"가 아니라 "보고 판단했다"이므로, 다시 열려면 판정 근거를 먼저 반박해야 한다.**
@@ -397,26 +402,32 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 
 ## 리뷰 원장은 **git 밖에 있다**
 
-`.superpowers/sdd/2026-08-25-tier1-cli/progress.md`(**1671줄**)에 Ruling R1~R78과
+`.superpowers/sdd/2026-08-25-tier1-cli/progress.md`(**1813줄**)에 Ruling **R1~R85**와
 태스크별 게이트 수치·변이 사망 건수가 전부 있으나 `.superpowers/sdd/.gitignore`(`*`)로
 완전히 빠져 있다. **`git clean -fdx`가 지운다.**
 
-**이 문서와 커밋 메시지가 유일한 영구 기록이다.** 그래서 파킹 8건과 Ruling 다섯 개를
-위에 옮겼다.
+**머지 후에도 지우지 않았다**(R85). SDD 절차는 워크스페이스 삭제를 지시하지만 그 의도는
+"리포를 어지럽히지 않게"이고 gitignore라 **이미 달성돼 있다.** 남기는 비용이 0이고
+"왜 그렇게 했나"를 물을 때 유일한 상세 출처이며 삭제는 되돌릴 수 없다.
+**다만 그 파일이 있다고 믿고 의존하지는 마라 — 언제든 사라질 수 있다.**
+
+**이 문서와 41개 커밋 메시지가 유일한 영구 기록이다.** 그래서 파킹 8건과 Ruling 다섯 개를
+위에 옮겼다. `git log --oneline 5970143^1..5970143^2`가 그 41개를 낸다.
 
 ## 다음 세션 시작 절차
 
 ```bash
 git checkout main && git pull
 git log --oneline | head -5                   # 원장이 없으면 커밋 메시지가 원장이다
+git status --short                            # clean이어야 한다
 
-# 배포 상태는 문서를 믿지 말고 여기서 다시 센다 (위 ⑥)
-gh pr view 10 --json state,mergedAt           # 머지됐나
-git ls-remote origin feat/tier1-cli           # 비면 브랜치가 정리됐다
+# WP8b의 판단 근거를 파려면
+git log --oneline 5970143^1..5970143^2        # merge commit 아래의 41커밋
 ```
 
 **WP8b에는 코드에 손댈 것이 남아 있지 않다** — 최종 리뷰 2축과 재리뷰 2축이 모두 잔여
-finding 0건으로 닫혔고 CI 3잡이 통과했다. 다음 작업은 **WP5의 FR-7.3**(`report.html`)이다.
+finding 0건으로 닫혔고 CI 3잡이 통과했으며 `main`에 머지됐다.
+다음 작업은 **WP5의 FR-7.3**(`report.html`)이다.
 
 **착수 전에 위 "파킹된 finding 8건"의 「다시 열 조건」 열을 훑어라.** 8건 중 2·3번
 (실패 사유가 안 나온다)은 FR-7.3과 같은 계열이 아니지만, 사용자가 실제로 부딪히는
