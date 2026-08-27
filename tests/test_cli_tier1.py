@@ -32,6 +32,7 @@ from cuesift.cli import (
     _TIER1_DEFAULT_MAX_RATIO,
     _TIER1_DEFAULT_SAMPLES,
     _TIER1_DEFAULT_TEMPERATURE,
+    _TIER1_WARN_PREFIX,
     app,
 )
 from cuesift.tier1 import triage_with_tier1
@@ -366,18 +367,31 @@ def _echo_failing_three() -> EchoProvider:
     return EchoProvider(transform=lambda s: "   " if s in _실패시킬_원문 else "Hello there")
 
 
-def _assert_tier1_ran(result: Result) -> None:
-    """Tier 1 후보가 **1건 이상**이었는지 확인한다.
+def _assert_tier1_ran(fake: EchoProvider, *, targets: int = 1) -> None:
+    """Tier 1이 **실제로 LLM을 불렀는지** 확인한다.
 
     **이것이 없으면 대부분의 단언이 무연산 위에서 초록이 된다.** 후보 0건이면
     `triage_with_tier1`이 LLM을 한 번도 안 부르고 조기 반환하는데, 그때도
     `cost.includes`는 `["translation", "tier1"]`이고 종료 코드도 파일 형태도
     똑같다 - Ruling P12가 `warn`을 필수 인자로 만든 이유가 이것이다.
 
-    후보가 0건이면 `_run_triage`가 그 사유를 `[언어] Tier 1: ...`로 낸다.
-    그 줄이 **없다는 것**이 후보가 생겼다는 증거다.
+    **부재 단언이 아니라 긍정 단언이다.** 이전 판은 `"Tier 1:" not in output`
+    으로 경고 줄의 **부재**를 봤는데, 그러면 접두 문구를 바꾸는 것만으로 단언이
+    조용히 항상 참이 된다(리뷰 축2 실측: 사망 0건 · 도달성 프로브 사망 8건에서
+    4건으로 반토막). 프로바이더가 실제로 몇 번 불렸는지는 문구와 무관하다.
+
+    **분모가 `targets`인 근거**: 이 파일의 픽스처는 10큐이고
+    `DEFAULT_BATCH_SIZE`가 10이라 번역은 **대상 언어당 배치 1회**로 끝난다.
+    따라서 그보다 많이 불렸다면 그 초과분은 Tier 1 재번역뿐이다. 픽스처가
+    배치 하나를 넘게 커지면 이 단언이 **거짓 실패**로 그 사실을 알린다 -
+    조용히 통과하는 것보다 낫다.
     """
-    assert "Tier 1:" not in result.output, f"Tier 1 후보가 0건이다:\n{result.output}"
+    번역호출 = targets
+    assert len(fake.calls) > 번역호출, (
+        f"프로바이더가 {len(fake.calls)}회 불렸다 - 번역({번역호출}회) 말고는 "
+        "아무것도 나가지 않았다. Tier 1 후보가 0건이면 이 스위트의 단언 대부분이 "
+        "무연산 위에서 초록이 된다"
+    )
 
 
 def _full_args(
@@ -447,12 +461,14 @@ def test_tier1을_켜면_cost_includes에_tier1이_실린다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """FR-7.4. 이것이 없으면 파일이 '번역만 셌다'고 말하면서 실제로도 번역만 센다."""
-    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS)
+    fake = _clean_echo()
+
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=fake)
 
     assert result.exit_code == 0, result.output
     # **`includes`만 보면 후보 0건에서도 통과한다** - `_TIER1_RUNS`가 장식이
     # 된다(리뷰 축2 실측: 후보를 0건으로 강제해도 이 테스트가 살았다).
-    _assert_tier1_ran(result)
+    _assert_tier1_ran(fake)
     assert _read_review(tmp_path)["summary"]["cost"]["includes"] == ["translation", "tier1"]
 
 
@@ -484,12 +500,13 @@ def test_tier1이_쓴_토큰이_usage에_더해진다(
     **`calls`만이 아니라 토큰까지 본다.** 호출 수는 늘고 토큰은 그대로인 배선
     (누적을 `calls` 한 줄로만 하는 변이)이 `calls` 단언만으로는 통과한다.
     """
+    fake = _clean_echo()
     plain = _run_plain(tmp_path / "a", monkeypatch)
-    tier1 = _run_tier1(tmp_path / "b", monkeypatch, *_TIER1_RUNS)
+    tier1 = _run_tier1(tmp_path / "b", monkeypatch, *_TIER1_RUNS, provider=fake)
 
     assert plain.exit_code == 0, plain.output
     assert tier1.exit_code == 0, tier1.output
-    _assert_tier1_ran(tier1)
+    _assert_tier1_ran(fake)
     일반 = _read_review(tmp_path / "a")["summary"]["cost"]
     티어1 = _read_review(tmp_path / "b")["summary"]["cost"]
     assert 티어1["calls"] > 일반["calls"]
@@ -505,7 +522,12 @@ def test_후보_0건이면_사유가_화면에_나온다(tmp_path: Path, monkeyp
     result = _run_tier1(tmp_path, monkeypatch)
 
     assert result.exit_code == 0, result.output
-    assert "Tier 1" in result.output
+    # **접두 문구를 상수로 못 박는다.** `_assert_tier1_ran`이 예전에 이 문구의
+    # **부재**로 후보 유무를 판정했는데, 접두를 코드에서만 바꾸면 그 단언이
+    # 조용히 항상 참이 됐다(리뷰 축2 실측: 사망 0건). 지금은 판정을 호출 수로
+    # 옮겼지만, 사용자가 보는 줄이 실제로 이 모양인지는 **여기서만** 잰다 -
+    # 이 단언이 없으면 사유 보고가 통째로 사라져도 스위트가 초록이다.
+    assert f"[en] {_TIER1_WARN_PREFIX}" in result.output, result.output
     assert "max_ratio" in result.output
 
 
@@ -524,11 +546,12 @@ def test_번역_실패분이_있어도_분모가_같다(tmp_path: Path, monkeypa
     `floor(7 x 0.145) = 1`을 내고 곱은 `2 x 0.145 = 0.29`로 한도 아래다.
     """
     실패조합 = ("--tier1-max-ratio", "0.145", "--tier1-samples", "2")
+    fake = _echo_failing_three()
     plain = _run_plain(tmp_path / "a", monkeypatch, provider=_echo_failing_three())
-    tier1 = _run_tier1(tmp_path / "b", monkeypatch, *실패조합, provider=_echo_failing_three())
+    tier1 = _run_tier1(tmp_path / "b", monkeypatch, *실패조합, provider=fake)
 
     assert tier1.exit_code == plain.exit_code, tier1.output
-    _assert_tier1_ran(tier1)
+    _assert_tier1_ran(fake)
     일반 = _read_review(tmp_path / "a")["summary"]
     티어1 = _read_review(tmp_path / "b")["summary"]
     assert 일반["excluded_failures"] == 3, "실패가 0이면 아래 검산이 항등식이 된다"
@@ -569,7 +592,7 @@ def test_계측이_캐시_안쪽에_놓인다(tmp_path: Path, monkeypatch: pytes
     # 이 단언들은 후보 0건에서도 성립한다(넘긴 객체는 후보 판정 전에 정해진다).
     # 그래도 도달성을 함께 못 박는 것은, 이 테스트가 조용히 Tier 1을 안 돌리는
     # 조합으로 흘러가면 위 `cache_dir`의 의미가 사라지기 때문이다.
-    _assert_tier1_ran(result)
+    _assert_tier1_ran(fake)
     counting = 캡처["provider"]
     assert isinstance(counting, CountingProvider)
     # **`inner`까지 확인한다.** `CountingProvider(CachingProvider(raw))`는 위
@@ -618,10 +641,26 @@ def test_샘플마다_다른_캐시_키를_쓴다(tmp_path: Path, monkeypatch: p
     **Task 1이 막은 것과 같은 방에 다른 문으로 들어가는 결함이다**
     (`key(None) == key(0)`).
 
-    | | raw 호출 | Tier 1 캐시 엔트리 |
-    | --- | --- | --- |
-    | 정상 `CachingProvider(CountingProvider(raw))` | **2** | **2** |
-    | 순서만 뒤집음 | 1 | 1 |
+    **실측(번역 1회 포함, 캐시 켬 · 후보 1건 · 샘플 2회):**
+
+    | | raw 호출 | 캐시 엔트리 | `cost.calls` |
+    | --- | --- | --- | --- |
+    | 정상 `CachingProvider(CountingProvider(raw))` | **3** | 3 | **3** |
+    | 순서만 뒤집음 | **2** | 3 | **3** |
+
+    **캐시 엔트리 개수로는 이 결함을 볼 수 없다 - 구조적으로 불가능하다.**
+    뒤집힌 배치에서 안쪽 캐시는 `attempt=0` 고정인데 바깥 캐시의 첫 샘플도
+    `attempt=0`이라 **둘이 같은 키를 쓴다** - 두 번의 쓰기가 같은 파일에
+    떨어져 개수가 안 는다. 결함의 정체가 "키가 뭉친다"인데 그 뭉침을 키 수로
+    재려 한 것이 잘못이었다(이전 판의 오류 - 표에 2 vs 1을 적었으나 실측은
+    3 vs 3이다).
+
+    그래서 각도 둘은 이렇다.
+
+    | 각도 | 무엇을 재나 |
+    | --- | --- |
+    | `len(fake.calls)` | 샘플 N개가 **실제로 N번 나갔나** |
+    | `cost.calls == len(fake.calls)` | 청구서가 **실제 나간 수와 같은가** |
 
     구조 단언(`counting.inner is fake`)과 **독립**이다 - 그 한 줄을 지워도
     이 테스트가 남는다. 리뷰 축2가 "그 줄이 유일한 게이트"라고 실측했다.
@@ -632,14 +671,24 @@ def test_샘플마다_다른_캐시_키를_쓴다(tmp_path: Path, monkeypatch: p
     result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=fake, cache_dir=cache)
 
     assert result.exit_code == 0, result.output
-    _assert_tier1_ran(result)
-    # 번역 배치 1회 + Tier 1 후보 1건 x 샘플 2회.
+    _assert_tier1_ran(fake)
+    # ① 번역 배치 1회 + Tier 1 후보 1건 x 샘플 2회.
     assert len(fake.calls) == 3, (
         f"샘플이 실제로 나간 횟수가 다르다: {len(fake.calls)}회. "
         "2회여야 할 Tier 1 재번역이 1회로 뭉쳤다면 샘플이 같은 캐시 키를 쓴 것이다"
     )
-    # 같은 근거를 캐시 쪽에서 한 번 더 잰다 - 키가 실제로 갈라졌나.
-    assert len(list(cache.rglob("*.json"))) == 3
+    # ② 청구서와 실제가 같은가. 계측기가 캐시 **바깥**에 있으면 히트까지 세어
+    # `cost.calls`가 실제로 나간 호출보다 커진다 - 실측으로 뒤집으면 raw는 2회인데
+    # 청구서는 3회를 적는다.
+    #
+    # **찬 캐시에서만 성립한다.** 데운 캐시에서는 번역 계층이 저장된 usage를
+    # 그대로 replay하므로 raw를 안 부르고도 `cost.calls`가 는다(`COST_BASIS`의
+    # `cached-included`). `tmp_path` 밑이라 매번 찬 상태로 시작한다.
+    cost = _read_review(tmp_path)["summary"]["cost"]
+    assert cost["calls"] == len(fake.calls), (
+        f"청구서 {cost['calls']}회 vs 실제 {len(fake.calls)}회 - "
+        "계측기가 캐시 바깥에서 히트를 세고 있다"
+    )
 
 
 def test_대상_언어마다_계측기가_분리된다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -663,10 +712,12 @@ def test_대상_언어마다_계측기가_분리된다(tmp_path: Path, monkeypat
 
     monkeypatch.setattr("cuesift.cli.triage_with_tier1", spy)
 
-    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, to="en,ja")
+    fake = _clean_echo()
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, to="en,ja", provider=fake)
 
     assert result.exit_code == 0, result.output
-    _assert_tier1_ran(result)
+    # 대상이 둘이라 번역만으로 배치 2회다 - 분모를 1로 두면 번역만 돌아도 통과한다.
+    _assert_tier1_ran(fake, targets=2)
     en = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]["cost"]
     ja = _read_review(tmp_path, "ten_cues.ja.review.json")["summary"]["cost"]
     assert en["includes"] == ["translation", "tier1"]
@@ -704,7 +755,7 @@ def test_tier1_temperature가_샘플러까지_간다(
     )
 
     assert result.exit_code == 0, result.output
-    _assert_tier1_ran(result)
+    _assert_tier1_ran(fake)
     온도들 = [t for t, _ in fake.kwargs]
     # 후보 1건 x 샘플 2회. 개수까지 보는 이유는 "한 번은 닿았다"가 "N번 다
     # 닿았다"를 뜻하지 않기 때문이다.

@@ -143,6 +143,17 @@ _TIER1_DEFAULT_TEMPERATURE = 1.0  # OpenAI Chat Completions API 명세의 기본
 # 그때는 DEFAULT_BATCH_SIZE가 산식에서 빠져 한도가 3.0이 된다.
 _TIER1_COST_LIMIT = 0.3
 
+# Tier 1 후보가 0건일 때 사유를 내는 줄의 **접두 문구**(Ruling P12).
+#
+# **리터럴로 두면 안 된다.** 테스트 `_assert_tier1_ran`이 "이 줄이 없다"는
+# **부재**로 후보 유무를 판정하는데, 접두를 여기서만 바꾸면 그 단언이 조용히
+# 항상 참이 되어 무연산 게이트가 된다(리뷰 축2 실측: `"Tier 1: "`를
+# `"Tier 1 - "`로 바꾸는 것만으로 사망 0건, 도달성 프로브 사망도 8건에서
+# 4건으로 반토막). 상수를 공유하면 문구와 게이트가 함께 움직인다.
+#
+# **출력 문자열이라 em dash를 쓰지 않는다**(전역 제약, cp949 미인코딩).
+_TIER1_WARN_PREFIX = "Tier 1: "
+
 app = typer.Typer(
     name="cuesift",
     # em dash(U+2014)를 쓰지 않는다. 이 문자열은 `--help`로 출력되는데
@@ -1955,7 +1966,7 @@ def _run_triage(
             # **`err=True`를 주지 않는다.** 이것은 실패가 아니라 "무엇이
             # 일어났는가"의 보고이고, 같은 함수의 트리아지 요약과 나란히 읽혀야
             # 한다 - 한쪽만 stderr로 가면 리다이렉트한 로그에서 순서가 섞인다.
-            warn=lambda message: _echo(f"[{target_lang}] Tier 1: {message}"),
+            warn=lambda message: _echo(f"[{target_lang}] {_TIER1_WARN_PREFIX}{message}"),
             samples=tier1.samples,
             temperature=tier1.temperature,
             cache_dir=tier1.cache_dir,
