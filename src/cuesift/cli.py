@@ -592,7 +592,13 @@ def translate(
             # 기본으로 두면 사용자가 친 0.05와 기본 0.05를 구별할 수 없어
             # `--tier1` 없이 준 것을 잡지 못한다. 사용자에게 보일 기본값은
             # 아래 help 문구가 대신 말한다.
-            help="Tier 1을 태울 회색지대 후보 상한 비율 (기본 0.05). --tier1과 함께 씁니다.",
+            # **기본값을 리터럴로 쓰지 않는다.** 리터럴이면 상수를 고쳤을 때
+            # 도움말만 옛 값을 말하는 조용한 거짓말이 남는다 - 사용자는 화면에
+            # 적힌 값을 믿고 그 값으로 비용을 계산한다.
+            help=(
+                f"Tier 1을 태울 회색지대 후보 상한 비율 (기본 {_TIER1_DEFAULT_MAX_RATIO})."
+                " --tier1과 함께 씁니다."
+            ),
         ),
     ] = None,
     tier1_samples: Annotated[
@@ -603,7 +609,10 @@ def translate(
             # 1이면 비교할 쌍이 0개라 유사도 계산 자체가 성립하지 않는다.
             # `Tier1Context.__post_init__`도 같은 경계를 검사하지만 여기서
             # 막아야 오류 메시지가 옵션 이름을 말한다.
-            help="재번역 샘플 수 (기본 3). 2 미만이면 비교할 쌍이 만들어지지 않습니다.",
+            help=(
+                f"재번역 샘플 수 (기본 {_TIER1_DEFAULT_SAMPLES})."
+                " 2 미만이면 비교할 쌍이 만들어지지 않습니다."
+            ),
         ),
     ] = None,
     tier1_temperature: Annotated[
@@ -614,7 +623,10 @@ def translate(
             # `min`은 경계를 포함하므로 0.0이 본문까지 온다. 거부는 아래
             # 조합 검증이 한다 - 여기서 `min`을 올리면 도움말의 범위 표기가
             # "0보다 큰 실수"를 표현하지 못한다.
-            help="재번역 온도 (기본 1.0). 0이면 샘플이 전부 같아 신호가 죽습니다.",
+            help=(
+                f"재번역 온도 (기본 {_TIER1_DEFAULT_TEMPERATURE})."
+                " 0이면 샘플이 전부 같아 신호가 죽습니다."
+            ),
         ),
     ] = None,
     dry_run: Annotated[
@@ -737,13 +749,27 @@ def translate(
         )
         effective_samples = _TIER1_DEFAULT_SAMPLES if tier1_samples is None else tier1_samples
         cost_factor = effective_samples * effective_max_ratio
-        if cost_factor > _TIER1_COST_LIMIT:
+        # **한도는 경계를 포함한다 - `>`가 아니라 "닿거나 넘으면"이다.** 설계
+        # D3과 `tier1.py`(단일 출처)가 "`max_ratio=0.10`이 한도에 **정확히**
+        # 걸린다"고 못 박았고, 그 3.0배가 §4의 "감당 불가"다.
+        #
+        # **`>=`만으로는 부족하다.** 곱이 이진 부동소수로 정확히 떨어지지 않아
+        # 같은 3.0배가 표현에 따라 갈린다(실측): `3 * 0.1`은
+        # `0.30000000000000004`라 `>`로도 걸리지만 `2 * 0.15`와 `30 * 0.01`은
+        # 정확히 `0.3`이라 빠져나간다. 이 가드가 없으면 세그먼트당 30회를
+        # 부르는 조합이 통과하고, 거부 메시지는 `0.30 > 0.3`이라는 거짓말을
+        # 찍는다. `isclose`의 기본 상대 허용오차(1e-09)는 이 오차(1e-16)보다
+        # 훨씬 크고, 실제로 구별해야 하는 이웃 값(`0.29`)보다는 훨씬 작다.
+        at_or_over_limit = cost_factor > _TIER1_COST_LIMIT or math.isclose(
+            cost_factor, _TIER1_COST_LIMIT
+        )
+        if at_or_over_limit:
             # **곱과 한도를 둘 다 적는다.** 어느 쪽을 줄여야 하는지 알 수 없으면
             # 사용자는 임의로 고르고, 그 선택이 다시 한도에 부딪힌다.
             _echo(
                 f"--tier1-samples({effective_samples}) x"
                 f" --tier1-max-ratio({effective_max_ratio})"
-                f" = {cost_factor:.2f} 가 한도 {_TIER1_COST_LIMIT}을 넘는다."
+                f" = {cost_factor:.2f} 가 한도 {_TIER1_COST_LIMIT}에 닿거나 넘는다."
                 " 둘 중 하나를 줄인다 (요구사항정의서 §4)",
                 err=True,
             )
