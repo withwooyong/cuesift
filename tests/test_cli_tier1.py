@@ -29,6 +29,7 @@ from typer.testing import CliRunner, Result
 
 from cuesift import cli as cli_module
 from cuesift.cli import (
+    _TIER1_BOUND_PREFIX,
     _TIER1_COST_LIMIT,
     _TIER1_DEFAULT_MAX_RATIO,
     _TIER1_DEFAULT_SAMPLES,
@@ -889,3 +890,212 @@ def test_tier1의_맨_ProviderError도_69다(tmp_path: Path, monkeypatch: pytest
 
     _assert_died_in_tier1(result, fake, tmp_path)
     assert "계약을 어긴 서드파티 구현" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `--dry-run`의 Tier 1 호출 상한 (설계 D10)
+#
+# **추정이 아니라 상한이다.** `floor(n x max_ratio) x samples`는 실제 후보가
+# 회색지대 크기에 눌려 이보다 적을 수는 있어도 많을 수는 없다 - 요구사항정의서
+# §11 R8이 금지하는 것은 출처 없는 **추정**이고, 상한은 산식에서 나온다.
+# ---------------------------------------------------------------------------
+
+
+def _timecode(seconds: int) -> str:
+    return f"{seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d},000"
+
+
+def _srt_with_cues(path: Path, count: int) -> Path:
+    """`count`개 큐를 가진 SRT를 쓴다.
+
+    **체크인된 픽스처로는 상한 산식을 시험할 수 없다.** 가장 큰 `large.srt`가
+    26큐라 기본값에서 `floor(26 x 0.05) x 3 = 3`이고, 그 `3`은 같은 줄의
+    `샘플 3`과 글자가 겹쳐 "곱을 빠뜨린" 변이가 살아남는다(실측). 큐 수를
+    테스트가 정하면 내림·곱셈·기본값 셋을 각각 다른 수로 갈라 볼 수 있다.
+
+    자막 본문에 숫자를 넣지 않는 것은 화면 단언 때문이다 - dry-run은 본문을
+    찍지 않지만, 넣으면 나중에 본문을 찍도록 바뀌는 순간 숫자 단언이 우연히
+    만족될 수 있다.
+    """
+    cues = [
+        f"{i + 1}\n{_timecode(i * 4)} --> {_timecode(i * 4 + 3)}\n안녕하세요 여러분\n"
+        for i in range(count)
+    ]
+    path.write_text("\n".join(cues), encoding="utf-8")
+    return path
+
+
+def _dry_run_args(input_path: Path, tmp_path: Path, *extra: str, to: str = "en") -> list[str]:
+    """`_full_args`와 같은 골격이되 입력이 `tmp_path`에 만든 파일이다.
+
+    `--review-budget`을 빼면 안 된다 - `--tier1`이 트리아지 정책을 요구하므로
+    조합 검증이 exit 2로 끊어 dry-run 분기에 **닿지도 못한다.**
+    """
+    return [
+        "translate",
+        str(input_path),
+        "--to",
+        to,
+        "--out",
+        str(tmp_path / "subs"),
+        "--base-url",
+        "http://h/v1",
+        "--model",
+        "m1",
+        "--review-budget",
+        "10%",
+        "--no-cache",
+        "--dry-run",
+        *extra,
+    ]
+
+
+def _bound_lines(output: str) -> list[str]:
+    """상한 줄만 뽑는다.
+
+    **`"15" in output`으로 세지 않는 이유**: 같은 화면에 세그먼트 수·배치
+    수·호출 필요 수·프롬프트 문자 수가 함께 있고 문자 수는 천 단위 쉼표가
+    붙은 네 자리 이상이라, 상한과 무관하게 부분 문자열이 만족될 수 있다
+    (실측: 100큐 실행의 `프롬프트 문자 system 1,151`이 `"15"`를 품는다).
+    줄 단위로 뽑아 두면 단언이 상한 줄 하나만 본다.
+    """
+    return [line for line in output.splitlines() if _TIER1_BOUND_PREFIX in line]
+
+
+def test_dry_run이_tier1_상한을_말한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dry-run이 Tier 1을 침묵하면 "켠 줄 알았는데 안 돌았다"를 실행 전에 알
+    수단이 없다(설계 D10).
+
+    `--dry-run`의 존재 이유는 비용 추정이고 `_TIER1_COST_LIMIT`의 존재 이유는
+    비용 통제인데, 상한 줄이 없으면 둘이 서로 말을 하지 않는다 - 가장 비싼
+    계층이 빠진 호출 수를 보고 사용자가 실행을 결정한다.
+    """
+    src = _srt_with_cues(tmp_path / "hundred.srt", 100)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1"))
+
+    assert result.exit_code == 0, result.output
+    # floor(100 x 0.05) x 3 = 15. **줄 전체를 못 박는다** - 화면 문구가
+    # "예상"으로 바뀌면 상한이 추정으로 오해되므로(§11 R8) 그 변경은 조용히
+    # 지나가면 안 된다.
+    assert _bound_lines(result.output) == [
+        f"  {_TIER1_BOUND_PREFIX}15회 (후보 상한 비율 0.05 · 샘플 3)"
+    ]
+
+
+def test_상한은_올림이_아니라_내림이다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`select_tier1_candidates`가 내림을 쓴다 - 여기서 올림하면 dry-run이
+    실행보다 **큰** 수를 말해 상한이 상한이 아니게 된다.
+
+    **97큐인 이유**: `97 x 0.05 = 4.85`라 내림 4 · 올림 5 · 반올림 5로 셋이
+    전부 갈린다. 위 테스트의 100큐는 곱이 정확히 `5.0`이라 내림과 올림이 같은
+    값을 내므로 이 변이를 못 잡는다(실측: `floor`를 `ceil`로 바꿔도 사망 0건).
+    """
+    src = _srt_with_cues(tmp_path / "ninety_seven.srt", 97)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1"))
+
+    assert result.exit_code == 0, result.output
+    # floor(97 x 0.05) x 3 = 12. 올림·반올림이면 15다.
+    assert _bound_lines(result.output) == [
+        f"  {_TIER1_BOUND_PREFIX}12회 (후보 상한 비율 0.05 · 샘플 3)"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        # floor(100 x 0.02) x 3 = 6. `max_ratio`를 상수로 굳히면 15가 된다.
+        (
+            ("--tier1-max-ratio", "0.02"),
+            f"  {_TIER1_BOUND_PREFIX}6회 (후보 상한 비율 0.02 · 샘플 3)",
+        ),
+        # floor(100 x 0.05) x 5 = 25. `samples`를 안 곱하면 5가 된다.
+        (("--tier1-samples", "5"), f"  {_TIER1_BOUND_PREFIX}25회 (후보 상한 비율 0.05 · 샘플 5)"),
+    ],
+)
+def test_상한이_명시된_값을_그대로_쓴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: tuple[str, ...], expected: str
+) -> None:
+    """**기본값만 시험하면 두 인자가 상수로 굳어도 스위트가 초록이다.**
+
+    Tier 1은 후보 하나마다 `samples`회를 **개별 호출**로 낸다(§12 Q3 - `n>1`
+    단일 호출은 백엔드에 따라 조용히 사라진다). 곱을 빠뜨리면 화면은 후보 수를
+    호출 수라고 말한다.
+    """
+    src = _srt_with_cues(tmp_path / "hundred.srt", 100)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1", *extra))
+
+    assert result.exit_code == 0, result.output
+    assert _bound_lines(result.output) == [expected]
+
+
+def test_dry_run은_tier1_호출을_내지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """상한을 계산할 뿐 LLM을 부르지 않는다.
+
+    **`_assert_tier1_ran`을 여기 쓰면 안 된다.** 그 헬퍼는 프로바이더가
+    실제로 불렸음을 보는 긍정 단언이라 dry-run에서는 정반대다. 대신 도달은
+    상한 줄의 존재로 확인한다 - 줄을 안 보면 `calls == []`는 "dry-run이
+    아무것도 안 했다"거나 "인자가 틀려 조기 종료했다"와 구별이 안 된다.
+    """
+    src = _srt_with_cues(tmp_path / "hundred.srt", 100)
+    fake = _clean_echo()
+    _patch_provider(monkeypatch, fake)
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1"))
+
+    assert result.exit_code == 0, result.output
+    assert len(_bound_lines(result.output)) == 1, result.output
+    assert fake.calls == []
+
+
+def test_tier1_없이는_상한_줄이_없다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--tier1`을 안 켠 실행이 Tier 1 비용을 예고하면 화면이 거짓말을 한다.
+
+    **부재 단언이라 짝이 필요하다.** 문구가 바뀌면 이 단언은 조용히 항상 참이
+    되는데, 같은 상수를 쓰는 위 존재 단언들이 그때 먼저 깨진다 - 이 스위트에서
+    `"Tier 1:" not in output`이 정확히 그 방식으로 무력해진 전례가 있다.
+    """
+    src = _srt_with_cues(tmp_path / "hundred.srt", 100)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert _bound_lines(result.output) == []
+
+
+def test_상한_줄은_대상_언어마다_난다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """언어 루프 **밖**에 놓으면 `--to en,ja`가 한 줄만 내면서 실제 호출은 두
+    배다 - Tier 1 계측기는 대상 언어마다 분리돼 있다(D7)."""
+    src = _srt_with_cues(tmp_path / "hundred.srt", 100)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1", to="en,ja"))
+
+    assert result.exit_code == 0, result.output
+    assert len(_bound_lines(result.output)) == 2, result.output
+
+
+def test_tier1_조합_오류는_dry_run에서도_난다(input_srt: Path) -> None:
+    """조합 오류는 실행 전에 알아야 한다.
+
+    dry-run이야말로 "돌리기 전에 확인하는" 명령인데 거기서 조합 검증이 빠지면
+    사용자는 exit 0을 보고 본 실행에 들어가서야 exit 2를 만난다.
+
+    **메시지까지 본다.** typer의 파일 존재 검사가 조합 검증과 **같은 exit 2**를
+    내므로 종료 코드만 보는 단언은 검증 코드에 닿지 못한 채 초록이 된다(이
+    파일 머리말).
+    """
+    result = runner.invoke(
+        app, _args(input_srt, "--tier1", "--review-threshold", "0.7", "--dry-run")
+    )
+
+    assert result.exit_code == 2
+    assert "--review-threshold" in result.output

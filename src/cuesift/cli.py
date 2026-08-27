@@ -154,6 +154,20 @@ _TIER1_COST_LIMIT = 0.3
 # **출력 문자열이라 em dash를 쓰지 않는다**(전역 제약, cp949 미인코딩).
 _TIER1_WARN_PREFIX = "Tier 1: "
 
+# `--dry-run`이 내는 Tier 1 호출 **상한** 줄의 접두 문구(설계 D10).
+#
+# **"예상"이 아니라 "최대"다.** `floor(n x max_ratio) x samples`는 산식에서
+# 나오는 상한이라 실제 후보가 이보다 적을 수는 있어도 많을 수는 없다 -
+# 요구사항정의서 §11 R8이 금지하는 것은 출처 없는 **추정**이고, 여기서
+# "예상"으로 적으면 이 줄이 그 금지에 걸린다.
+#
+# 상수로 두는 이유는 `_TIER1_WARN_PREFIX`와 같다 - 테스트가 "`--tier1`이
+# 꺼져 있으면 이 줄이 없다"는 **부재**로도 단언하므로, 문구가 리터럴이면
+# 그 단언이 조용히 항상 참이 된다.
+#
+# **출력 문자열이라 em dash를 쓰지 않는다**(전역 제약, cp949 미인코딩).
+_TIER1_BOUND_PREFIX = "Tier 1 호출 최대 "
+
 app = typer.Typer(
     name="cuesift",
     # em dash(U+2014)를 쓰지 않는다. 이 문자열은 `--help`로 출력되는데
@@ -1011,6 +1025,11 @@ def translate(
                     if target in profiles
                 }
             ),
+            # **`tier1`일 때만 조립한다.** `effective_*`는 조합 검증 블록
+            # 안에서만 대입되므로 꺼진 실행에서 읽으면 UnboundLocalError다.
+            # 값 자체도 본 실행이 `_Tier1Settings`에 싣는 것과 **같은 변수**라
+            # 화면과 실행이 다른 수로 갈라질 수 없다.
+            tier1_bound=(effective_max_ratio, effective_samples) if tier1 else None,
         ):
             _echo(line)
         return
@@ -1105,6 +1124,17 @@ def _dry_run_report(
     context_window: int,
     cache_dir: Path | None,
     review_paths: Mapping[str, Path],
+    # `--tier1`이 꺼져 있으면 `None`이라 상한 줄을 한 줄도 내지 않는다.
+    #
+    # **기본값을 주지 않는다.** 주면 호출자가 빠뜨렸을 때 Tier 1이 화면에서
+    # 조용히 사라지는데, 그것이 이 인자가 닫으려는 바로 그 결함이다.
+    #
+    # **`_Tier1Settings`를 통째로 받지 않는다.** dry-run은 `provider.complete()`를
+    # 부르지 않으므로 `CountingProvider`나 캐시 신원을 요구할 이유가 없고,
+    # 요구하면 "dry-run이 계측기를 만든다"는 오해가 시그니처에 굳는다. 필요한
+    # 둘을 낱개가 아니라 튜플 하나로 받는 것은 이 함수의 인자가 이미 많아
+    # 낱개로 더하면 그 문제를 키우기 때문이다.
+    tier1_bound: tuple[float, int] | None,
 ) -> list[str]:
     """실행하지 않고 추정치를 낸다 (NFR-2 · 설계 §7).
 
@@ -1112,6 +1142,14 @@ def _dry_run_report(
     불러 정확히 세고, 캐시 히트는 키를 계산해 파일 존재만 확인한다. 토큰과
     비용은 내지 않는다 - 문자에서 토큰으로 가는 계수가 모델마다 다르고
     우리에게 출처가 없다(요구사항정의서 §11 R8).
+
+    **Tier 1 상한만은 실측이 아니라 산식이다**(설계 D10). `floor(n x
+    max_ratio) x samples`는 출처 없는 계수를 하나도 쓰지 않고 명령줄에 적힌
+    두 수와 세그먼트 수만으로 정해지는 **상한**이라 위 금지에 걸리지 않는다 -
+    실제 후보가 회색지대 크기에 눌려 이보다 적을 수는 있어도 많을 수는 없다.
+    이 줄이 없으면 `--tier1 --dry-run`이 exit 0과 함께 **가장 비싼 계층이
+    빠진 호출 수**를 말한다 - `--dry-run`의 존재 이유(비용 추정)와
+    `_TIER1_COST_LIMIT`의 존재 이유(비용 통제)가 서로 말을 하지 않는 상태다.
 
     **네트워크를 타지 않는다.** 이 함수는 프로바이더를 참조하지 않는다 -
     호출자(`translate()`)가 `_cache_identity(provider)`로 이미 뽑아 둔
@@ -1264,6 +1302,28 @@ def _dry_run_report(
                 f"  프롬프트 문자 system {system_chars:,} + user {user_chars:,}",
             ]
         )
+        if tier1_bound is not None:
+            max_ratio, samples = tier1_bound
+            # **상한이지 추정이 아니다**(설계 D10 · §11 R8). 실제 후보는 회색지대
+            # 크기에 눌려 이보다 적을 수 있지만 많을 수는 없다 - 그래서 화면
+            # 문구가 "예상"이 아니라 "최대"다.
+            #
+            # **`floor`가 아니면 무엇이 깨지는가.** `select_tier1_candidates`가
+            # 내림으로 상한을 잡으므로 여기서 올림하면 dry-run이 실행보다 **큰**
+            # 수를 말한다 - 상한이 상한이 아니게 되고, 사용자는 부풀린 비용을
+            # 보고 실행을 접는다.
+            #
+            # **`samples`를 곱하지 않으면** 후보 수를 호출 수로 오보한다. Tier 1은
+            # 후보 하나마다 N회를 **개별 호출**로 낸다(§12 Q3 - `n>1` 단일 호출은
+            # 백엔드에 따라 조용히 사라져 이식성이 없다).
+            #
+            # 분모가 `len(result.segments)`인 것은 이 함수가 트리아지를 돌리지
+            # 않아 회색지대 크기를 모르기 때문이다. 전체 세그먼트 수는 회색지대
+            # 크기의 상한이므로 곱한 결과도 상한으로 남는다.
+            bound = math.floor(len(result.segments) * max_ratio) * samples
+            lines.append(
+                f"  {_TIER1_BOUND_PREFIX}{bound}회 (후보 상한 비율 {max_ratio} · 샘플 {samples})"
+            )
         review_path = review_paths.get(target)
         if review_path is not None:
             # **실제 실행의 문구와 같은 형태로 낸다**(`_translate_one`의
