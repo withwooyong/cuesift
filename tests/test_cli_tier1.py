@@ -27,6 +27,7 @@ import typer.main
 from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner, Result
 
+from conftest import normalize_rich_message, strip_rich_decoration
 from cuesift import cli as cli_module
 from cuesift.cli import (
     _TIER1_BOUND_PREFIX,
@@ -298,14 +299,30 @@ def test_도움말에_네_옵션이_모두_있다() -> None:
     """**색을 켠 채로 돈다.** rich 하이라이터가 긴 옵션 이름을 조각내는 사례가
     이 저장소에서 관측됐다 - 폭이 아니라 색이 원인이라 색을 끄면 안 잡힌다.
 
+    **`color=True`만으로는 색이 안 난다.** rich가 환경을 보고 결정하므로 CI에서만
+    켜지고 로컬에서는 꺼진다 - 그러면 아래 정규화를 통째로 지워도 로컬은 초록이고
+    **CI에서만 죽는다.** `FORCE_COLOR`를 함께 넘겨야 두 환경이 같은 것을 본다.
+    이 테스트가 실제로 그렇게 갈렸다(로컬 1270 passed / CI 1 failed, PR #10).
+
+    **두 단언이 서로 다른 헬퍼를 쓰는 것은 의도다.**
+
+    - 이름 셋: `normalize_rich_message` - 공백까지 지워 rich의 강제 개행이
+      이름 가운데 떨어져도 견딘다
+    - 경계: `strip_rich_decoration` - **여기서 공백을 지우면 단언이 죽는다.**
+      실측하면 `--tier1Tier1신호(자가일관성)를...`이 되어 뒤에 `T`가 붙고
+      `(?![\\w-])`가 그것을 거부한다. 이 검사는 공백 자체가 경계다
+
     `--tier1`은 나머지 셋의 **접두사**라 부분 문자열로 세면 언제나 있는 것으로
     나온다. 뒤에 이름 문자가 오지 않는 자리만 세어 스위치 자체를 확인한다.
+    **ANSI를 안 지우면 이 검사가 거짓 통과한다** - 색이 켜지면 `--tier1-max-ratio`가
+    `--tier1` + ANSI + `-max-ratio`로 쪼개지고 `(?![\\w-])`는 `\\x1b`를 허용한다.
     """
-    result = runner.invoke(app, ["translate", "--help"], color=True)
+    result = runner.invoke(app, ["translate", "--help"], color=True, env={"FORCE_COLOR": "1"})
     assert result.exit_code == 0
+    squashed = normalize_rich_message(result.output)
     for name in ("--tier1-max-ratio", "--tier1-samples", "--tier1-temperature"):
-        assert name in result.output
-    assert re.search(r"--tier1(?![\w-])", result.output) is not None
+        assert normalize_rich_message(name) in squashed
+    assert re.search(r"--tier1(?![\w-])", strip_rich_decoration(result.output)) is not None
 
 
 def test_도움말의_기본값이_상수와_같다() -> None:
