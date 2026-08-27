@@ -17,13 +17,17 @@
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from pathlib import Path
 
 import pytest
 import typer.main
-from typer.testing import CliRunner
+from tests.fakes.provider import EchoProvider
+from typer.testing import CliRunner, Result
 
+from conftest import blank_at
+from cuesift import cli as cli_module
 from cuesift.cli import (
     _TIER1_COST_LIMIT,
     _TIER1_DEFAULT_MAX_RATIO,
@@ -32,6 +36,7 @@ from cuesift.cli import (
     app,
 )
 from cuesift.tier1 import triage_with_tier1
+from cuesift.translate import CountingProvider
 
 runner = CliRunner()
 
@@ -307,3 +312,248 @@ def test_도움말의_기본값이_상수와_같다() -> None:
     assert f"기본 {_TIER1_DEFAULT_MAX_RATIO}" in helps["tier1_max_ratio"]
     assert f"기본 {_TIER1_DEFAULT_SAMPLES}" in helps["tier1_samples"]
     assert f"기본 {_TIER1_DEFAULT_TEMPERATURE}" in helps["tier1_temperature"]
+
+
+# --- 배선 테스트 (Task 6 - FR-4.3 · FR-7.4) ---
+#
+# 위쪽 조합 검증과 달리 여기는 **실제로 파이프라인을 끝까지 돌린다.** 가짜
+# 프로바이더를 꽂아 네트워크를 타지 않는다 - 실물 LLM에 의존하는 테스트는
+# CI에서 못 돈다.
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
+
+# 10큐에서 `floor(10 x 0.14) = 1` 후보 x 샘플 2 = **LLM 2회**. 곱이 0.28이라
+# 비용 한도(0.3) 바로 아래다.
+#
+# **기본값(0.05 x 3)을 쓰면 안 된다.** `floor(10 x 0.05) = 0`이라 Tier 1이
+# 통째로 안 돌고, 토큰 단언이 `0 == 0`으로 조용히 통과한다.
+_TIER1_RUNS = ("--tier1-max-ratio", "0.14", "--tier1-samples", "2")
+
+
+def _patch_provider(monkeypatch: pytest.MonkeyPatch, provider: object) -> None:
+    """`tests/test_cli_translate.py`·`tests/test_cli_review_out.py`와 같은 수단.
+
+    `_build_provider`를 통째로 바꾸므로 **번역과 Tier 1이 같은 가짜를 쓴다.**
+    """
+    monkeypatch.setattr("cuesift.cli._build_provider", lambda **_: provider)
+
+
+def _clean_echo() -> EchoProvider:
+    """번역문에 원문을 남기지 않는 가짜.
+
+    **`EchoProvider()` 기본값을 그대로 쓰면 안 된다.** 기본 변환(`EN:{원문}`)은
+    한글을 그대로 남겨 `llm.untranslated`가 10큐 **전부**를 hard fail로 만든다 -
+    그러면 회색지대가 비어 Tier 1 후보가 언제나 0건이 되고, 토큰 단언이
+    `0 == 0`으로 통과한다(실측: 기본 변환에서 hard_fail 10 · gray_zone 0,
+    깨끗한 변환에서 hard_fail 0 · gray_zone 9 · 후보 1건).
+    """
+    return EchoProvider(transform=lambda _: "Hello there")
+
+
+def _full_args(
+    tmp_path: Path,
+    *extra: str,
+    fixture: str = "ten_cues.srt",
+    cache_dir: Path | None = None,
+) -> list[str]:
+    """끝까지 도는 실행의 인자. `tests/test_cli_review_out.py::_args`를 따른다.
+
+    자막은 `subs/`, 리포트는 `reports/`로 **나눈다** - 같은 디렉터리에 두면
+    경로 결정이 통째로 틀려도 뭔가가 찾아져 통과한다.
+
+    `cache_dir`가 `None`이면 `--no-cache`다. **기본을 캐시 켜짐으로 두면 안
+    된다** - `DEFAULT_CACHE_DIR`(`.cuesift/cache`)가 리포 안에 캐시를 떨군다.
+    """
+    cache = ["--no-cache"] if cache_dir is None else ["--cache-dir", str(cache_dir)]
+    return [
+        "translate",
+        str(_FIXTURES / fixture),
+        "--to",
+        "en",
+        "--out",
+        str(tmp_path / "subs"),
+        "--base-url",
+        "http://h/v1",
+        "--model",
+        "m1",
+        "--review-budget",
+        "10%",
+        "--review-out",
+        str(tmp_path / "reports"),
+        *cache,
+        *extra,
+    ]
+
+
+def _read_review(tmp_path: Path, name: str = "ten_cues.en.review.json") -> dict:
+    return json.loads((tmp_path / "reports" / name).read_text(encoding="utf-8"))
+
+
+def _run_plain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *extra: str,
+    provider: object | None = None,
+    cache_dir: Path | None = None,
+) -> Result:
+    _patch_provider(monkeypatch, _clean_echo() if provider is None else provider)
+    return runner.invoke(app, _full_args(tmp_path, *extra, cache_dir=cache_dir))
+
+
+def _run_tier1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *extra: str,
+    provider: object | None = None,
+    cache_dir: Path | None = None,
+) -> Result:
+    _patch_provider(monkeypatch, _clean_echo() if provider is None else provider)
+    return runner.invoke(app, _full_args(tmp_path, "--tier1", *extra, cache_dir=cache_dir))
+
+
+def test_tier1을_켜면_cost_includes에_tier1이_실린다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-7.4. 이것이 없으면 파일이 '번역만 셌다'고 말하면서 실제로도 번역만 센다."""
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS)
+
+    assert result.exit_code == 0, result.output
+    assert _read_review(tmp_path)["summary"]["cost"]["includes"] == ["translation", "tier1"]
+
+
+def test_tier1을_끄면_cost_includes가_그대로다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """기존 거동 불변 - 켜야만 섞인다(D2).
+
+    **`None`과 `TokenUsage(0, 0, calls=N)`은 다르다.** 꺼진 계층에 후자를
+    넘기면 `includes`에 실리면서 `unreported`까지 타 "돌았는데 계측이 죽었다"로
+    보고된다 - 사용자가 없는 비용을 의심한다.
+    """
+    result = _run_plain(tmp_path, monkeypatch)
+
+    assert result.exit_code == 0, result.output
+    summary = _read_review(tmp_path)["summary"]
+    assert summary["cost"]["includes"] == ["translation"]
+    # 꺼진 계층에 `TokenUsage(0, 0, 0)`을 넘기면 `includes`에 실리고,
+    # `layer_tokens_reported`가 `calls == 0`을 참으로 보므로 이 키는 그대로
+    # `True`다 - 위 `includes` 단언만이 그 거짓말을 잡는다.
+    assert summary["cost"]["tokens_reported"] is True
+
+
+def test_tier1이_쓴_토큰이_usage에_더해진다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CountingProvider`가 위임만 하고 누적하지 않으면 이 값이 안 는다.
+
+    **`calls`만이 아니라 토큰까지 본다.** 호출 수는 늘고 토큰은 그대로인 배선
+    (누적을 `calls` 한 줄로만 하는 변이)이 `calls` 단언만으로는 통과한다.
+    """
+    plain = _run_plain(tmp_path / "a", monkeypatch)
+    tier1 = _run_tier1(tmp_path / "b", monkeypatch, *_TIER1_RUNS)
+
+    assert plain.exit_code == 0, plain.output
+    assert tier1.exit_code == 0, tier1.output
+    일반 = _read_review(tmp_path / "a")["summary"]["cost"]
+    티어1 = _read_review(tmp_path / "b")["summary"]["cost"]
+    assert 티어1["calls"] > 일반["calls"]
+    assert 티어1["completion_tokens"] > 일반["completion_tokens"]
+
+
+def test_후보_0건이면_사유가_화면에_나온다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**유료 계층이 통째로 안 돌아도 반환값의 형태가 같다**(Ruling P12).
+
+    `warn`을 침묵시키면 알아챌 다른 수단이 없다. 기본 `max_ratio`(0.05)와
+    10큐에서 `floor(10 x 0.05) = 0`이라 후보가 없다.
+    """
+    result = _run_tier1(tmp_path, monkeypatch)
+
+    assert result.exit_code == 0, result.output
+    assert "Tier 1" in result.output
+    assert "max_ratio" in result.output
+
+
+def test_번역_실패분이_있어도_분모가_같다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**D5의 CLI 쪽 게이트다**(설계 §3.1).
+
+    `excluded_ids`를 안 넘기면 `triage_with_tier1`이 실패분까지 담은 목록을
+    돌려주는데 `segments`는 `kept`(7건)라 `TriageOutcome`의 id 집합 불변식이
+    `ValueError`를 던진다 - exit 2가 되고 `review.json`이 아예 안 나온다.
+
+    **실패가 0이면 아무것도 재지 못한다** - `blank_at`으로 3건을 만든다.
+    """
+    plain = _run_plain(tmp_path / "a", monkeypatch, provider=blank_at({2, 5, 9}, 10))
+    tier1 = _run_tier1(tmp_path / "b", monkeypatch, provider=blank_at({2, 5, 9}, 10))
+
+    assert tier1.exit_code == plain.exit_code, tier1.output
+    일반 = _read_review(tmp_path / "a")["summary"]
+    티어1 = _read_review(tmp_path / "b")["summary"]
+    assert 일반["excluded_failures"] == 3, "실패가 0이면 아래 검산이 항등식이 된다"
+    assert 티어1["excluded_failures"] == 일반["excluded_failures"]
+    assert 티어1["triaged_segments"] == 일반["triaged_segments"]
+
+
+def test_계측이_캐시_안쪽에_놓인다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """설계 D7 - `CachingProvider(CountingProvider(raw))`여야 한다.
+
+    **순서를 뒤집어도 종료 코드도 파일도 정상이다.** 캐시 히트는 토큰을 쓰지
+    않는데 계측을 바깥에 두면 그것까지 세어져 `cost`가 부풀고, Recall@Budget
+    배수의 분모가 오염된다.
+
+    `triage_with_tier1`에 **실제로 넘어간 객체**를 본다 - 조립부의 지역 변수를
+    믿지 않는다.
+
+    **캐시를 켠 채로 돈다.** `--no-cache`면 순서를 뒤집는 변이가 무연산이 되어
+    (감쌀 캐시가 없다) 이 단언이 통과한다 - 실측: `--no-cache`로 두었을 때
+    "계측을 캐시 바깥으로" 변이에서 이 테스트가 살아남았고 죽인 것은 아래
+    두 번 돌리는 테스트뿐이었다.
+    """
+    fake = _clean_echo()
+    캡처: dict[str, object] = {}
+    진짜 = cli_module.triage_with_tier1
+
+    def spy(*args: object, **kwargs: object) -> object:
+        캡처["provider"] = kwargs["provider"]
+        return 진짜(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("cuesift.cli.triage_with_tier1", spy)
+
+    result = _run_tier1(
+        tmp_path, monkeypatch, *_TIER1_RUNS, provider=fake, cache_dir=tmp_path / "cache"
+    )
+
+    assert result.exit_code == 0, result.output
+    counting = 캡처["provider"]
+    assert isinstance(counting, CountingProvider)
+    # **`inner`까지 확인한다.** `CountingProvider(CachingProvider(raw))`는 위
+    # `isinstance`를 통과하면서 캐시 히트를 세고, 게다가 Tier 1 안쪽에서 한 번
+    # 더 감싸여 이중 캐시가 된다.
+    assert counting.inner is fake
+
+
+def test_같은_자막을_두_번_돌려도_tier1_토큰이_두_배가_되지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D7이 지키려는 것을 **의미로** 잰다 - 구조가 아니라 청구서를 본다.
+
+    캐시가 붙은 둘째 실행에서 Tier 1은 `complete`를 한 번도 부르지 않으므로
+    그 계층의 기여가 0이 된다. `CountingProvider`가 캐시 **바깥**에 있으면
+    히트까지 세어 둘째 실행도 첫 실행과 같은 수를 낸다.
+
+    번역 계층은 `CachingProvider`가 **저장된 usage를 그대로 내므로**
+    (`store/provider.py`) 두 실행에서 같은 값이다 - 줄어드는 것은 Tier 1
+    몫뿐이고, 그래서 이 차이가 곧 Tier 1의 기여다.
+    """
+    cache = tmp_path / "cache"
+
+    first = _run_tier1(tmp_path / "a", monkeypatch, *_TIER1_RUNS, cache_dir=cache)
+    second = _run_tier1(tmp_path / "b", monkeypatch, *_TIER1_RUNS, cache_dir=cache)
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    처음 = _read_review(tmp_path / "a")["summary"]["cost"]
+    두번째 = _read_review(tmp_path / "b")["summary"]["cost"]
+    assert 두번째["calls"] < 처음["calls"], (
+        "둘째 실행이 첫 실행과 같은 호출 수를 냈다 - 계측이 캐시 바깥에 있다"
+    )
+    assert 두번째["completion_tokens"] < 처음["completion_tokens"]
