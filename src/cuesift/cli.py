@@ -65,6 +65,7 @@ from cuesift.translate import (
     OpenAICompatibleProvider,
     Provider,
     ProviderError,
+    TokenUsage,
     TranslationResult,
     build_messages,
     iter_batches,
@@ -1872,24 +1873,30 @@ def _run_triage(
         # 읽혀 미배선을 정상으로 오인한다.
         raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
 
-    def _outcome(risks: tuple[SegmentRisk, ...], segments: tuple[Segment, ...]) -> TriageOutcome:
-        """두 반환 지점이 같은 필드 조합을 쓰게 묶는다.
+    def _outcome(
+        risks: tuple[SegmentRisk, ...],
+        segments: tuple[Segment, ...],
+        *,
+        tier1_usage: TokenUsage | None = None,
+    ) -> TriageOutcome:
+        """세 반환 지점이 같은 필드 조합을 쓰게 묶는다.
 
         전량 실패 경로와 정상 경로가 각자 생성자를 부르면 필드 하나가 한쪽에서만
         채워져도 타입 검사와 화면 테스트를 모두 통과한다 - `usage`가 정확히 그런
         필드다(화면은 읽지 않고 `review.json`만 읽는다).
+
+        **`tier1_usage`는 `--tier1` 여부가 아니라 "실제로 돌았나"다.** 스위치가
+        켜져 있어도 번역이 전량 실패하면 아래 조기 반환이 `triage_with_tier1`보다
+        먼저 나가므로 Tier 1은 한 번도 안 돈다 - 그때 `tier1.counting.usage`를
+        읽으면 `TokenUsage(0, 0, 0)`이 나가 `includes`가 "Tier 1을 셌다"고
+        거짓말한다(`calls == 0`이라 `unreported`에는 안 실려 수치는 안 부푼다 -
+        **화면 어디에도 신호가 없는 종류의 거짓말이다**). 기본값을 `None`으로 둔
+        것이 그 자리를 옳게 만든다.
         """
         # **`None`과 `TokenUsage(0, 0, calls=N)`은 다르다.** 전자는 "그 계층이
         # 안 돌았다"(범위·합계에서 제외), 후자는 "돌았는데 무음"(`unreported`에
-        # 실린다). Tier 1이 꺼져 있으면 `None`이다 - `TokenUsage(0, 0, 0)`을
-        # 넘기면 파일이 "Tier 1을 셌는데 0이었다"고 말하게 되고, 사용자는 쓰지도
-        # 않은 계층의 계측 고장을 의심한다.
-        scope = resolve_cost_scope(
-            {
-                "translation": translated.usage,
-                "tier1": None if tier1 is None else tier1.counting.usage,
-            }
-        )
+        # 실린다). Tier 1이 안 돌았으면 `None`이다.
+        scope = resolve_cost_scope({"translation": translated.usage, "tier1": tier1_usage})
         return TriageOutcome(
             source_lang=source_lang,
             target_lang=target_lang,
@@ -1955,7 +1962,7 @@ def _run_triage(
             identity=tier1.identity,
             excluded_ids=failed_ids,
         )
-        return _outcome(tuple(scored), tuple(kept))
+        return _outcome(tuple(scored), tuple(kept), tier1_usage=tier1.counting.usage)
 
     # **수집과 융합의 입력이 다르다. 서로 다른 층의 요구이기 때문이다.**
     #

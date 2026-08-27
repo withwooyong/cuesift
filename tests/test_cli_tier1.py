@@ -26,7 +26,6 @@ import typer.main
 from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner, Result
 
-from conftest import blank_at
 from cuesift import cli as cli_module
 from cuesift.cli import (
     _TIER1_COST_LIMIT,
@@ -350,11 +349,43 @@ def _clean_echo() -> EchoProvider:
     return EchoProvider(transform=lambda _: "Hello there")
 
 
+# `ten_cues.srt`의 인덱스 2·5·9. **번역문이 아니라 원문으로 찍는다** -
+# `conftest.blank_at`은 `ScriptedProvider`라 응답이 **하나뿐**이고, Tier 1이
+# 실제로 돌면 "대본이 소진됐다"로 죽는다. Tier 1을 돌리는 테스트는 계속 답하는
+# 가짜가 필요하다.
+_실패시킬_원문 = frozenset({"셋째 줄입니다", "여섯째 줄입니다", "열째 줄입니다"})
+
+
+def _echo_failing_three() -> EchoProvider:
+    """세 큐만 공백 번역으로 답해 번역 실패 3건을 만든다.
+
+    공백 번역은 `engine.py`가 `reason="empty_translation"`으로 실패 처리한다.
+    Tier 1 후보는 실패분에서 제외되므로(설계 D5) 재번역 요청은 이 집합에
+    닿지 않는다 - 남은 일곱만 `Hello there`를 받는다.
+    """
+    return EchoProvider(transform=lambda s: "   " if s in _실패시킬_원문 else "Hello there")
+
+
+def _assert_tier1_ran(result: Result) -> None:
+    """Tier 1 후보가 **1건 이상**이었는지 확인한다.
+
+    **이것이 없으면 대부분의 단언이 무연산 위에서 초록이 된다.** 후보 0건이면
+    `triage_with_tier1`이 LLM을 한 번도 안 부르고 조기 반환하는데, 그때도
+    `cost.includes`는 `["translation", "tier1"]`이고 종료 코드도 파일 형태도
+    똑같다 - Ruling P12가 `warn`을 필수 인자로 만든 이유가 이것이다.
+
+    후보가 0건이면 `_run_triage`가 그 사유를 `[언어] Tier 1: ...`로 낸다.
+    그 줄이 **없다는 것**이 후보가 생겼다는 증거다.
+    """
+    assert "Tier 1:" not in result.output, f"Tier 1 후보가 0건이다:\n{result.output}"
+
+
 def _full_args(
     tmp_path: Path,
     *extra: str,
     fixture: str = "ten_cues.srt",
     cache_dir: Path | None = None,
+    to: str = "en",
 ) -> list[str]:
     """끝까지 도는 실행의 인자. `tests/test_cli_review_out.py::_args`를 따른다.
 
@@ -369,7 +400,7 @@ def _full_args(
         "translate",
         str(_FIXTURES / fixture),
         "--to",
-        "en",
+        to,
         "--out",
         str(tmp_path / "subs"),
         "--base-url",
@@ -406,9 +437,10 @@ def _run_tier1(
     *extra: str,
     provider: object | None = None,
     cache_dir: Path | None = None,
+    to: str = "en",
 ) -> Result:
     _patch_provider(monkeypatch, _clean_echo() if provider is None else provider)
-    return runner.invoke(app, _full_args(tmp_path, "--tier1", *extra, cache_dir=cache_dir))
+    return runner.invoke(app, _full_args(tmp_path, "--tier1", *extra, cache_dir=cache_dir, to=to))
 
 
 def test_tier1을_켜면_cost_includes에_tier1이_실린다(
@@ -418,6 +450,9 @@ def test_tier1을_켜면_cost_includes에_tier1이_실린다(
     result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS)
 
     assert result.exit_code == 0, result.output
+    # **`includes`만 보면 후보 0건에서도 통과한다** - `_TIER1_RUNS`가 장식이
+    # 된다(리뷰 축2 실측: 후보를 0건으로 강제해도 이 테스트가 살았다).
+    _assert_tier1_ran(result)
     assert _read_review(tmp_path)["summary"]["cost"]["includes"] == ["translation", "tier1"]
 
 
@@ -454,6 +489,7 @@ def test_tier1이_쓴_토큰이_usage에_더해진다(
 
     assert plain.exit_code == 0, plain.output
     assert tier1.exit_code == 0, tier1.output
+    _assert_tier1_ran(tier1)
     일반 = _read_review(tmp_path / "a")["summary"]["cost"]
     티어1 = _read_review(tmp_path / "b")["summary"]["cost"]
     assert 티어1["calls"] > 일반["calls"]
@@ -480,12 +516,19 @@ def test_번역_실패분이_있어도_분모가_같다(tmp_path: Path, monkeypa
     돌려주는데 `segments`는 `kept`(7건)라 `TriageOutcome`의 id 집합 불변식이
     `ValueError`를 던진다 - exit 2가 되고 `review.json`이 아예 안 나온다.
 
-    **실패가 0이면 아무것도 재지 못한다** - `blank_at`으로 3건을 만든다.
+    **실패가 0이면 아무것도 재지 못한다** - 세 큐를 공백 번역으로 만든다.
+
+    **`_TIER1_RUNS`를 쓰지 않는다.** 실패 3건을 빼면 `kept`가 7이라
+    `floor(7 x 0.14) = 0`으로 후보가 0건이 된다 - 그러면 이 테스트 위에서
+    Tier 1 경로의 변이가 전부 무연산이 된다(리뷰 축2 실측). `0.145`는
+    `floor(7 x 0.145) = 1`을 내고 곱은 `2 x 0.145 = 0.29`로 한도 아래다.
     """
-    plain = _run_plain(tmp_path / "a", monkeypatch, provider=blank_at({2, 5, 9}, 10))
-    tier1 = _run_tier1(tmp_path / "b", monkeypatch, provider=blank_at({2, 5, 9}, 10))
+    실패조합 = ("--tier1-max-ratio", "0.145", "--tier1-samples", "2")
+    plain = _run_plain(tmp_path / "a", monkeypatch, provider=_echo_failing_three())
+    tier1 = _run_tier1(tmp_path / "b", monkeypatch, *실패조합, provider=_echo_failing_three())
 
     assert tier1.exit_code == plain.exit_code, tier1.output
+    _assert_tier1_ran(tier1)
     일반 = _read_review(tmp_path / "a")["summary"]
     티어1 = _read_review(tmp_path / "b")["summary"]
     assert 일반["excluded_failures"] == 3, "실패가 0이면 아래 검산이 항등식이 된다"
@@ -523,6 +566,10 @@ def test_계측이_캐시_안쪽에_놓인다(tmp_path: Path, monkeypatch: pytes
     )
 
     assert result.exit_code == 0, result.output
+    # 이 단언들은 후보 0건에서도 성립한다(넘긴 객체는 후보 판정 전에 정해진다).
+    # 그래도 도달성을 함께 못 박는 것은, 이 테스트가 조용히 Tier 1을 안 돌리는
+    # 조합으로 흘러가면 위 `cache_dir`의 의미가 사라지기 때문이다.
+    _assert_tier1_ran(result)
     counting = 캡처["provider"]
     assert isinstance(counting, CountingProvider)
     # **`inner`까지 확인한다.** `CountingProvider(CachingProvider(raw))`는 위
@@ -557,3 +604,132 @@ def test_같은_자막을_두_번_돌려도_tier1_토큰이_두_배가_되지_�
         "둘째 실행이 첫 실행과 같은 호출 수를 냈다 - 계측이 캐시 바깥에 있다"
     )
     assert 두번째["completion_tokens"] < 처음["completion_tokens"]
+
+
+def test_샘플마다_다른_캐시_키를_쓴다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """설계 D7 + Task 1(`CacheRequest.attempt`)을 **함께** 지키는 게이트다.
+
+    자가일관성은 같은 문장을 N번 다시 번역해 **흩어짐**을 재는 것이므로, N개
+    샘플이 서로 다른 캐시 키를 써야 성립한다. `_provider_factory`가
+    `attempt=i`로 그것을 보장하는데, cli가 **이미 캐시로 감싼** 프로바이더를
+    넘기면 안쪽 캐시는 `attempt=0` 고정이라 **N개 샘플이 같은 엔트리를 맞는다**
+    - 분산이 0이 되어 Tier 1 신호가 통째로 죽는다. 종료 코드도 파일도 정상이다.
+
+    **Task 1이 막은 것과 같은 방에 다른 문으로 들어가는 결함이다**
+    (`key(None) == key(0)`).
+
+    | | raw 호출 | Tier 1 캐시 엔트리 |
+    | --- | --- | --- |
+    | 정상 `CachingProvider(CountingProvider(raw))` | **2** | **2** |
+    | 순서만 뒤집음 | 1 | 1 |
+
+    구조 단언(`counting.inner is fake`)과 **독립**이다 - 그 한 줄을 지워도
+    이 테스트가 남는다. 리뷰 축2가 "그 줄이 유일한 게이트"라고 실측했다.
+    """
+    fake = _clean_echo()
+    cache = tmp_path / "cache"
+
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=fake, cache_dir=cache)
+
+    assert result.exit_code == 0, result.output
+    _assert_tier1_ran(result)
+    # 번역 배치 1회 + Tier 1 후보 1건 x 샘플 2회.
+    assert len(fake.calls) == 3, (
+        f"샘플이 실제로 나간 횟수가 다르다: {len(fake.calls)}회. "
+        "2회여야 할 Tier 1 재번역이 1회로 뭉쳤다면 샘플이 같은 캐시 키를 쓴 것이다"
+    )
+    # 같은 근거를 캐시 쪽에서 한 번 더 잰다 - 키가 실제로 갈라졌나.
+    assert len(list(cache.rglob("*.json"))) == 3
+
+
+def test_대상_언어마다_계측기가_분리된다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`CountingProvider`는 누적기다 - 언어끼리 공유하면 뒤 언어가 앞 언어의
+    토큰까지 싣는다.
+
+    **`--to en` 하나로는 도달 불가한 결함이다**(리뷰 축2 실측: 조립을 루프
+    밖으로 옮기는 변이가 0건 사망). Recall 분모는 무사하고 `cost`만 오염되므로
+    종료 코드도 파일 형태도 정상이다.
+
+    두 언어의 실행이 대칭이라(같은 가짜 · 같은 자막 · 같은 응답) 분리돼 있으면
+    두 파일의 `calls`가 **같아야** 한다. 공유되면 ja가 en의 Tier 1 몫을 한 번
+    더 실어 커진다.
+    """
+    캡처: list[object] = []
+    진짜 = cli_module.triage_with_tier1
+
+    def spy(*args: object, **kwargs: object) -> object:
+        캡처.append(kwargs["provider"])
+        return 진짜(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("cuesift.cli.triage_with_tier1", spy)
+
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, to="en,ja")
+
+    assert result.exit_code == 0, result.output
+    _assert_tier1_ran(result)
+    en = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]["cost"]
+    ja = _read_review(tmp_path, "ten_cues.ja.review.json")["summary"]["cost"]
+    assert en["includes"] == ["translation", "tier1"]
+    assert ja["calls"] == en["calls"], (
+        f"ja({ja['calls']})가 en({en['calls']})보다 크면 앞 언어의 Tier 1 토큰을 "
+        "함께 싣고 있는 것이다"
+    )
+    assert ja["completion_tokens"] == en["completion_tokens"]
+    # 수치가 갈라진 **원인**을 함께 못 박는다 - 위 단언만으로는 우연히 같아지는
+    # 변경(예: 양쪽 다 0)이 통과한다.
+    assert len(캡처) == 2
+    assert 캡처[0] is not 캡처[1]
+
+
+def test_tier1_temperature가_샘플러까지_간다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**옵션이 조용히 무시되는 것이 이 파일의 주제다.**
+
+    `temperature`를 하드코딩으로 바꿔도, `effective_temperature` 조립을 항상
+    기본값으로 바꿔도 **한 건도 죽지 않았다**(리뷰 축2 실측). 도움말 테스트는
+    help 문자열만 읽으므로 종단 경로를 재지 못한다.
+
+    0이면 샘플이 전부 같아져 신호가 죽는다는 것이 이 옵션의 존재 이유이므로,
+    실제로 샘플러까지 닿는지가 곧 그 방어의 유효성이다.
+
+    **번역 호출의 온도와 다른 값을 고른다.** 같은 값을 고르면 Tier 1이 번역
+    기본값을 그대로 쓰는 배선도 통과한다.
+    """
+    fake = _clean_echo()
+    온도 = 0.55
+
+    result = _run_tier1(
+        tmp_path, monkeypatch, *_TIER1_RUNS, "--tier1-temperature", str(온도), provider=fake
+    )
+
+    assert result.exit_code == 0, result.output
+    _assert_tier1_ran(result)
+    온도들 = [t for t, _ in fake.kwargs]
+    # 후보 1건 x 샘플 2회. 개수까지 보는 이유는 "한 번은 닿았다"가 "N번 다
+    # 닿았다"를 뜻하지 않기 때문이다.
+    assert 온도들.count(온도) == 2, f"실제 온도 목록: {온도들}"
+    assert 온도 not in 온도들[:1], "번역 호출이 이미 이 온도를 쓰면 아무것도 재지 못한다"
+
+
+def test_번역이_전량_실패하면_tier1이_범위에서_빠진다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`resolve_cost_scope`의 계약 - `None`은 "이 실행에서 안 돌았다"다.
+
+    전량 실패는 `triage_with_tier1`보다 **앞**에서 조기 반환하므로 Tier 1은 한
+    번도 안 돈다. 그때 `tier1.counting.usage`(= `TokenUsage(0, 0, 0)`)를 넘기면
+    `includes`가 "Tier 1을 셌다"고 말한다 - `calls == 0`이라 `unreported`에도
+    안 실려 **화면 어디에도 신호가 없는 거짓말**이 된다.
+    """
+    전량실패 = EchoProvider(transform=lambda _: "   ")
+
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=전량실패)
+
+    # **exit 1이다** - 전량 실패는 규격 위반으로 보고된다. 코드를 단언하지 않으면
+    # 실행이 엉뚱한 이유로 죽어도 아래 파일 읽기가 먼저 터져 원인이 가려진다.
+    assert result.exit_code == 1, result.output
+    summary = _read_review(tmp_path)["summary"]
+    assert summary["excluded_failures"] == 10, "전량 실패가 아니면 아무것도 재지 못한다"
+    assert summary["triaged_segments"] == 0
+    assert summary["cost"]["includes"] == ["translation"]
