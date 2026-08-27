@@ -275,6 +275,9 @@ export CUESIFT_MODEL=qwen2.5:3b
 cuesift translate ep01.ko.srt --to en,ja --out dist
 ```
 
+원격 API를 쓰면 `CUESIFT_API_KEY`도 설정합니다. 없으면 `Authorization` 헤더를
+붙이지 않으므로 위 예시의 로컬 Ollama에는 필요하지 않습니다.
+
 **같은 명령을 다시 치면 재개됩니다.** 성공한 호출은 `.cuesift/cache/`에
 남아 두 번째 실행에서 네트워크를 타지 않습니다.
 
