@@ -1523,12 +1523,25 @@ def _translate_one(
             _echo(f"[{target_lang}] Tier 1 프로바이더가 요청을 거부했다: {exc}", err=True)
             return EXIT_UNAVAILABLE
         except ProviderError as exc:
-            # **마지막 그물이다.** `FatalProviderError` 절보다 **뒤에** 와야 한다 -
-            # 그 절이 자손을 먼저 잡지 않으면 이 절이 죽은 코드가 된다.
+            # **마지막 그물이고, 오늘은 도달 불가하다.** `signals/llm.py:162-173`이
+            # Tier 1의 전파 계약을 못 박는다 - `RetryableProviderError`는
+            # `translate_segments`가 이미 삼켜 `SegmentFailure`가 되고 위 절이 잡는
+            # `FatalProviderError`만 여기까지 올라온다. 그래도 절을 남기는 것은,
             # 계약(`Provider.complete`의 "맨 `ProviderError`를 던지면 안 된다")을
-            # 어기는 서드파티 구현이 traceback으로 파이프라인을 죽이는 것보다는
-            # 69로 막고 원인을 알리는 편이 낫다(NFR-5 · §12 Q3). 번역 경로의
-            # 같은 이름 절과 짝이다.
+            # 어기는 서드파티 구현이 traceback으로 파이프라인을 죽이는 것보다
+            # 69로 막고 원인을 알리는 편이 낫기 때문이다(NFR-5 · §12 Q3).
+            # **그래서 위 절과 합치지 않는다** - 위는 실재하는 경로고 여기는
+            # 계약 위반 전용 그물이다. 번역 경로의 같은 이름 절과 짝이다.
+            #
+            # **절 순서는 지금 관측 불가하다.** 두 절의 본문이 글자 그대로 같아서
+            # 맞바꿔도 죽는 테스트가 **0건**이다(축2 리뷰 실측: 전량 생존). 자손이
+            # 뒤로 가면 이 절이 위를 가려 죽은 코드가 되지만, 가려진 결과가
+            # 원본과 바이트 동일이라 아무도 알아채지 못한다. 형제인 아래
+            # `except ValueError`와의 상대 순서는 의미조차 없다.
+            #
+            # 순서가 실제로 의미를 갖는 것은 **두 문구를 가르는 날**이고, 그때
+            # 틀린 순서를 잡을 게이트는 이 저장소에 없다 - 문구를 가르는 변경은
+            # 순서 회귀 테스트를 함께 들고 와야 한다.
             _echo(f"[{target_lang}] Tier 1 프로바이더가 요청을 거부했다: {exc}", err=True)
             return EXIT_UNAVAILABLE
         except ValueError as exc:
