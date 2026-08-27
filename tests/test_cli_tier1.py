@@ -521,6 +521,44 @@ def test_tier1이_쓴_토큰이_usage에_더해진다(
     assert 티어1["completion_tokens"] > 일반["completion_tokens"]
 
 
+def test_후보가_0건이면_cost_includes에_tier1이_안_실린다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**안 돈 계층은 비용 범위에 실리지 않는다** (최종 리뷰 축B).
+
+    `--tier1`을 켜도 후보가 0건이면 `triage_with_tier1`이 수집기를 한 번도
+    안 부르고 조기 반환한다. 그때 `tier1.counting.usage`를 그대로 넘기면
+    `TokenUsage(0, 0, 0)`이 나가고 `resolve_cost_scope`가 `usage is not None`만
+    보므로 **"돌았다"로 분류된다** - 화면은 `Tier 1: 회색지대가 비었다`인데
+    파일은 `["translation", "tier1"]`이라고 말하는 상태다(실측: 5큐 실주행에서
+    `calls: 6`이 전부 번역이었다).
+
+    이 프로젝트에서 비용은 기능이 아니라 **계약**이고 `cost`가 그 증거다.
+    `resolve_cost_scope` 독스트링이 예고한 실패의 반대 방향이다 - 그쪽은
+    "꺼진 계층이 무음 계층으로 둔갑"이고 여기는 **"안 돈 계층이 무음 계층으로
+    둔갑"** 이다.
+
+    **기본 `max_ratio`(0.05)와 10큐라 `floor(10 x 0.05) = 0`이다**
+    (`_TIER1_RUNS`를 일부러 쓰지 않는다).
+    """
+    fake = _clean_echo()
+
+    result = _run_tier1(tmp_path, monkeypatch, provider=fake)
+
+    assert result.exit_code == 0, result.output
+    # **긍정으로 확인한다.** 번역은 10큐 = 배치 1회이므로, 그 이상 불렸다면
+    # 후보가 0건이 아니어서 이 테스트의 전제가 깨진 것이다.
+    assert len(fake.calls) == 1, (
+        f"프로바이더가 {len(fake.calls)}회 불렸다 - 후보 0건 전제가 깨졌다. "
+        "이 테스트는 Tier 1이 한 번도 안 도는 실행만 잰다."
+    )
+    summary = _read_review(tmp_path)["summary"]
+    assert summary["cost"]["includes"] == ["translation"], summary["cost"]
+    # 범위에서 빠졌으므로 무음 계층으로도 세지 않는다 - 둘이 갈라지면
+    # 소비자가 "돌았는데 계측이 죽었다"로 읽는다.
+    assert summary["cost"]["basis"] == {"translation": "cached-included"}, summary["cost"]
+
+
 def test_후보_0건이면_사유가_화면에_나온다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """**유료 계층이 통째로 안 돌아도 반환값의 형태가 같다**(Ruling P12).
 
@@ -537,6 +575,32 @@ def test_후보_0건이면_사유가_화면에_나온다(tmp_path: Path, monkeyp
     # 이 단언이 없으면 사유 보고가 통째로 사라져도 스위트가 초록이다.
     assert f"[en] {_TIER1_WARN_PREFIX}" in result.output, result.output
     assert "max_ratio" in result.output
+
+
+def test_후보_0건_줄의_접두를_리터럴로_못_박는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**`_TIER1_WARN_PREFIX`를 상수로 보간하면 그 상수가 게이트를 빠져나간다.**
+
+    바로 위 테스트가 `f"[en] {_TIER1_WARN_PREFIX}"`로 보간하는데, 그러면 문구와
+    기대값이 **함께 움직여** 접두 변이가 안 잡힌다(최종 리뷰 축A 실측:
+    `"Tier1: "` 변이 사망 **0건**). `_TIER1_BOUND_PREFIX` 쪽은
+    `test_상한_줄의_문구를_리터럴로_못_박는다`가 리터럴로 지켜 **1 failed**를 냈다 -
+    같은 형태를 WARN 쪽에도 둔다.
+
+    **em dash가 진짜 표적이다.** `cli.py`의 상수 주석이 "출력 문자열이라
+    em dash를 쓰지 않는다(cp949 미인코딩)"를 계약으로 못 박았는데, 그 계약을
+    지키는 게이트가 WARN 쪽에는 없었다 - `"Tier 1 - "`(em dash) 변이도 사망
+    **0건**이었다. 이 단언은 두 변이를 **모두** 죽인다.
+
+    그래서 상수도 헬퍼도 쓰지 않고 **한글 리터럴을 그대로** 박는다.
+    """
+    result = _run_tier1(tmp_path, monkeypatch)
+
+    assert result.exit_code == 0, result.output
+    assert any(line.startswith("[en] Tier 1: ") for line in result.output.splitlines()), (
+        result.output
+    )
 
 
 def test_번역_실패분이_있어도_분모가_같다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -635,6 +699,14 @@ def test_같은_자막을_두_번_돌려도_tier1_토큰이_두_배가_되지_�
         "둘째 실행이 첫 실행과 같은 호출 수를 냈다 - 계측이 캐시 바깥에 있다"
     )
     assert 두번째["completion_tokens"] < 처음["completion_tokens"]
+    # **캐시 히트만으로 도는 실행도 "돌았다"다.** 둘째 실행에서 Tier 1은
+    # `complete`를 한 번도 안 부르지만 계층은 돌았으므로 범위에 남아야 한다.
+    # `counting.usage.calls > 0`을 "돌았나"의 기준으로 삼으면 여기서 `includes`가
+    # 갈라져 **같은 입력의 두 실행이 다른 파일을 낸다**(NFR-3 재현성). 그것이
+    # 후보 0건 수정(최종 리뷰 축B)에서 호출 수 기준을 반려한 이유이고,
+    # 이 줄이 없으면 그 반려를 지키는 게이트가 하나도 없다(실측: 호출 수 기준
+    # 변이가 전량 통과했다).
+    assert 두번째["includes"] == 처음["includes"] == ["translation", "tier1"]
 
 
 def test_샘플마다_다른_캐시_키를_쓴다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

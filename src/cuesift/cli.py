@@ -638,9 +638,15 @@ def translate(
             # **기본값을 리터럴로 쓰지 않는다.** 리터럴이면 상수를 고쳤을 때
             # 도움말만 옛 값을 말하는 조용한 거짓말이 남는다 - 사용자는 화면에
             # 적힌 값을 믿고 그 값으로 비용을 계산한다.
+            # **도움말이 파서 범위보다 좁은 것을 말한다.** click이 찍는
+            # `[0.0<=x<=1.0]`은 파서가 받는 범위이고, `0`은 아래 조합 검증이
+            # exit 2로 거부한다(Tier 1을 끄는 값이라 스위치와 모순이다).
+            # 범위 표기만 믿으면 사용자는 0을 허용값으로 읽는다 - 최종 리뷰
+            # 축B가 실행으로 찾았다. **`min`을 올려 닫을 수는 없다** - click의
+            # 범위는 경계를 포함해서 "0보다 큰"을 표현하지 못한다.
             help=(
                 f"Tier 1을 태울 회색지대 후보 상한 비율 (기본 {_TIER1_DEFAULT_MAX_RATIO})."
-                " --tier1과 함께 씁니다."
+                " --tier1과 함께 씁니다. 실제 허용은 0 < x <= 1.0으로 0은 거부됩니다."
             ),
         ),
     ] = None,
@@ -666,9 +672,12 @@ def translate(
             # `min`은 경계를 포함하므로 0.0이 본문까지 온다. 거부는 아래
             # 조합 검증이 한다 - 여기서 `min`을 올리면 도움말의 범위 표기가
             # "0보다 큰 실수"를 표현하지 못한다.
+            # 도움말이 파서 범위(`[x>=0.0]`)보다 좁은 것을 말하는 이유는 위
+            # `--tier1-max-ratio`와 같다. "0이면 신호가 죽습니다"만 적으면
+            # **허용값으로 읽힌다** - 실제로는 exit 2다.
             help=(
                 f"재번역 온도 (기본 {_TIER1_DEFAULT_TEMPERATURE})."
-                " 0이면 샘플이 전부 같아 신호가 죽습니다."
+                " 실제 허용은 0 < x로 0은 거부됩니다 (0이면 샘플이 전부 같아 신호가 죽습니다)."
             ),
         ),
     ] = None,
@@ -2017,12 +2026,19 @@ def _run_triage(
         필드다(화면은 읽지 않고 `review.json`만 읽는다).
 
         **`tier1_usage`는 `--tier1` 여부가 아니라 "실제로 돌았나"다.** 스위치가
-        켜져 있어도 번역이 전량 실패하면 아래 조기 반환이 `triage_with_tier1`보다
-        먼저 나가므로 Tier 1은 한 번도 안 돈다 - 그때 `tier1.counting.usage`를
-        읽으면 `TokenUsage(0, 0, 0)`이 나가 `includes`가 "Tier 1을 셌다"고
-        거짓말한다(`calls == 0`이라 `unreported`에는 안 실려 수치는 안 부푼다 -
-        **화면 어디에도 신호가 없는 종류의 거짓말이다**). 기본값을 `None`으로 둔
-        것이 그 자리를 옳게 만든다.
+        켜져 있어도 Tier 1이 한 번도 안 도는 경로가 **둘** 있다.
+
+        | 경로 | 어디서 갈라지나 |
+        | --- | --- |
+        | 번역 전량 실패 | 아래 조기 반환이 `triage_with_tier1`보다 먼저 나간다 |
+        | **후보 0건** | `triage_with_tier1`의 `if not candidates:`가 `warn`을 부르고 반환한다 |
+
+        둘 다 `tier1.counting.usage`를 읽으면 `TokenUsage(0, 0, 0)`이 나가
+        `includes`가 "Tier 1을 셌다"고 거짓말한다(`calls == 0`이라 `unreported`
+        에는 안 실려 수치는 안 부푼다 - **화면 어디에도 신호가 없는 종류의
+        거짓말이다**). 기본값을 `None`으로 둔 것이 첫 경로를, 호출부의
+        `안_돈_사유`가 둘째 경로를 옳게 만든다. **둘째는 최종 리뷰 축B가
+        실주행으로 찾았다** - 첫째만 막았을 때 이 자리가 여전히 거짓말했다.
         """
         # **`None`과 `TokenUsage(0, 0, calls=N)`은 다르다.** 전자는 "그 계층이
         # 안 돌았다"(범위·합계에서 제외), 후자는 "돌았는데 무음"(`unreported`에
@@ -2073,27 +2089,57 @@ def _run_triage(
         # 실패분이 들어가 hard fail이 예산 quota를 먹는다 - 실측 Recall@10% 0%.
         # 게다가 반환 목록이 `kept`보다 길어져 `TriageOutcome`의 id 집합
         # 불변식이 `ValueError`를 던지고 트리아지가 통째로 exit 2가 된다.
+        # **후보 0건이면 Tier 1은 한 번도 안 돈다 - 그 사실을 `warn`이 말한다**
+        # (최종 리뷰 축B). `triage_with_tier1`은 `if not candidates:` 한 자리에서만
+        # `warn`을 부르고 **즉시 반환한다.** 그 경로에서 `tier1.counting.usage`를
+        # 그대로 넘기면 `TokenUsage(0, 0, 0)`이 `resolve_cost_scope`의
+        # `usage is not None`을 통과해 **안 돈 계층이 비용 범위에 실린다** -
+        # 화면은 `Tier 1: 회색지대가 비었다`인데 파일은 `["translation", "tier1"]`
+        # 이라 말하는 상태다(실측: 5큐 실주행에서 `calls: 6`이 전부 번역이었다).
+        #
+        # **호출 수로 판정하면 안 된다.** `CountingProvider`는 캐시 **안쪽**이라
+        # 재실행에서 샘플이 전부 캐시 히트면 `calls == 0`인데 그때 Tier 1은
+        # **돌았다.** `calls > 0`을 기준으로 삼으면 같은 입력의 1회차와 2회차가
+        # 서로 다른 `includes`를 내 NFR-3 재현성이 깨진다.
+        안_돈_사유: list[str] = []
+
+        def _tier1_warn(message: str) -> None:
+            """후보 0건의 사유를 화면에 내고, 안 돌았다는 사실을 기록한다.
+
+            **`warn`을 침묵시키지 않는다**(Ruling P12). 여기서 조용하면 유료
+            계층이 통째로 안 돌아도 반환값의 형태가 완전히 같아 알아챌 수단이
+            없다. 후보 0건의 사유 6종이 화면에 나가야 한다.
+
+            **`err=True`를 주지 않는다.** 이것은 실패가 아니라 "무엇이
+            일어났는가"의 보고이고, 같은 함수의 트리아지 요약과 나란히 읽혀야
+            한다 - 한쪽만 stderr로 가면 리다이렉트한 로그에서 순서가 섞인다.
+
+            **`warn`이 다른 사유로도 불리게 되는 날 이 기록은 거짓이 된다.**
+            그때는 `triage_with_tier1`이 "돌았나"를 직접 돌려주게 바꿔야 한다 -
+            `test_후보가_0건이면_cost_includes에_tier1이_안_실린다`와
+            `test_tier1을_켜면_cost_includes에_tier1이_실린다`가 양방향으로 건다.
+            """
+            안_돈_사유.append(message)
+            _echo(f"[{target_lang}] {_TIER1_WARN_PREFIX}{message}")
+
         scored = triage_with_tier1(
             translated.segments,
             ctx,
             budget_ratio=policy_value,
             provider=tier1.counting,
             max_ratio=tier1.max_ratio,
-            # **`warn`을 침묵시키지 않는다**(Ruling P12). 여기서 조용하면 유료
-            # 계층이 통째로 안 돌아도 반환값의 형태가 완전히 같아 알아챌 수단이
-            # 없다. 후보 0건의 사유 6종이 화면에 나가야 한다.
-            #
-            # **`err=True`를 주지 않는다.** 이것은 실패가 아니라 "무엇이
-            # 일어났는가"의 보고이고, 같은 함수의 트리아지 요약과 나란히 읽혀야
-            # 한다 - 한쪽만 stderr로 가면 리다이렉트한 로그에서 순서가 섞인다.
-            warn=lambda message: _echo(f"[{target_lang}] {_TIER1_WARN_PREFIX}{message}"),
+            warn=_tier1_warn,
             samples=tier1.samples,
             temperature=tier1.temperature,
             cache_dir=tier1.cache_dir,
             identity=tier1.identity,
             excluded_ids=failed_ids,
         )
-        return _outcome(tuple(scored), tuple(kept), tier1_usage=tier1.counting.usage)
+        return _outcome(
+            tuple(scored),
+            tuple(kept),
+            tier1_usage=None if 안_돈_사유 else tier1.counting.usage,
+        )
 
     # **수집과 융합의 입력이 다르다. 서로 다른 층의 요구이기 때문이다.**
     #
