@@ -117,6 +117,28 @@ DEFAULT_CACHE_DIR = Path(".cuesift/cache")
 # 좁히지 않는다.
 _LANG_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]+)*$")
 
+# Tier 1 기본값과 비용 한도 (FR-4.3 · 설계 D3·D4 · §11 R8).
+#
+# **셋 다 출처가 있다.** R8이 출처 없는 수치를 기본값으로 넣는 것을 금지한다.
+# 여기 값이 라이브러리 기본값과 갈라지면 `--tier1-samples`를 주지 않은 실행과
+# 준 실행의 비용 산식이 서로 다른 수를 쓰게 된다 - 아래 한도 검사가 실제
+# 호출 비용과 어긋나는 값을 검사하게 되는 것이다.
+_TIER1_DEFAULT_MAX_RATIO = 0.05
+_TIER1_DEFAULT_SAMPLES = 3  # `triage_with_tier1`의 현행 기본값 (tier1.py:30)
+_TIER1_DEFAULT_TEMPERATURE = 1.0  # OpenAI Chat Completions API 명세의 기본값
+
+# 기준선 대비 배수 = samples x max_ratio x DEFAULT_BATCH_SIZE 이고, 요구사항정의서
+# §4가 "3배는 감당 불가"라 했다. 10(DEFAULT_BATCH_SIZE)으로 나눈 값이 이 한도다.
+#
+# **이 값을 넘기면 Tier 1 호출이 번역 기준선의 3배를 넘는다** - §4가 막으려던
+# 바로 그 영역이다. 반대로 samples 단독 상한으로 바꾸면
+# `--tier1-samples 10 --tier1-max-ratio 0.5`(배수 50)가 통과한다 - 상한이
+# 잘못된 축에 걸리기 때문이다(설계 D4).
+#
+# **배치 프로토콜로 바뀌면 이 상수를 다시 계산해야 한다**(설계 §6.2) -
+# 그때는 DEFAULT_BATCH_SIZE가 산식에서 빠져 한도가 3.0이 된다.
+_TIER1_COST_LIMIT = 0.3
+
 app = typer.Typer(
     name="cuesift",
     # em dash(U+2014)를 쓰지 않는다. 이 문자열은 `--help`로 출력되는데
@@ -548,6 +570,53 @@ def translate(
             "--review-threshold와 함께 써야 한다",
         ),
     ] = None,
+    tier1: Annotated[
+        bool,
+        typer.Option(
+            "--tier1",
+            # 기본이 꺼짐인 이유는 Q4가 열려 있어서다(설계 D2) - 자가일관성의
+            # 판정력이 아직 검증되지 않았다. 검증 안 된 신호가 기본 경로에
+            # 섞이면 Recall@Budget 지표 자체가 오염되는데, 그 숫자가 이
+            # 프로젝트의 유일한 증명 자료다(§9.1 · §11 R4).
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="Tier 1 신호(자가일관성)를 켭니다. 기본은 꺼짐입니다 (FR-4.3).",
+        ),
+    ] = False,
+    tier1_max_ratio: Annotated[
+        float | None,
+        typer.Option(
+            "--tier1-max-ratio",
+            min=0.0,
+            max=1.0,
+            # **기본값이 None인 것은 "명시했나"를 알기 위해서다.** 실제 값을
+            # 기본으로 두면 사용자가 친 0.05와 기본 0.05를 구별할 수 없어
+            # `--tier1` 없이 준 것을 잡지 못한다. 사용자에게 보일 기본값은
+            # 아래 help 문구가 대신 말한다.
+            help="Tier 1을 태울 회색지대 후보 상한 비율 (기본 0.05). --tier1과 함께 씁니다.",
+        ),
+    ] = None,
+    tier1_samples: Annotated[
+        int | None,
+        typer.Option(
+            "--tier1-samples",
+            min=2,
+            # 1이면 비교할 쌍이 0개라 유사도 계산 자체가 성립하지 않는다.
+            # `Tier1Context.__post_init__`도 같은 경계를 검사하지만 여기서
+            # 막아야 오류 메시지가 옵션 이름을 말한다.
+            help="재번역 샘플 수 (기본 3). 2 미만이면 비교할 쌍이 만들어지지 않습니다.",
+        ),
+    ] = None,
+    tier1_temperature: Annotated[
+        float | None,
+        typer.Option(
+            "--tier1-temperature",
+            min=0.0,
+            # `min`은 경계를 포함하므로 0.0이 본문까지 온다. 거부는 아래
+            # 조합 검증이 한다 - 여기서 `min`을 올리면 도움말의 범위 표기가
+            # "0보다 큰 실수"를 표현하지 못한다.
+            help="재번역 온도 (기본 1.0). 0이면 샘플이 전부 같아 신호가 죽습니다.",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         # Task 4까지는 "경고 후 무시"(--review-budget과 같은 임시 처리)였다
@@ -607,6 +676,78 @@ def translate(
             err=True,
         )
         raise typer.Exit(2)
+
+    tier1_options_given = (
+        tier1_max_ratio is not None or tier1_samples is not None or tier1_temperature is not None
+    )
+    if tier1_options_given and not tier1:
+        # 조용히 무시하면 "켰다고 믿는" 실행이 생긴다. 그 실행은 종료 코드도
+        # 0이고 review.json도 정상이라 어떤 게이트에도 걸리지 않는다.
+        _echo("--tier1-* 옵션은 --tier1과 함께 써야 한다", err=True)
+        raise typer.Exit(2)
+    if tier1:
+        if review_threshold is not None:
+            # `triage_with_tier1`은 `select_by_budget`을 고정으로 쓴다(설계 D9).
+            # 회색지대 개념 자체가 예산 선별의 부산물이라, 임계값 정책에서는
+            # "후보로 뽑을 회색지대"의 정의가 서지 않는다.
+            _echo(
+                "--tier1은 --review-threshold와 함께 쓸 수 없다 (--review-budget을 쓴다)",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if review_budget is None:
+            # `triage_with_tier1`이 `budget_ratio`를 기본값 없는 필수 인자로
+            # 요구한다. 정책 없이 켜면 조달할 값이 없다.
+            _echo("--tier1은 --review-budget을 요구한다", err=True)
+            raise typer.Exit(2)
+        for _option_name, _option_value in (
+            ("--tier1-max-ratio", tier1_max_ratio),
+            ("--tier1-temperature", tier1_temperature),
+        ):
+            if _option_value is not None and not math.isfinite(_option_value):
+                # **click의 `min`/`max`는 NaN을 통과시킨다** - 위
+                # `--review-threshold`의 `math.isnan` 주석과 같은 구멍이다
+                # (`lt(nan, 0.0)`·`gt(nan, 1.0)`이 **둘 다 False**라 무력하다).
+                #
+                # 여기서 막지 않으면 아래 비용 한도 검사가 `nan > 0.3`을
+                # False로 읽어 **조용히 통과**한다 - 검사하지 않고 통과하는
+                # 게이트는 없는 게이트보다 나쁘다. `--tier1-temperature`는
+                # 상한이 없어 `inf`도 click을 빠져나오므로 `isnan`이 아니라
+                # `isfinite`로 본다(`--tier1-max-ratio`의 `inf`는 `max=1.0`이
+                # 이미 막지만 두 옵션을 같은 규칙으로 둔다).
+                _echo(f"{_option_name}를 숫자로 읽지 못했다: {_option_value}", err=True)
+                raise typer.Exit(2)
+        if tier1_max_ratio is not None and tier1_max_ratio == 0.0:
+            # 라이브러리가 `max_ratio=0.0`을 "사용자가 Tier 1을 껐다 - 정상"으로
+            # 정의한다(`tier1.py`의 후보 0건 진단). 스위치를 켜면서 0을 주는 것은
+            # 정면으로 모순이고, 통과시키면 "켰는데 안 도는" 실행이 된다.
+            _echo(
+                "--tier1-max-ratio 0은 Tier 1을 끄는 값이라 --tier1과 함께 줄 수 없다",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if tier1_temperature is not None and tier1_temperature <= 0.0:
+            # click의 `min=0.0`은 **경계를 포함**하므로 0.0이 여기까지 온다.
+            # 막지 않으면 `Tier1Context.__post_init__`이 나중에 던지고, 그때는
+            # 오류 메시지가 옵션 이름을 말하지 못한다.
+            _echo("--tier1-temperature는 0보다 커야 한다 (0이면 샘플이 전부 같아진다)", err=True)
+            raise typer.Exit(2)
+        effective_max_ratio = (
+            _TIER1_DEFAULT_MAX_RATIO if tier1_max_ratio is None else tier1_max_ratio
+        )
+        effective_samples = _TIER1_DEFAULT_SAMPLES if tier1_samples is None else tier1_samples
+        cost_factor = effective_samples * effective_max_ratio
+        if cost_factor > _TIER1_COST_LIMIT:
+            # **곱과 한도를 둘 다 적는다.** 어느 쪽을 줄여야 하는지 알 수 없으면
+            # 사용자는 임의로 고르고, 그 선택이 다시 한도에 부딪힌다.
+            _echo(
+                f"--tier1-samples({effective_samples}) x"
+                f" --tier1-max-ratio({effective_max_ratio})"
+                f" = {cost_factor:.2f} 가 한도 {_TIER1_COST_LIMIT}을 넘는다."
+                " 둘 중 하나를 줄인다 (요구사항정의서 §4)",
+                err=True,
+            )
+            raise typer.Exit(2)
 
     triage_requested = review_budget is not None or review_threshold is not None
 
