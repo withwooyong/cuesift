@@ -60,6 +60,8 @@ def _outcome(
     policy_label: str = "예산 10%",
     policy_kind: str = "budget",
     policy_value: float = 0.1,
+    cost_includes: tuple[str, ...] | None = None,
+    cost_unreported: tuple[str, ...] | None = None,
 ) -> TriageOutcome:
     """**요약 필드를 전부 인자로 받는다. 기본값도 서로 구별되게 둔다.**
 
@@ -73,7 +75,16 @@ def _outcome(
     `segments`를 따로 받는 이유는 **순서를 `risks`와 다르게** 둘 수 있어야
     하기 때문이다. 기본값(`risks` 순서 그대로)은 실제 파이프라인과 달라
     조인 회귀를 재지 못한다.
+
+    **`cost_includes`의 기본은 `None`이고 그때는 인자를 아예 넘기지 않는다.**
+    헬퍼가 언제나 명시하면 `TriageOutcome`의 기본값이 한 번도 실행되지 않아
+    "기본이 유지된다"는 테스트가 헬퍼의 기본값만 재게 된다.
     """
+    extra: dict[str, object] = {}
+    if cost_includes is not None:
+        extra["cost_includes"] = cost_includes
+    if cost_unreported is not None:
+        extra["cost_unreported"] = cost_unreported
     return TriageOutcome(
         source_lang=source_lang,
         target_lang=target_lang,
@@ -89,6 +100,7 @@ def _outcome(
         ),
         excluded_failures=excluded_failures,
         usage=usage,
+        **extra,
     )
 
 
@@ -704,3 +716,124 @@ def test_Infinity도_거부된다(tmp_path: Path) -> None:
         write_review(_outcome(risks=(_risk("00000", selected=True, signals=[signal]),)), out)
 
     assert not out.exists()
+
+
+def test_cost_includes는_outcome이_말한_것을_낸다() -> None:
+    """**고정값이면 Tier 1을 켠 실행에서 파일이 조용히 틀린다.**
+
+    이월 5번: 모듈 상수로 고정된 집계 범위는 실제 집계와 연동되지 않는다.
+    """
+    outcome = _outcome(risks=(_risk("00000"),), cost_includes=("translation", "tier1"))
+
+    doc = build_review(outcome)
+
+    assert doc["summary"]["cost"]["includes"] == ["translation", "tier1"]
+
+
+def test_cost_includes의_기본은_translation_하나다() -> None:
+    """Tier 1을 켜지 않은 실행의 거동이 바뀌면 안 된다."""
+    doc = build_review(_outcome(risks=(_risk("00000"),)))
+
+    assert doc["summary"]["cost"]["includes"] == ["translation"]
+
+
+def test_basis가_includes의_계층마다_계측_규약을_밝힌다() -> None:
+    """**`includes`는 범위만 말하고 규약은 말하지 않는다** (Task 3 리뷰 이월).
+
+    번역 usage는 캐시 적중분을 **포함해서** 세고(`store/provider.py`가 저장된
+    usage를 그대로 낸다) Tier 1 usage는 `CountingProvider`가 캐시 안쪽에 있어
+    **실제 전송분만** 센다(설계 D7). 두 계층이 한 `prompt_tokens`로 합쳐지므로
+    범위만 밝히면 소비자는 그 숫자가 청구서와 왜 다른지 알 방법이 없다.
+    """
+    doc = build_review(_outcome(risks=(_risk("00000"),), cost_includes=("translation", "tier1")))
+
+    cost = doc["summary"]["cost"]
+    assert cost["basis"] == {"translation": "cached-included", "tier1": "sent-only"}
+    assert list(cost["basis"]) == cost["includes"], "basis와 includes가 갈라졌다"
+
+
+def test_토큰을_안_내는_백엔드는_tokens_reported가_false다() -> None:
+    """§12 Q3 - "능력은 균일하지 않아 탐지·명시가 필요하다".
+
+    `_extract_usage`는 `usage`가 없거나 형식이 다른 응답을 `(0, 0)`으로 떨어뜨린다
+    (실측: `{"usage": {"total_tokens": 99}}`도 `(0, 0, calls=1)`이다). 이 필드가
+    없으면 그 실행의 `cost`가 **"토큰을 0개 썼다"** 로 읽혀 NFR-2 비용 투명성이
+    거짓을 말한다 - 종료 코드도 파일 형식도 정상이라 어떤 게이트도 걸리지 않는다.
+    """
+    doc = build_review(_outcome(risks=(_risk("00000"),), usage=TokenUsage(0, 0, calls=8)))
+
+    cost = doc["summary"]["cost"]
+    assert cost["calls"] == 8
+    assert cost["tokens_reported"] is False
+
+
+def test_토큰이_실린_실행은_tokens_reported가_true다() -> None:
+    """한쪽만 있어도 계측이 산 것이다 - 완성 토큰만 내는 백엔드가 실재한다."""
+    doc = build_review(_outcome(risks=(_risk("00000"),), usage=TokenUsage(0, 7, calls=1)))
+
+    assert doc["summary"]["cost"]["tokens_reported"] is True
+
+
+def test_성공_호출이_없으면_tokens_reported가_true다() -> None:
+    """`calls == 0`의 0토큰은 **참이다** - 성공 호출이 없으면 토큰도 없다.
+
+    **실제 도달 경로는 번역 전량 실패와 Tier 1 후보 0뿐이다**(실측). 전량 캐시
+    적중은 `store/provider.py`가 저장된 usage를 그대로 내므로 여기 오지 않고,
+    dry-run은 `TriageOutcome`을 아예 만들지 않는다.
+
+    전량 실패를 `False`로 바꾸지 않는 이유는 그 사실을 `total_segments`·
+    `triaged_segments`·`excluded_failures`가 **이미 말하기 때문이다.** 겹쳐
+    말하면 "실패했다"와 "계측이 죽었다"가 한 낱말로 섞인다.
+    """
+    doc = build_review(_outcome(risks=(_risk("00000"),), usage=TokenUsage(0, 0, calls=0)))
+    assert doc["summary"]["cost"]["tokens_reported"] is True
+
+
+def test_usage가_없으면_tokens_reported가_false다() -> None:
+    """수치 자체가 없으면 신뢰성을 뒷받침할 것이 없다 - "모른다"는 "믿을 수 있다"가 아니다."""
+    doc = build_review(_outcome(risks=(_risk("00000"),)))
+
+    assert doc["summary"]["cost"]["tokens_reported"] is False
+
+
+def test_계층별_신고가_합계에_가려진_무음을_파일에_낸다() -> None:
+    """합계가 0이 아닌데도 한 계층이 통째로 무음인 구성을 **직접 조립해서** 잰다.
+
+    번역=상용 API · Tier 1=로컬 Ollama가 §12 Q3가 경고한 그 구성이다.
+    `TokenUsage(1, 0, calls=1000)`은 합이 0이 아니라 합계 검사를 통과한다.
+    """
+    가려짐 = _outcome(
+        risks=(_risk("00000"),),
+        usage=TokenUsage(1, 0, calls=1000),
+        cost_includes=("translation", "tier1"),
+    )
+    assert build_review(가려짐)["summary"]["cost"]["tokens_reported"] is True
+
+    신고됨 = _outcome(
+        risks=(_risk("00000"),),
+        usage=TokenUsage(1, 0, calls=1000),
+        cost_includes=("translation", "tier1"),
+        cost_unreported=("tier1",),
+    )
+    cost = build_review(신고됨)["summary"]["cost"]
+    assert cost["tokens_reported"] is False
+    assert cost["prompt_tokens"] == 1, "판정만 계층별이고 수치는 합계 그대로다"
+
+
+def test_cost의_키_집합이_고정돼_있다() -> None:
+    """**키가 조용히 느는 변경을 잡는다** (§8.4는 "값은 예시이고 계약은 키다").
+
+    개별 키를 하나씩 단언하는 테스트만 있으면 새 키가 아무 저항 없이 늘어난다 -
+    파일을 읽는 스크립트는 이미 밖에 있을 수 있고, 늘어난 키는 §8.4에 없는 채로
+    나간다. 여기서 걸리면 §8.4를 먼저 고치게 된다.
+    """
+    cost = build_review(_outcome(risks=(_risk("00000"),)))["summary"]["cost"]
+
+    assert set(cost) == {
+        "prompt_tokens",
+        "completion_tokens",
+        "calls",
+        "includes",
+        "basis",
+        "tokens_reported",
+    }

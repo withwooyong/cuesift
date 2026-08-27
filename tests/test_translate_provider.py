@@ -1,15 +1,26 @@
-"""프로바이더 계약과 예외 계층 (요구사항정의서 FR-2.5, FR-2.6)."""
+"""프로바이더 계약과 예외 계층 (요구사항정의서 FR-2.5, FR-2.6).
+
+파일 뒤쪽 절반은 `CountingProvider` 검증이다 (FR-7.4 · 설계 D6·D7).
+**"몇 번 불렀나"가 아니라 "몇 토큰을 썼나"를 센다.** 캐시 히트는 실제로
+토큰을 쓰지 않으므로 잡히지 않는 것이 정확한 동작이다 - `cost`는 청구서에
+가까운 물건이다(D7).
+"""
 
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import get_args
 
 import pytest
 
+from cuesift.cli import _cache_identity
+from cuesift.store.provider import CachingProvider
+from cuesift.translate.openai_compat import OpenAICompatibleProvider
 from cuesift.translate.provider import (
     ChatMessage,
     Completion,
+    CountingProvider,
     FatalProviderError,
     ProviderError,
     RetryableProviderError,
@@ -86,9 +97,24 @@ def test_token_usage_합산_결과도_가드를_지난다() -> None:
 
 
 def test_completion은_사용량을_동반한다() -> None:
-    c = Completion(text="hello", usage=TokenUsage(prompt_tokens=1))
+    c = Completion(text="hello", usage=TokenUsage(prompt_tokens=1, calls=1))
     assert c.text == "hello"
     assert c.usage.prompt_tokens == 1
+
+
+def test_calls가_0인데_토큰이_실리면_거부한다() -> None:
+    """**`layer_tokens_reported`의 단축이 이 불변식에 얹혀 있다.**
+
+    `report/models.py`가 `calls == 0`을 "토큰 0이 참이다"로 읽고 곧바로
+    "계측 정상"을 낸다. 이 방어가 없으면 토큰을 쓴 실행이 그 단축을 타고
+    검사를 통째로 우회한다 - 음수는 막으면서 이쪽만 열어 두면 방어가
+    반쪽이다.
+    """
+    with pytest.raises(ValueError, match="calls가 0인데"):
+        TokenUsage(prompt_tokens=100, completion_tokens=100, calls=0)
+
+    # 0 호출 0 토큰은 정상이다 - 배치 루프의 누적 시작값이 이것이다.
+    assert TokenUsage().calls == 0
 
 
 def test_예외_계층_두_갈래가_공통_조상을_갖는다() -> None:
@@ -144,3 +170,213 @@ def test_nan은_비교만으로는_걸러지지_않는다() -> None:
     # 바뀌지 않는 한 isfinite를 빼면 안 된다.
     assert not (math.nan < 0)
     assert not (math.nan >= 0)
+
+
+# --- CountingProvider (FR-7.4 · 설계 D6·D7) ---
+
+
+class _고정프로바이더:
+    """호출마다 같은 usage를 내는 가짜."""
+
+    name = "fake"
+
+    def __init__(self, usage: TokenUsage) -> None:
+        self._usage = usage
+        self.calls = 0
+
+    def complete(self, messages, *, temperature, max_tokens) -> Completion:
+        self.calls += 1
+        return Completion(text="ok", usage=self._usage)
+
+
+def _메시지() -> list[ChatMessage]:
+    return [ChatMessage(role="user", content="안녕")]
+
+
+def test_통과한_토큰을_누적한다() -> None:
+    inner = _고정프로바이더(TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1))
+    counting = CountingProvider(inner)
+
+    for _ in range(3):
+        counting.complete(_메시지(), temperature=1.0, max_tokens=None)
+
+    assert counting.usage.prompt_tokens == 30
+    assert counting.usage.completion_tokens == 15
+    assert counting.usage.calls == 3
+
+
+def test_한_번도_안_부르면_0이다() -> None:
+    """Tier 1을 켰지만 후보가 0건인 실행이 이 상태다."""
+    counting = CountingProvider(_고정프로바이더(TokenUsage()))
+    assert counting.usage.prompt_tokens == 0
+    assert counting.usage.completion_tokens == 0
+    assert counting.usage.calls == 0
+
+
+def test_결과를_그대로_돌려준다() -> None:
+    inner = _고정프로바이더(TokenUsage(prompt_tokens=1, completion_tokens=1, calls=1))
+    completion = CountingProvider(inner).complete(_메시지(), temperature=0.5, max_tokens=99)
+    assert completion.text == "ok"
+
+
+def test_인자를_그대로_넘긴다() -> None:
+    """`temperature`·`max_tokens`를 바꿔 넘기면 캐시 키가 어긋나 전량 미스가 된다."""
+    받은: dict[str, object] = {}
+
+    class _기록프로바이더:
+        name = "rec"
+
+        def complete(self, messages, *, temperature, max_tokens) -> Completion:
+            받은.update(temperature=temperature, max_tokens=max_tokens, n=len(messages))
+            return Completion(text="", usage=TokenUsage())
+
+    CountingProvider(_기록프로바이더()).complete(_메시지(), temperature=0.7, max_tokens=4096)
+    assert 받은 == {"temperature": 0.7, "max_tokens": 4096, "n": 1}
+
+
+def test_예외를_삼키지_않는다() -> None:
+    """**삼키면 `SelfConsistency`가 `FatalProviderError`를 다시 던지는 설계가 죽는다.**
+
+    401을 삼키면 그 실행은 "Tier 1이 돌았고 아무것도 안 걸렸다"로 보인다.
+    """
+
+    class _터지는프로바이더:
+        name = "boom"
+
+        def complete(self, messages, *, temperature, max_tokens) -> Completion:
+            raise FatalProviderError("401")
+
+    with pytest.raises(FatalProviderError):
+        CountingProvider(_터지는프로바이더()).complete(_메시지(), temperature=1.0, max_tokens=None)
+
+
+def test_name을_위임한다() -> None:
+    """래퍼 이름이 새면 `cli.py`의 경고가 **사용자가 지정하지 않은 이름**을 찍는다.
+
+    캐시가 갈라지는 것과는 무관하다 - identity는
+    `OpenAICompatibleProvider.cache_identity`가 자기 `self.name`으로 조립하므로
+    래퍼를 씌워도 그대로다. `provider.name` 소비처는 경고 문구 두 곳뿐이다.
+    """
+    assert CountingProvider(_고정프로바이더(TokenUsage())).name == "fake"
+
+
+# --- CountingProvider: 위임 표면 (리뷰 1축·2축 공통 지적) ---
+
+
+class _풀표면프로바이더:
+    """`OpenAICompatibleProvider`처럼 공개 표면 넷을 전부 가진 가짜.
+
+    `_고정프로바이더`는 반대쪽 극이다 - `cache_identity`도 `close`도 없는
+    테스트 더블(`tests/fakes/provider.py`의 `EchoProvider`가 그렇다)이라
+    `getattr(..., None)`이 `None`을 받는 것이 **정상 동작**인 경우를 맡는다.
+    """
+
+    name = "full"
+
+    def __init__(self) -> None:
+        self.closed = 0
+
+    @property
+    def cache_identity(self) -> str:
+        return "full|http://h/v1|m"
+
+    def complete(self, messages, *, temperature, max_tokens) -> Completion:
+        usage = TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1)
+        return Completion(text="ok", usage=usage)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_cache_identity를_위임한다() -> None:
+    """위임하지 않으면 `cli._cache_identity`가 `None`을 받아 **캐시가 실행 전체에서 꺼진다.**"""
+    assert CountingProvider(_풀표면프로바이더()).cache_identity == "full|http://h/v1|m"
+
+
+def test_cli의_신원_탐지가_래퍼를_통과한다() -> None:
+    """회귀 게이트 (리뷰 1번). 래퍼를 씌워도 신원이 **글자 하나까지 같아야** 한다.
+
+    달라지면 이전 실행의 캐시를 한 건도 못 읽고, 같지 않고 `None`이면
+    캐시가 통째로 꺼진 채 경고에는 진짜 프로바이더 이름이 찍혀 원인이 안 보인다.
+    """
+    raw = OpenAICompatibleProvider(base_url="http://h/v1", model="qwen2.5:3b")
+    try:
+        wrapped = _cache_identity(CountingProvider(raw))
+        assert wrapped is not None
+        assert wrapped == _cache_identity(raw)
+    finally:
+        raw.close()
+
+
+def test_신원이_없는_안쪽은_None으로_떨어진다() -> None:
+    """`getattr`이 `None`을 받는 것이 정상인 프로바이더가 실재한다 - 예외로 바꾸면 안 된다."""
+    assert _cache_identity(CountingProvider(_고정프로바이더(TokenUsage()))) is None
+
+
+def test_close를_위임한다() -> None:
+    """dry-run 경로(`cli.py`)가 소켓을 정리하는 유일한 통로다."""
+    inner = _풀표면프로바이더()
+    CountingProvider(inner).close()
+    assert inner.closed == 1
+
+
+def test_close가_없는_안쪽에서도_조용히_끝난다() -> None:
+    """`close`를 안 가진 가짜가 흔하다. 여기서 `AttributeError`가 나면 dry-run이 죽는다."""
+    CountingProvider(_고정프로바이더(TokenUsage())).close()
+
+
+def test_참조_구현의_공개_표면을_빠짐없이_덮는다() -> None:
+    """명시적 위임을 고른 대가를 게이트로 갚는다 - 표면이 다섯 번째로 늘면 여기서 터진다."""
+    표면 = {n for n in dir(OpenAICompatibleProvider) if not n.startswith("_")}
+    assert 표면 <= {n for n in dir(CountingProvider) if not n.startswith("_")}
+
+
+# --- CountingProvider의 배치 (설계 D6·D7) ---
+
+
+def _두_번_부른다(provider) -> None:
+    for _ in range(2):
+        provider.complete(_메시지(), temperature=0.0, max_tokens=None)
+
+
+def test_캐시_안쪽에_놓으면_히트를_토큰으로_세지_않는다(tmp_path: Path) -> None:
+    """**정답 배치**(D7). Task 6이 이 순서로 조립해야 `cost`가 청구서와 맞는다."""
+    raw = _고정프로바이더(TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1))
+    counting = CountingProvider(raw)
+    cached = CachingProvider(counting, identity="i|u|m", cache_dir=tmp_path)
+
+    _두_번_부른다(cached)
+
+    assert (raw.calls, cached.hits, cached.misses) == (1, 1, 1)
+    # 두 번 요청했지만 나간 것은 한 번이다. 히트는 토큰을 쓰지 않았다.
+    assert counting.usage == TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1)
+
+
+def test_캐시_바깥에_놓으면_히트까지_토큰으로_센다(tmp_path: Path) -> None:
+    """**오답 배치를 수치로 못박는다.** 위 테스트의 숫자가 우연이 아님을 증명한다.
+
+    네트워크는 똑같이 1회인데 `usage`는 2회분이다 - 쓰지 않은 토큰을 청구서에
+    올리는 것이고, "실제로 쓴 토큰을 센다"는 이 클래스의 존재 이유와 정반대다.
+    """
+    raw = _고정프로바이더(TokenUsage(prompt_tokens=10, completion_tokens=5, calls=1))
+    cached = CachingProvider(raw, identity="i|u|m", cache_dir=tmp_path)
+    counting = CountingProvider(cached)
+
+    _두_번_부른다(counting)
+
+    assert raw.calls == 1
+    assert counting.usage == TokenUsage(prompt_tokens=20, completion_tokens=10, calls=2)
+
+
+def test_D7_스택_전체가_close를_raw까지_전달한다(tmp_path: Path) -> None:
+    """**단독 위임 테스트로는 못 잡는 구멍이다** (재리뷰 1번).
+
+    `test_close를_위임한다`는 `CountingProvider`만 재기 때문에, 정답 배치
+    `CachingProvider(CountingProvider(raw))`의 **바깥 고리**가 끊겨 있어도 통과한다.
+    사슬은 끝에서 끝까지 재야 이어진 것이다.
+    """
+    raw = _풀표면프로바이더()
+
+    CachingProvider(CountingProvider(raw), identity="i|u|m", cache_dir=tmp_path).close()
+
+    assert raw.closed == 1

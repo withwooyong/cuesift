@@ -16,13 +16,6 @@ from typing import Any
 from cuesift.report.models import TriageOutcome
 from cuesift.segment import Segment, SegmentRisk, Signal
 
-# 지금 집계되는 비용 계층. **WP8b가 Tier 1을 CLI에 붙이면 `"tier1"`을 더한다.**
-#
-# 이 목록이 없으면 Tier 1을 켠 실행에서 `cost`가 번역 토큰만 세면서 전체인 척
-# 하고, 그 사실을 알릴 수단이 없다 - `collect_tier1`이 `TranslationResult.usage`를
-# 올려 보낼 통로를 아직 갖고 있지 않기 때문이다(NFR-2 · FR-7.4).
-_COST_INCLUDES = ["translation"]
-
 
 def build_review(outcome: TriageOutcome) -> dict[str, Any]:
     """트리아지 결과를 §8.4 스키마의 dict로 만든다."""
@@ -54,7 +47,20 @@ def build_review(outcome: TriageOutcome) -> dict[str, Any]:
                 "prompt_tokens": 0 if usage is None else usage.prompt_tokens,
                 "completion_tokens": 0 if usage is None else usage.completion_tokens,
                 "calls": 0 if usage is None else usage.calls,
-                "includes": list(_COST_INCLUDES),
+                # **범위와 규약을 함께 낸다** (설계 D8 · Task 3 리뷰 이월).
+                #
+                # `includes`만 내면 `prompt_tokens`가 "요청한 토큰"과 "실제
+                # 나간 토큰"의 혼합이 되는데 소비자는 그 사실을 알 수 없다 -
+                # 번역 계층은 캐시 적중분을 포함해 세고 Tier 1은 제외하고
+                # 센다(`report/models.py`의 `COST_BASIS` 표). 둘 다 outcome에서
+                # 파생되므로 여기서 갈라질 자리는 없다.
+                "includes": list(outcome.cost_includes),
+                "basis": outcome.cost_basis,
+                # 토큰 0이 "안 썼다"인지 "백엔드가 안 냈다"인지 가른다
+                # (§12 Q3 - 능력이 균일하지 않으므로 탐지·명시가 필요하다).
+                # 이 키가 없으면 usage를 안 내는 로컬 백엔드의 실행이 비용
+                # 0으로 조용히 보고된다(무음 열화).
+                "tokens_reported": outcome.token_counts_reported,
             },
         },
         # 선별된 것만 담는다(설계 D3) - FR-7.2가 "검수 **대상** 세그먼트

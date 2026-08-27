@@ -44,7 +44,22 @@ def _ignore(_message: str) -> None:
 
 
 class CachingProvider:
-    """`inner` 앞에 캐시를 끼운다."""
+    """`inner` 앞에 캐시를 끼운다.
+
+    **공개 표면은 `name`·`complete`·`close` 셋이고 `cache_identity`는 일부러 없다.**
+    이 클래스는 identity를 `inner`에서 파생시키지 않고 **생성자 인자로 받는다** -
+    더하면 이중 래핑(`CachingProvider`를 또 감싸기)이 조용히 성립하고, 그때 바깥이
+    안쪽에서 물려받은 값과 호출자가 지정한 값 중 **무엇이 캐시 키에 들어가는지
+    코드를 파야 알 수 있게 된다.**
+
+    그 대가로 **호출자는 raw provider에서 identity를 먼저 뽑고 그 다음에 감싸야
+    한다.** `cli.py`의 `_cache_identity(provider)` →
+    `CachingProvider(provider, identity=...)` 순서가 그것이다. 순서를 뒤집어 이미
+    감싼 것에서 신원을 읽으면 `getattr`이 `None`을 받아 **캐시가 조용히 꺼진다.**
+
+    `close`는 반대로 위임한다. 읽는 방법이 하나뿐이라서다 - 캐시 래퍼를 닫는다는
+    것에 "`inner`를 닫는다" 외의 해석이 없다.
+    """
 
     name = "cached"
 
@@ -117,6 +132,23 @@ class CachingProvider:
         completion = self._inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
         self._store_or_warn(request, completion)
         return completion
+
+    def close(self) -> None:
+        """`inner`를 닫는다. 안 가졌으면 할 일이 없다.
+
+        **위임하지 않으면 위임 사슬이 절반만 이어진다.** D7 정답 배치는
+        `CachingProvider(CountingProvider(raw))`이므로 여기서 끊기면 안쪽
+        `CountingProvider`가 위임하는 것과 **무관하게** `cli`의
+        `getattr(provider, "close", None)`이 `None`을 받아 raw의 커넥션 풀이 남는다.
+        절반만 이어진 사슬은 양극단보다 나쁘다 - 안쪽이 위임하는 것을 본 독자가
+        사슬 전체가 통한다고 가정한다.
+
+        `inner`가 `close`를 안 가진 경우(테스트 가짜가 대부분)는 할 일이 없는
+        것이지 오류가 아니다 - 여기서 `AttributeError`를 내면 dry-run 경로가 죽는다.
+        """
+        close = getattr(self._inner, "close", None)
+        if close is not None:
+            close()
 
     def _load_or_none(self, request: CacheRequest) -> Completion | None:
         """캐시 조회 실패를 미스로 떨어뜨린다. **경고 없이 조용히.**

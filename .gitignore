@@ -80,3 +80,11 @@ data/
 # 무시하지 않으면 `git add -A`가 이것들을 커밋에 쓸어 담고, check_links.py가
 # `git ls-files`로 훑을 때 브리프 안의 상대 링크가 깨진 링크로 잡힌다.
 .superpowers/
+
+# 리뷰어·에이전트 worktree (`.claude/worktrees/`)와 세션 설정. 리포 **안**에
+# 생기므로 무시하지 않으면 게이트가 리포 사본을 함께 센다 - 이 브랜치에서
+# 4회 부풀었다(실측: `ruff format --check .` 97 -> 194 files,
+# `markdownlint-cli2` 31 -> 62 files). 두 게이트를 이 한 줄이 닫는다:
+# ruff는 `.gitignore`를 존중하고 `.markdownlint-cli2.jsonc`에 `gitignore: true`가
+# 이미 있다. `check_links.py`는 `git ls-files` 기반이라 원래 무관하다.
+.claude/

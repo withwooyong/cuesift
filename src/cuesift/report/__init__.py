@@ -3,6 +3,27 @@
 from __future__ import annotations
 
 from cuesift.report.json_report import build_review, write_review
-from cuesift.report.models import TriageOutcome
+from cuesift.report.models import (
+    COST_BASIS,
+    COST_BASIS_VOCABULARY,
+    COST_INCLUDES_TRANSLATION,
+    CostScope,
+    TriageOutcome,
+    layer_tokens_reported,
+    resolve_cost_scope,
+)
 
-__all__ = ["TriageOutcome", "build_review", "write_review"]
+# `COST_INCLUDES_TRANSLATION`을 여기서 내보내는 것은 CLI가 Tier 1을 켤 때
+# `(*COST_INCLUDES_TRANSLATION, "tier1")`로 넓히기 때문이다 - 호출부가
+# `("translation", "tier1")`을 손으로 적으면 기본 범위의 정의가 두 곳이 된다.
+__all__ = [
+    "COST_BASIS",
+    "COST_BASIS_VOCABULARY",
+    "COST_INCLUDES_TRANSLATION",
+    "CostScope",
+    "TriageOutcome",
+    "build_review",
+    "layer_tokens_reported",
+    "resolve_cost_scope",
+    "write_review",
+]

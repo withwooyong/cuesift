@@ -12,7 +12,12 @@ from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from cuesift.cli import app
-from cuesift.translate.provider import FatalProviderError, ProviderError
+from cuesift.translate.provider import (
+    Completion,
+    FatalProviderError,
+    ProviderError,
+    TokenUsage,
+)
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 runner = CliRunner()
@@ -1371,3 +1376,57 @@ def test_대문자_언어_태그도_치환한다(tmp_path: Path, monkeypatch: py
     assert result.exit_code == 0, result.output
     assert (tmp_path / "ep01.en.srt").exists()
     assert not (tmp_path / "ep01.KO.en.srt").exists()
+
+
+class _무음백엔드:
+    """번역은 정상이지만 **usage를 안 내는** 백엔드 (요구사항정의서 §12 Q3).
+
+    로컬 Ollama 계열이 실제로 이 모양이다 - `_extract_usage`가 `usage` 키가
+    없거나 형식이 다른 응답을 전부 `(0, 0)`으로 떨어뜨리므로 성공 호출은
+    세어지는데 토큰은 0으로 남는다.
+    """
+
+    name = "silent"
+
+    def __init__(self) -> None:
+        self._inner = EchoProvider()
+
+    def complete(self, messages, *, temperature, max_tokens):  # type: ignore[no-untyped-def]
+        completion = self._inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        return Completion(text=completion.text, usage=TokenUsage(0, 0, calls=1))
+
+    def close(self) -> None:
+        return None
+
+
+def test_토큰을_안_낸_백엔드는_화면이_0을_사실로_주장하지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**화면은 침묵이 아니라 0을 사실로 주장한다** (§12 Q3 · NFR-2).
+
+    `토큰 prompt 0 · completion 0 · calls 8`은 한 줄 안에 모순이 있는데도
+    아무 표시가 없었다. `review.json`으로는 이 사람을 구할 수 없다 - 그 파일은
+    `--review-out`이 있어야 생기므로 **기본 경로 사용자는 신호를 전혀 못 본다.**
+    """
+    _patch_provider(monkeypatch, _무음백엔드())
+
+    result = runner.invoke(app, _args(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    토큰줄 = _summary_line(result.output, "en", offset=3)
+    assert "calls 1" in 토큰줄, f"토큰 줄을 못 찾았다: {토큰줄!r}"
+    assert "백엔드가 토큰 수치를 내지 않았다" in 토큰줄
+
+
+def test_토큰을_낸_백엔드에는_경고가_붙지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """경고가 언제나 붙으면 아무도 읽지 않는다 - 무시되는 경고는 없는 경고와 같다."""
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    토큰줄 = _summary_line(result.output, "en", offset=3)
+    assert "토큰 prompt" in 토큰줄
+    assert "백엔드가 토큰 수치를" not in 토큰줄

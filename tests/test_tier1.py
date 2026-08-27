@@ -61,6 +61,28 @@ def _plain_segments(n: int) -> list[Segment]:
     ]
 
 
+def _겹치는_두_세그먼트() -> list[Segment]:
+    """시간이 겹쳐 `spec.overlap`(배치 신호)이 발화하는 두 개.
+
+    `check_overlaps`는 겹침을 **뒤에 오는 세그먼트**에 기록하므로
+    (`spec/check.py`의 "겹침은 뒤에 오는 세그먼트에 기록한다"), id="1"에만
+    신호가 붙는다. 앞의 id="0"을 수집 입력에서 빼면 id="1"의 겹침 신호가
+    같이 사라진다 - `excluded_ids`가 수집까지 좁히면 안 되는 이유다(D5).
+
+    `end_ms`가 `start_ms`보다 커야 하고 겹침 구간이 0보다 커야 한다.
+    1000ms 겹침이 아니라 경계가 맞닿기만 하면(`end == start`)
+    `check_overlaps`가 "겹침이 아니다"로 넘겨 이 픽스처가 죽는다.
+    """
+    return [
+        Segment(
+            id="0", index=0, start_ms=0, end_ms=2000, source_text="원문0", target_text="Target 0"
+        ),
+        Segment(
+            id="1", index=1, start_ms=1000, end_ms=3000, source_text="원문1", target_text="Target 1"
+        ),
+    ]
+
+
 def test_tier1은_후보에만_불린다(signal_ctx):
     """**비용 통제의 핵심 게이트다** (FR-4.3).
 
@@ -437,10 +459,10 @@ def test_회색지대가_비면_사유를_warn한다(signal_ctx):
     assert "회색지대" in messages[0]
 
 
-def test_diagnose_empty_candidates가_다섯_사유를_구분한다():
+def test_diagnose_empty_candidates가_여섯_사유를_구분한다():
     """`_diagnose_empty_candidates`를 직접 단위 테스트한다.
 
-    다섯째(후보로 뽑혔지만 전부 번역 실패분)는
+    「후보로 뽑혔지만 전부 번역 실패분」은
     `test_공백_원문은_회색지대를_거쳐_target_text_필터에_걸린다`가 통합
     시나리오로 이미 재현했다 - 여기서는 순수 함수의 각 분기를 직접
     겨냥한다(빈 입력은 통합 테스트로 재현할 이유가 없는 사소한 경계라
@@ -450,23 +472,39 @@ def test_diagnose_empty_candidates가_다섯_사유를_구분한다():
     picked = SegmentRisk(segment_id="p", signals=[], risk_score=0.9, hard_fail=False, selected=True)
     gray = SegmentRisk(segment_id="g", signals=[], risk_score=0.1, hard_fail=False, selected=False)
 
-    # ① 빈 입력 - "전부 hard_fail이거나 선별됨"으로 오진하면(2라운드 리뷰
-    # C2) 파서가 자막을 하나도 못 읽은 사고가 "전량 hard_fail"로 보인다.
-    assert "0건" in _diagnose_empty_candidates([], set(), 0.5)
+    # ① 빈 입력(total=0 - 파서가 하나도 못 읽었다) - "전부 hard_fail이거나
+    # 선별됨"으로 오진하면(2라운드 리뷰 C2) 그 사고가 "전량 hard_fail"로 보인다.
+    assert "0건" in _diagnose_empty_candidates([], set(), 0.5, total=0, excluded_count=0)
 
     # ② max_ratio=0.0 - candidate_ids·scored 내용과 무관하게 최우선이다.
-    assert "껐다" in _diagnose_empty_candidates([gray], set(), 0.0)
+    assert "껐다" in _diagnose_empty_candidates([gray], set(), 0.0, total=1, excluded_count=0)
 
     # ③ candidate_ids가 비지 않았는데 후보가 0건 -> target_text 필터가
-    # 전부 걸렀다.
-    assert "번역 실패분" in _diagnose_empty_candidates([gray], {"g"}, 0.2)
+    # 전부 걸렀다. **이 인자 조합 자체는 파이프라인에서 안 나온다** -
+    # select_tier1_candidates([gray], 0.2)는 cap=floor(0.2)=0이라 []를 낸다
+    # (재리뷰 축2 실측). 순수 함수의 분기를 직접 겨냥한 것이고, 분기 ③의
+    # 실제 도달성은 test_공백_원문은_회색지대를_거쳐...가 따로 지킨다.
+    assert "번역 실패분" in _diagnose_empty_candidates(
+        [gray], {"g"}, 0.2, total=1, excluded_count=0
+    )
 
     # ④ candidate_ids가 비었고 회색지대(비-hard_fail·비-selected)가 남아
     # 있다 -> 상한이 내림으로 0이 됐다.
-    assert "상한" in _diagnose_empty_candidates([hard, gray], set(), 0.01)
+    assert "상한" in _diagnose_empty_candidates(
+        [hard, gray], set(), 0.01, total=2, excluded_count=0
+    )
 
     # ⑤ candidate_ids가 비었고 회색지대도 비었다(전부 hard_fail 또는 selected).
-    assert "회색지대" in _diagnose_empty_candidates([hard, picked], set(), 0.5)
+    assert "회색지대" in _diagnose_empty_candidates(
+        [hard, picked], set(), 0.5, total=2, excluded_count=0
+    )
+
+    # ⑥ 입력은 있는데 전량이 excluded_ids로 빠졌다 - ①과 **원인이 정반대**다.
+    # ①은 파서가 자막을 못 읽은 것이고 ⑥은 번역이 전량 실패한 것이라,
+    # 뭉쳐서 "입력 자체를 봐라"로 보고하면 사람을 반대쪽으로 보낸다.
+    전량제외 = _diagnose_empty_candidates([], set(), 0.5, total=5, excluded_count=5)
+    assert "번역이 전량 실패" in 전량제외
+    assert "입력 자체" not in 전량제외
 
 
 # --- 게이트 3개 (3라운드 재리뷰 A1·A2·A3) ---
@@ -560,3 +598,206 @@ def test_공백뿐인_번역은_후보에서_빠져_호출을_아낀다(signal_c
     )
 
     assert len(provider.calls) == 24
+
+
+def test_excluded_ids는_융합에서_빠진다(signal_ctx):
+    """번역 실패분이 hard fail로 예산 quota를 먹으면 진짜 오류가 큐에서 밀린다.
+
+    실측(트리아지 CLI 설계 D12): 200큐·진짜 오류 20건·예산 10%에서
+    실패 20건이면 **Recall@10%가 0%** 가 된다.
+
+    `max_ratio=0.0`인 것은 이 테스트가 융합·선별 입력만 본다는 뜻이다 -
+    Tier 1을 실제로 태우면 LLM 호출이 섞여 무엇이 결과를 바꿨는지 흐려진다.
+    """
+    segments = _plain_segments(10)
+    빠질_id = segments[0].id
+
+    전체 = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.5,
+        provider=EchoProvider(),
+        max_ratio=0.0,
+        warn=_ignore,
+    )
+    일부 = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.5,
+        provider=EchoProvider(),
+        max_ratio=0.0,
+        warn=_ignore,
+        excluded_ids={빠질_id},
+    )
+
+    assert 빠질_id in {r.segment_id for r in 전체}
+    assert 빠질_id not in {r.segment_id for r in 일부}
+    assert len(일부) == len(전체) - 1
+
+
+def test_excluded_ids여도_수집은_전량을_본다(signal_ctx):
+    """**이것이 반대 방향의 게이트다.**
+
+    수집에서 실패분을 빼면 그와 겹치는 **성공한** 큐의 겹침까지 사라진다
+    (실측: 같은 2큐 파일에서 실패 1건이면 `spec.overlap` 미출력).
+    요약도 종료 코드도 침묵하는 조용한 실패다.
+    """
+    # 이웃을 봐야 판정되는 배치 신호(`spec.overlap`)가 잡히도록 시간이 겹치는
+    # 두 세그먼트를 만든다. 앞의 것을 excluded_ids로 빼도, 뒤의 것에서
+    # 겹침 신호가 **여전히** 나와야 한다.
+    a, b = _겹치는_두_세그먼트()
+
+    결과 = triage_with_tier1(
+        [a, b],
+        signal_ctx,
+        budget_ratio=1.0,
+        provider=EchoProvider(),
+        max_ratio=0.0,
+        warn=_ignore,
+        excluded_ids={a.id},
+    )
+
+    (남은,) = 결과
+    assert 남은.segment_id == b.id
+    assert any("overlap" in name for name in 남은.reasons)
+
+
+def test_이_트랙에_없는_id는_조용히_무시된다(signal_ctx):
+    """미지의 id는 **거부하지 않는다**는 판정을 테스트로 고정한다 (리뷰 C2).
+
+    집합 여집합 의미론에서 없는 원소는 무해하다. 중복 id를 `ValueError`로
+    거절하는 이유는 그것이 **결과를 조용히 틀리게** 만들기 때문인데(cap
+    초과 실측 12회 호출), 미지의 id는 결과를 틀리게 하지 않는다. 거부하면
+    "이 트랙에 없을 수도 있는 id 목록"이라는 합당한 사용이 막힌다.
+
+    **이전 버전은 동어반복이었다** - `excluded_ids=()`가 시그니처 기본값이라
+    "안 주기"와 "빈 값 주기"는 구성상 같은 호출이고, 실측으로 ①②⑥ 세 변이
+    전부에서 생존했다(함수의 결정성만 쟀다). 미지의 id와 비교하면 **제외
+    로직을 실제로 통과**하고, `max_ratio=0.2`라 ⑥까지 간다.
+    """
+    segments = _plain_segments(10)
+    공통 = {"budget_ratio": 0.1, "max_ratio": 0.2, "samples": 3, "warn": _ignore}
+
+    빈값 = triage_with_tier1(
+        segments, signal_ctx, provider=_VaryingProvider(), excluded_ids=(), **공통
+    )
+    미지 = triage_with_tier1(
+        segments, signal_ctx, provider=_VaryingProvider(), excluded_ids={"이_트랙에_없음"}, **공통
+    )
+
+    # 아무것도 안 빠졌으므로 10건이 그대로다 - 미지의 id를 "빼야 할 것"으로
+    # 잘못 세면 여기서 9건이 된다.
+    assert len(빈값) == 10
+    assert [(r.segment_id, r.selected) for r in 빈값] == [(r.segment_id, r.selected) for r in 미지]
+    # 점수까지 같아야 ⑥ 재융합 경로가 동일했다는 뜻이다.
+    assert [r.risk_score for r in 빈값] == [r.risk_score for r in 미지]
+
+
+@pytest.mark.parametrize("나쁜_값", ["10", b"10"])
+def test_excluded_ids에_str이나_bytes를_그대로_주면_거부한다(signal_ctx, 나쁜_값):
+    """둘 다 타입상 유효한 `Collection[str]`이라 조용히 원소 단위로 쪼개진다.
+
+    실측 - 12큐에 `excluded_ids="10"`을 주면 `set("10") == {"1", "0"}`이라
+    **"10"은 남고 "0"·"1"이 사라진다.** 이 게이트에는 mypy가 없어 타입으로는
+    안 걸리고, 이 저장소에는 정수 id 계약 사고(커밋 817ed64)가 이미 있다.
+
+    `bytes`는 더 나쁘다 - `set(b"10") == {49, 48}`으로 **정수**를 내므로
+    어떤 id와도 안 맞아 제외가 통째로 무음 실패한다(재리뷰 축2). str은
+    일부라도 맞아 티가 나는데 bytes는 전혀 안 난다.
+
+    `frozenset`·`dict.keys()`·제너레이터가 막히면 안 되므로 이 둘만 지목한다 -
+    `test_excluded_ids는_집합연산이면_충분하다` 계열이 그 통과를 지킨다.
+    """
+    segments = _plain_segments(12)
+
+    with pytest.raises(TypeError, match="원소 단위"):
+        triage_with_tier1(
+            segments,
+            signal_ctx,
+            budget_ratio=0.1,
+            provider=EchoProvider(),
+            max_ratio=0.0,
+            warn=_ignore,
+            excluded_ids=나쁜_값,
+        )
+
+
+def test_전량이_excluded_ids로_빠지면_번역_실패를_가리킨다(signal_ctx):
+    """진단이 **정반대 원인**을 말하면 안 된다 (리뷰 Important 1).
+
+    실측(리뷰어) - 5큐를 전부 제외하면 `scored`가 비어 "세그먼트가 0건이다 -
+    입력 자체를 봐야 한다"가 나갔다. 그런데 이 경로의 진짜 원인은 파서 사고가
+    아니라 **번역 전량 실패**다. 호출자가 실패분 id를 넘기면 프로바이더가
+    죽었을 때 정확히 여기로 오고, 그때 "입력을 봐라"는 사람을 반대쪽으로
+    보낸다(그 배선은 WP8b Task 6이 한다 - 아직 리포에 없다).
+
+    `_diagnose_empty_candidates`의 존재 이유가 원인 구분이고, 그 함수의 주석은
+    바로 이 실수의 **반대 방향**(빈 입력을 전량 hard_fail로 오진)을 막으려고
+    쓰여 있다 - 지금 그 방향이 뒤집힌 것이다.
+
+    진단 문구는 `warn`으로만 나가고 반환값·종료 코드에는 흔적이 없으므로
+    **이 테스트가 없으면 다시 썩는다.**
+    """
+    segments = _plain_segments(5)
+    provider = EchoProvider()
+    messages: list[str] = []
+
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        warn=messages.append,
+        excluded_ids={s.id for s in segments},
+    )
+
+    assert risks == []
+    assert provider.calls == []
+    assert len(messages) == 1
+    # 방향이 맞아야 한다 - "번역"을 가리키고 "입력 자체"를 가리키면 안 된다.
+    assert "번역이 전량 실패" in messages[0]
+    assert "입력 자체" not in messages[0]
+
+
+def test_Tier1이_실제로_도는_경로에서도_excluded_ids가_유지된다(signal_ctx):
+    """⑥ 재융합의 게이트다 (G12 - 변이로 확인함).
+
+    **위의 세 테스트는 전부 `max_ratio=0.0`이라 후보 0건 조기 반환을 타서
+    ⑥에 도달하지 않는다.** 실측(변이): ⑥의 `kept`를 `segments`로 되돌려도
+    `tests/test_tier1.py` 18건이 전부 통과했다 - 게이트가 없었다는 뜻이다.
+    ②만 고치고 ⑥을 두면 Tier 1을 **켰을 때만** 실패분이 되살아나 켰을
+    때와 안 켰을 때의 분모(`review_ratio`)가 갈라진다.
+
+    `max_ratio=0.2`가 필수다. 0.0이면 조기 반환이라 ⑥을 지나지 않아
+    이 테스트가 무엇도 잡지 못한다 - `provider.calls`를 단언하는 것은
+    "정말 ⑥까지 갔는가"를 확인하기 위해서다.
+    """
+    segments = _plain_segments(10)
+    provider = _VaryingProvider()
+    messages: list[str] = []
+
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        warn=messages.append,
+        excluded_ids={"9"},
+    )
+
+    # kept 9건 -> cap=floor(9×0.2)=1 -> 후보 1건 × samples=3 = 3회.
+    # 0회면 조기 반환을 탄 것이라 ⑥을 검증하지 못한다.
+    assert len(provider.calls) == 3
+    assert messages == []
+    assert any("llm.self_consistency" in [s.name for s in r.signals] for r in risks)
+
+    # ⑥이 `segments`를 쓰면 여기서 "9"가 되살아나 10건이 된다.
+    # **순서로 단언하지 않는다** - `select_by_budget`이 위험도순으로 재정렬해
+    # 입력 순서가 보존되지 않는다(실측: id="1"이 맨 앞).
+    ids = [r.segment_id for r in risks]
+    assert len(ids) == 9
+    assert "9" not in ids

@@ -92,6 +92,7 @@ from cuesift.translate.prompt import build_messages
 from cuesift.translate.provider import (
     ChatMessage,
     Completion,
+    CountingProvider,
     FatalProviderError,
     Provider,
     ProviderError,
@@ -108,6 +109,7 @@ __all__ = [
     "BatchWindow",
     "ChatMessage",
     "Completion",
+    "CountingProvider",
     "FatalProviderError",
     "InvalidResponseError",
     "OpenAICompatibleProvider",

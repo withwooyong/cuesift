@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
 
 from cuesift.risk.fuse import fuse
@@ -31,17 +31,73 @@ def triage_with_tier1(
     temperature: float = 1.0,
     cache_dir: Path | None = None,
     identity: str | None = None,
+    excluded_ids: Collection[str] = (),
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
-    **전체 목록을 반환한다.** `select_by_budget`과 같은 계약이며, 선별된
-    것만 반환하면 `review_ratio`가 언제나 1.0이 되어 README 배수의 분모가
-    무너진다.
+    **`excluded_ids`를 뺀 전체 목록을 반환한다.** `select_by_budget`과 같은
+    계약이며, 선별된 것만 반환하면 `review_ratio`가 언제나 1.0이 되어
+    README 배수의 분모가 무너진다. 제외분이 반환에서 빠진다는 뜻이 무엇인지는
+    아래 `excluded_ids` 절의 "반환 길이" 문단이 단일 출처다.
 
     `temperature`의 기본값이 1.0인 것은 OpenAI Chat Completions API 명세의
     기본값이라 **출처가 있기 때문이다**(§11 R8 - 출처 없는 수치를 기본값으로
     넣지 않는다). 0.0이면 재번역이 전부 같아 신호가 죽는데, 그 방어는
     `Tier1Context`가 한다.
+
+    ## `excluded_ids` - 수집과 융합의 입력이 다르다
+
+    근거는 `docs/superpowers/specs/2026-08-25-tier1-cli-design.md`의 **D5**다.
+    수집·융합을 나눠야 하는 이유 자체는 그보다 앞선
+    `docs/superpowers/specs/2026-08-18-triage-cli-design.md`의 **D12**에 있다.
+    **문서명 없이 `D5`·`D12`만 적으면 안 된다** - 리포 안에 같은 번호의 다른
+    결정이 있어(`2026-07-31-ingest-design.md`의 D5 = "모듈은 단일 진입점",
+    `2026-08-03-check-cli-design.md`의 D12 = "`--config`는 경고하고 무시한다")
+    6개월 뒤 독자가 틀린 근거에 도달한다.
+
+    **수집(`collect_all`)은 전량을 본다. 융합(`fuse`)은 `excluded_ids`를 뺀
+    것만 본다.** 둘은 서로 다른 층의 요구다.
+
+    | 단계 | 입력 | 이 입력이 아니면 무엇이 깨지나 |
+    | --- | --- | --- |
+    | 수집 | 전량 | 이웃을 봐야 판정되는 배치 신호가 이웃을 못 본다 |
+    | 융합·선별 | 뺀 것 | 실패분의 hard fail이 예산 quota를 먹는다 |
+
+    **융합에 넣으면** 실패분의 hard fail이 예산을 우회해 quota를 소진하고
+    진짜 오류가 큐에서 밀린다 - 200큐·진짜 오류 20건·예산 10%에서 실패
+    20건이면 **Recall@10%가 0%** 가 된다. 이 실측의 리포 안 출처는
+    `cli.py`의 `_run_triage` 독스트링이다(30건일 때의 수치도 거기 있다).
+
+    **수집에서 빼면** `spec.overlap`이 실패분과 겹친 **성공한** 큐의
+    겹침까지 놓친다 - 실측으로 같은 2큐 파일에서 실패 1건이면 미출력이
+    됐다. **요약도 종료 코드도 침묵하는** 조용한 실패라 더 나쁘다.
+
+    ### 반환 길이 - `review_ratio`의 분모는 성공분이다
+
+    반환 길이 = `len(segments) - len(excluded ∩ ids(segments))`다. 따라서
+    `review_ratio`가 내는 비율의 분모는 트랙 전체가 아니라 **성공분**이다.
+    실측 - 10큐 중 2건이 번역 실패이고 예산 10%일 때:
+
+    | 호출 | n | selected | `review_ratio` |
+    | --- | --- | --- | --- |
+    | `excluded_ids` 없이 | 10 | 2 | 0.200 |
+    | `excluded_ids` 2건 | 8 | 1 | 0.125 |
+
+    **실제 사람 부하는 3/10 = 0.300이다** - 실패 2건도 사람이 봐야 하기
+    때문이다. 즉 이 함수의 반환값만으로는 트랙 전체 대비 비율을 만들 수
+    없고, 여기서 되돌리지도 않는다(제외 여부를 아는 것은 호출자다).
+
+    **호출자는 이미 필요한 셋을 갖고 있다.** `report/models.py`의
+    `TriageOutcome`이 `total_segments`·`triaged_segments`·`excluded_failures`
+    로 나눠 싣는다 - 트랙 전체 대비 비율이 필요하면 제외 건수를 분모에
+    되돌려야 하고, 그 재료가 거기 있다. **`review_ratio` 하나만 보고 README
+    배수를 내면 분모가 성공분이라 배수가 부풀려진다.**
+
+    **기본값이 빈 튜플이라 이 인자를 주지 않는 호출부는 거동이 완전히
+    불변이다** - 그 성질이 이 인자를 하위 호환으로 만든다. 이 주장을 지키는
+    게이트는 **이 인자를 주지 않고 이 함수를 부르는 기존 테스트 전량**이다
+    (재리뷰 축2 - 전용 테스트를 따로 두면 동어반복이 되고, 실제로 1라운드에서
+    그 이유로 하나 지웠다). 기본값이 `()`가 아니게 되면 그것들이 먼저 깨진다.
 
     ## `warn`은 기본값이 없다 (Ruling P12)
 
@@ -56,16 +112,32 @@ def triage_with_tier1(
 
     ## Tier 1 후보가 0건일 때
 
-    원인은 넷이다 - `_diagnose_empty_candidates`가 구분한다.
+    원인은 여섯이다 - `_diagnose_empty_candidates`가 구분한다.
 
     | 원인 | 의미 |
     | --- | --- |
     | 세그먼트 0건 | 입력 자체가 비었다 |
+    | 전량이 `excluded_ids`로 빠짐 | 입력은 있는데 `kept`가 비었다 - 번역 전량 실패 |
     | `max_ratio=0.0` | 사용자가 Tier 1을 껐다 - 정상 |
+    | 후보가 전부 번역 실패분 | `target_text`가 없거나 공백이라 걸러졌다 |
     | 상한이 0으로 내려감 | `select_tier1_candidates`의 내림(`floor`) 때문에 상한이 0이다 |
     | 회색지대가 빔 | 전부 hard_fail이거나 이미 선별됐다 |
 
-    **넷째(후보로 뽑혔지만 전부 번역 실패분)는 도달한다.** `struct.empty`가
+    **서수로 가리키지 않는다.** 위 표·아래 분기·테스트 셋이 각각 다른 순서를
+    갖게 되면(재리뷰 축2 실측: 같은 사유가 세 곳에서 넷째·다섯째·여섯째로
+    적혀 있었다) 참조가 조용히 어긋난다. 이름으로 가리킨다.
+
+    **「전량이 `excluded_ids`로 빠짐」과 「세그먼트 0건」을 뭉치면 안 된다.**
+    전량 제외는 `scored`가 비어 후자와 똑같이 보이는데 원인은 정반대다 -
+    후자는 파서가 자막을 못 읽은 것이고 전자는 **번역이 전량 실패한 것**이다.
+    호출자가 실패분 id를 `excluded_ids`로 넘기면 프로바이더가 죽었을 때 바로
+    이 경로이고, 그때 "입력 자체를 봐야 한다"고 보고하면 사람을 정확히
+    반대쪽으로 보낸다. **그 호출자는 아직 리포에 없다** - `cli.py`의
+    `_run_triage`는 지금 이 함수를 부르지 않고 호출 전에 걸러 낸다.
+    배선은 WP8b Task 6이 한다(재리뷰 축2 - 현재형으로 단정하면 6개월 뒤
+    독자가 `grep excluded_ids`로 아무것도 못 찾는다).
+
+    **「후보가 전부 번역 실패분」은 도달한다.** `struct.empty`가
     `source_text`가 있는 세그먼트의 빈 `target_text`는 hard_fail로 잡지만,
     **`source_text` 자체가 공백뿐이면 그 신호는 `None`을 낸다**
     (`structural.py`의 "원문이 비었으면 번역문이 빈 것은 오류가 아니다") -
@@ -109,8 +181,11 @@ def triage_with_tier1(
     (L=40)까지 움직여 "더 쓴다"는 부호 자체가 뒤집혔다). 결론은 문자
     배수 없이도 선다 - `result.usage`를 통째로 버리므로 Tier 1이 실제로
     몇 자를 더 쓰든 **그중 한 글자도 리포트에 안 잡힌다**는 사실 하나로
-    충분하다. `--dry-run` 추정치는 Tier 1을 켠 실행에서 구조적으로
-    과소 보고된다.
+    충분하다. `--dry-run`도 이 유실을 **토큰에서는** 그대로 물려받는다 -
+    **재번역 요청** 수만 `floor(n × max_ratio) × samples` 상한으로 화면에
+    낸다(설계 D10 - `cli._TIER1_BOUND_PREFIX`). 요청 하나가 재시도·개별
+    폴백으로 여러 호출이 되므로 그 화면도 프로바이더 **호출** 수의 상한은
+    아니다 - 재시도 횟수는 백엔드 사정이라 산식이 내는 수가 아니다(§11 R8).
     """
     # 중복 id는 ④의 candidate_ids 집합화에서 조용히 뭉개져 FR-4.3 상한을
     # 초과시킨다(2라운드 리뷰 C6 실측: 중복 4건 포함 10건·cap=3에서 실제
@@ -139,8 +214,31 @@ def triage_with_tier1(
     # ① Tier 0 - 비용 0, 전량
     tier0 = collect_all(segments, ctx)
 
-    # ② 1차 융합
-    risks = [fuse(seg.id, tier0[seg.id]) for seg in segments]
+    # **`set`으로 정규화한다.** 호출자가 list를 넘기면 아래 `in`이 O(n)이 되어
+    # 전체가 O(n^2)가 된다 - 1000큐 트랙에서 실제로 느려진다. 인자 타입을
+    # `Collection`으로 넓게 받고 여기서 좁히는 것이 호출부에 set을 강요하지
+    # 않으면서 성능을 지키는 방법이다.
+    #
+    # **`str`은 막는다.** `str`도 타입상 유효한 `Collection[str]`이라
+    # `set("10")`이 `{"1", "0"}`으로 쪼개지는데 이 게이트에는 mypy가 없어
+    # 안 걸린다(실측: 12큐에 `excluded_ids="10"`을 주면 "10"은 남고 "0"·"1"이
+    # 사라진다). 이 저장소에는 정수 id 계약 사고(커밋 817ed64)가 이미 있다.
+    #
+    # `bytes`도 같이 막는다. `set(b"10")`은 `{49, 48}`으로 **정수**를 내므로
+    # 어떤 id와도 안 맞아 제외가 통째로 무음 실패한다 - `str`보다 나쁘다
+    # (재리뷰 축2). 반대로 `frozenset`·`dict.keys()`·제너레이터는 통과해야
+    # 하므로 이 둘만 지목해 막는다.
+    if isinstance(excluded_ids, str | bytes):
+        raise TypeError(
+            f"excluded_ids에 {type(excluded_ids).__name__}을 그대로 넘겼다"
+            f"({excluded_ids!r}) - 원소 단위로 쪼개진다. 집합이나 리스트로 감싸라"
+        )
+    excluded = set(excluded_ids)
+    kept = [seg for seg in segments if seg.id not in excluded]
+
+    # ② 1차 융합 - **`kept`만** 본다(설계 D5). `segments`를 그대로 두면
+    # 번역 실패분이 hard fail로 예산 quota를 먹어 진짜 오류가 큐에서 밀린다.
+    risks = [fuse(seg.id, tier0[seg.id]) for seg in kept]
 
     # ③ 예산 적용 - ④가 "이미 큐에 든 것"을 알아야 한다
     scored = select_by_budget(risks, budget_ratio)
@@ -159,14 +257,36 @@ def triage_with_tier1(
     # `target_text="   "`가 옛 필터를 통과해 2회 호출됨). hard_fail 판정과
     # 같은 기준(`struct.empty`의 `text and text.strip()`)으로 통일해 "번역
     # 실패"의 정의가 신호 계층과 트리아지 계층에서 갈라지지 않게 한다.
+    #
+    # **`segments`가 아니라 `kept`를 순회한다.** 오늘은
+    # `candidate_ids ⊆ ids(kept)`라 결과가 같지만, `select_tier1_candidates`가
+    # `scored` 외의 출처를 보게 되면 제외분이 LLM 호출로 되살아난다 -
+    # 제외분에 돈을 쓰는 것은 이 인자의 존재 이유와 정면으로 어긋난다.
     candidates = [
-        s for s in segments if s.id in candidate_ids and s.target_text and s.target_text.strip()
+        s for s in kept if s.id in candidate_ids and s.target_text and s.target_text.strip()
     ]
 
     if not candidates:
-        # LLM을 부르지 않는 경로. 원인이 넷 있으므로 조용히 넘어가지 않고
+        # LLM을 부르지 않는 경로. 원인이 여섯 있으므로 조용히 넘어가지 않고
         # 사유를 구분해 알린다 - 위 "Tier 1 후보가 0건일 때" 절 참고.
-        warn(_diagnose_empty_candidates(scored, candidate_ids, max_ratio))
+        #
+        # `excluded_count`를 `len(excluded)`가 아니라 차집합 크기로 내는 것은
+        # **오늘 관측되지 않는다**(재리뷰 두 축이 각각 실측: 바꿔도 1174건이
+        # 전부 통과한다). `not scored` ⟺ `kept == []` ⟺ 전량 제외라 저 분기에
+        # 닿은 시점에는 두 식이 같은 판정을 낸다 - 판정을 실제로 가르는 것은
+        # `total`뿐이고, 위 P12 정당화도 `total`에만 성립한다.
+        # 그럼에도 차집합을 쓰는 이유는 `not scored` 조건이 나중에 완화되면
+        # (예: "거의 다 빠졌다"로) `len(excluded)`가 미지의 id까지 세어
+        # 판정을 부풀리기 때문이다. **측정할 수 없는 근거라고 밝힌 채 남긴다.**
+        warn(
+            _diagnose_empty_candidates(
+                scored,
+                candidate_ids,
+                max_ratio,
+                total=len(segments),
+                excluded_count=len(segments) - len(kept),
+            )
+        )
         return scored
 
     # ⑤ Tier 1 - 후보에만
@@ -176,20 +296,42 @@ def triage_with_tier1(
     # 이름은 "re-scored"다 - 두 신호 출처를 **더한다**(신호 소실 없음)는
     # 것이 노이즈-오 융합의 전제다 - 한쪽만 남기면 이미 확보한 Tier 0
     # 신호(예: struct.number_missing)가 조용히 사라진다.
-    rescored = [fuse(seg.id, tier0[seg.id] + tier1.get(seg.id, [])) for seg in segments]
+    #
+    # **여기도 `kept`다.** ②만 고치고 여기를 두면 Tier 1이 실제로 도는
+    # 경로에서만 실패분이 되살아난다 - 후보 0건일 때는 조기 반환이라
+    # 드러나지 않아, Tier 1을 켰을 때와 안 켰을 때의 분모가 갈라진다.
+    rescored = [fuse(seg.id, tier0[seg.id] + tier1.get(seg.id, [])) for seg in kept]
 
     # ⑦ 예산 재적용
     return select_by_budget(rescored, budget_ratio)
 
 
 def _diagnose_empty_candidates(
-    scored: Sequence[SegmentRisk], candidate_ids: set[str], max_ratio: float
+    scored: Sequence[SegmentRisk],
+    candidate_ids: set[str],
+    max_ratio: float,
+    *,
+    total: int,
+    excluded_count: int,
 ) -> str:
     """Tier 1 후보가 0건인 이유를 구분한다 (Task 4 리뷰 조건).
 
-    구분하지 않으면 "세그먼트가 없다"·"사용자가 껐다"·"상한이 내림으로
-    0이 됐다"·"회색지대가 비었다"·"후보가 전부 번역 실패분"이 전부 같은
-    무음 침묵으로 보여 무음 열화(Q3)가 된다. `gray_zone()`을
+    구분하지 않으면 "세그먼트가 없다"·"전량이 excluded_ids로 빠졌다"·
+    "사용자가 껐다"·"상한이 내림으로 0이 됐다"·"회색지대가 비었다"·
+    "후보가 전부 번역 실패분"이 전부 같은 무음 침묵으로 보여 무음
+    열화(Q3)가 된다.
+
+    `total`·`excluded_count`에 기본값이 없는 것은 위 `warn`과 같은 이유다
+    (Ruling P12) - 기본값을 주면 넘기지 않은 호출부도 멀쩡한 문자열을
+    돌려받아 **반환 형태가 같은 채로** 번역 전량 실패가 "입력 자체를 봐야
+    한다"로 오진된다. 실측 - **호출부(`warn(...)` 안)의 `total=`·
+    `excluded_count=` 두 줄을 지우면** 이 파일의 테스트 8건이 `TypeError`로
+    죽는다. **재현 방법을 함께 적는 이유**는 kwarg를 전역에서 떼는 계측으로
+    재면 9가 나오기 때문이다 - 그 방식은 이 함수를 **직접** 부르는 단위
+    테스트의 인자까지 떼어 프로덕션 호출부와 무관한 1건을 덤으로 죽인다
+    (재리뷰 축2가 9를 보고했고 직접 변이로 8을 재확인했다). 무음 열화를
+    시끄러운 실패로 바꾸는 것이
+    기본값을 빼는 목적이다. `gray_zone()`을
     `select_tier1_candidates`와 공유해 회색지대 정의가 두 곳에서 갈라지지
     않게 한다(2라운드 리뷰 C3) - 복제했다면 그 함수가 제외 조건을 하나
     더 넣을 때 이 진단이 조용히 틀린 원인을 말하게 됐을 것이다.
@@ -198,6 +340,16 @@ def _diagnose_empty_candidates(
     # C2) 파서가 자막을 하나도 못 읽은 사고가 "전량 hard_fail"로 보인다 -
     # 원인 구분이라는 이 함수의 존재 이유와 정면으로 어긋난다.
     if not scored:
+        # 입력은 있는데 `scored`가 비었다면 전량이 `excluded_ids`로 빠진
+        # 것이다 - 원인이 **정반대**라 뭉치면 안 된다. 파서 사고가 아니라
+        # 번역 전량 실패이고, "입력 자체를 봐라"는 사람을 반대쪽으로 보낸다.
+        # 호출자가 실패분 id를 넘기면 프로바이더가 죽었을 때 이 경로다.
+        # **그 호출자는 아직 없다** - 배선은 WP8b Task 6이 한다.
+        if total > 0 and excluded_count >= total:
+            return (
+                f"세그먼트 {total}건이 전부 excluded_ids로 빠졌다 - "
+                "입력이 아니라 번역이 전량 실패했는지 봐야 한다"
+            )
         return "세그먼트가 0건이다 - Tier 1이 아니라 입력 자체를 봐야 한다"
     if max_ratio == 0.0:
         return "max_ratio=0.0 - Tier 1을 껐다 (정상)"
@@ -205,7 +357,7 @@ def _diagnose_empty_candidates(
         # cap>0이고 선별도 됐지만 전부 번역 실패분(target_text 없음 또는
         # 공백)이라 걸러졌다. **도달한다** - `source_text`가 공백뿐이면
         # `struct.empty`가 hard_fail을 내지 않아 회색지대를 그대로
-        # 통과한다(모듈 독스트링 "넷째" 절 참고).
+        # 통과한다(모듈 독스트링 「후보가 전부 번역 실패분」 절 참고).
         return "후보로 뽑혔지만 전부 번역 실패분(target_text 없음 또는 공백)이라 제외됐다"
     if gray_zone(scored):
         return (

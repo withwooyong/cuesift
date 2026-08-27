@@ -28,6 +28,7 @@ import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO, Annotated
@@ -37,7 +38,12 @@ import typer
 from cuesift import __version__
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
-from cuesift.report import TriageOutcome, write_review
+from cuesift.report import (
+    TriageOutcome,
+    layer_tokens_reported,
+    resolve_cost_scope,
+    write_review,
+)
 from cuesift.risk import fuse
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
@@ -50,13 +56,16 @@ from cuesift.spec import (
     load_profile,
 )
 from cuesift.store import CacheRequest, CachingProvider
+from cuesift.tier1 import triage_with_tier1
 from cuesift.translate import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CONTEXT_WINDOW,
+    CountingProvider,
     FatalProviderError,
     OpenAICompatibleProvider,
     Provider,
     ProviderError,
+    TokenUsage,
     TranslationResult,
     build_messages,
     iter_batches,
@@ -111,6 +120,67 @@ DEFAULT_CACHE_DIR = Path(".cuesift/cache")
 # en,ja,th,vi이고 `zh-Hans` 같은 서브태그도 받아야 하므로 2~3자 1개로
 # 좁히지 않는다.
 _LANG_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]+)*$")
+
+# Tier 1 기본값과 비용 한도 (FR-4.3 · 설계 D3·D4 · §11 R8).
+#
+# **셋 다 출처가 있다.** R8이 출처 없는 수치를 기본값으로 넣는 것을 금지한다.
+# 여기 값이 라이브러리 기본값과 갈라지면 `--tier1-samples`를 주지 않은 실행과
+# 준 실행의 비용 산식이 서로 다른 수를 쓰게 된다 - 아래 한도 검사가 실제
+# 호출 비용과 어긋나는 값을 검사하게 되는 것이다.
+_TIER1_DEFAULT_MAX_RATIO = 0.05
+_TIER1_DEFAULT_SAMPLES = 3  # `triage_with_tier1`의 현행 기본값 (tier1.py:30)
+_TIER1_DEFAULT_TEMPERATURE = 1.0  # OpenAI Chat Completions API 명세의 기본값
+
+# 기준선 대비 배수 = samples x max_ratio x DEFAULT_BATCH_SIZE 이고, 요구사항정의서
+# §4가 "3배는 감당 불가"라 했다. 10(DEFAULT_BATCH_SIZE)으로 나눈 값이 이 한도다.
+#
+# **이 값을 넘기면 Tier 1 호출이 번역 기준선의 3배를 넘는다** - §4가 막으려던
+# 바로 그 영역이다. 반대로 samples 단독 상한으로 바꾸면
+# `--tier1-samples 10 --tier1-max-ratio 0.5`(배수 50)가 통과한다 - 상한이
+# 잘못된 축에 걸리기 때문이다(설계 D4).
+#
+# **배치 프로토콜로 바뀌면 이 상수를 다시 계산해야 한다**(설계 §6.2) -
+# 그때는 DEFAULT_BATCH_SIZE가 산식에서 빠져 한도가 3.0이 된다.
+_TIER1_COST_LIMIT = 0.3
+
+# Tier 1 후보가 0건일 때 사유를 내는 줄의 **접두 문구**(Ruling P12).
+#
+# **리터럴로 두면 안 된다.** 테스트 `_assert_tier1_ran`이 "이 줄이 없다"는
+# **부재**로 후보 유무를 판정하는데, 접두를 여기서만 바꾸면 그 단언이 조용히
+# 항상 참이 되어 무연산 게이트가 된다(리뷰 축2 실측: `"Tier 1: "`를
+# `"Tier 1 - "`로 바꾸는 것만으로 사망 0건, 도달성 프로브 사망도 8건에서
+# 4건으로 반토막). 상수를 공유하면 문구와 게이트가 함께 움직인다.
+#
+# **출력 문자열이라 em dash를 쓰지 않는다**(전역 제약, cp949 미인코딩).
+_TIER1_WARN_PREFIX = "Tier 1: "
+
+# `--dry-run`이 내는 Tier 1 **재번역 요청 상한** 줄의 접두 문구(설계 D10).
+#
+# **낱말이 "호출"이면 무엇이 깨지는가.** 이 수는 `floor(n x max_ratio) x
+# samples`가 내는 **재번역 요청** 수의 상한이지 **프로바이더 호출** 수의
+# 상한이 아니다 - 요청 하나가 `translate_segments`를 타고 재시도
+# (`translate/engine.py`의 `DEFAULT_MAX_RETRIES`)와 개별 폴백까지 쓰므로
+# 실제 호출은 이 수를 넘길 수 있다. "호출"로 적으면 두 줄 위의 형제 줄
+# (`호출 필요 N개 이상`)과 **한 화면에서 정면으로 모순된다** - 같은 낱말이
+# 한쪽에서는 하한, 다른 쪽에서는 상한을 말하고, 429를 되돌려 주는 백엔드에서
+# 화면은 그 몇 배를 감춘다(리뷰 라운드 1 Important A). 그래서 낱말로 층을
+# 가르고 괄호에 `재시도·폴백 제외`를 명시한다.
+#
+# **"예상"이 아니라 "최대"다.** 상한은 산식에서 나오므로 요구사항정의서
+# §11 R8이 금지하는 출처 없는 **추정**이 아니다 - "예상"으로 적는 순간 이
+# 줄이 그 금지에 걸린다. 반대로 재시도 상수를 곱한 "최대 120회" 같은 수를
+# 여기 싣는 것도 R8 위반이다 - 재시도 횟수는 백엔드 사정이라 산식이 내는
+# 수가 아니다.
+#
+# 상수로 두는 이유는 `_TIER1_WARN_PREFIX`와 같다 - 테스트가 "`--tier1`이
+# 꺼져 있으면 이 줄이 없다"는 **부재**로도 단언하므로, 문구가 리터럴이면
+# 그 단언이 조용히 항상 참이 된다. **다만 상수만 공유하면 필터와 기대값이
+# 함께 움직여 문구 변이가 안 잡힌다**(리뷰 라운드 1 Important B 실측: 사망
+# 0건) - `test_상한_줄의_문구를_리터럴로_못_박는다` 한 건이 이 문자열을
+# 상수를 거치지 않고 리터럴로 못 박는 것은 그 때문이다.
+#
+# **출력 문자열이라 em dash를 쓰지 않는다**(전역 제약, cp949 미인코딩).
+_TIER1_BOUND_PREFIX = "Tier 1 재번역 요청 최대 "
 
 app = typer.Typer(
     name="cuesift",
@@ -543,6 +613,74 @@ def translate(
             "--review-threshold와 함께 써야 한다",
         ),
     ] = None,
+    tier1: Annotated[
+        bool,
+        typer.Option(
+            "--tier1",
+            # 기본이 꺼짐인 이유는 Q4가 열려 있어서다(설계 D2) - 자가일관성의
+            # 판정력이 아직 검증되지 않았다. 검증 안 된 신호가 기본 경로에
+            # 섞이면 Recall@Budget 지표 자체가 오염되는데, 그 숫자가 이
+            # 프로젝트의 유일한 증명 자료다(§9.1 · §11 R4).
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="Tier 1 신호(자가일관성)를 켭니다. 기본은 꺼짐입니다 (FR-4.3).",
+        ),
+    ] = False,
+    tier1_max_ratio: Annotated[
+        float | None,
+        typer.Option(
+            "--tier1-max-ratio",
+            min=0.0,
+            max=1.0,
+            # **기본값이 None인 것은 "명시했나"를 알기 위해서다.** 실제 값을
+            # 기본으로 두면 사용자가 친 0.05와 기본 0.05를 구별할 수 없어
+            # `--tier1` 없이 준 것을 잡지 못한다. 사용자에게 보일 기본값은
+            # 아래 help 문구가 대신 말한다.
+            # **기본값을 리터럴로 쓰지 않는다.** 리터럴이면 상수를 고쳤을 때
+            # 도움말만 옛 값을 말하는 조용한 거짓말이 남는다 - 사용자는 화면에
+            # 적힌 값을 믿고 그 값으로 비용을 계산한다.
+            # **도움말이 파서 범위보다 좁은 것을 말한다.** click이 찍는
+            # `[0.0<=x<=1.0]`은 파서가 받는 범위이고, `0`은 아래 조합 검증이
+            # exit 2로 거부한다(Tier 1을 끄는 값이라 스위치와 모순이다).
+            # 범위 표기만 믿으면 사용자는 0을 허용값으로 읽는다 - 최종 리뷰
+            # 축B가 실행으로 찾았다. **`min`을 올려 닫을 수는 없다** - click의
+            # 범위는 경계를 포함해서 "0보다 큰"을 표현하지 못한다.
+            help=(
+                f"Tier 1을 태울 회색지대 후보 상한 비율 (기본 {_TIER1_DEFAULT_MAX_RATIO})."
+                " --tier1과 함께 씁니다. 실제 허용은 0 < x <= 1.0으로 0은 거부됩니다."
+            ),
+        ),
+    ] = None,
+    tier1_samples: Annotated[
+        int | None,
+        typer.Option(
+            "--tier1-samples",
+            min=2,
+            # 1이면 비교할 쌍이 0개라 유사도 계산 자체가 성립하지 않는다.
+            # `Tier1Context.__post_init__`도 같은 경계를 검사하지만 여기서
+            # 막아야 오류 메시지가 옵션 이름을 말한다.
+            help=(
+                f"재번역 샘플 수 (기본 {_TIER1_DEFAULT_SAMPLES})."
+                " 2 미만이면 비교할 쌍이 만들어지지 않습니다."
+            ),
+        ),
+    ] = None,
+    tier1_temperature: Annotated[
+        float | None,
+        typer.Option(
+            "--tier1-temperature",
+            min=0.0,
+            # `min`은 경계를 포함하므로 0.0이 본문까지 온다. 거부는 아래
+            # 조합 검증이 한다 - 여기서 `min`을 올리면 도움말의 범위 표기가
+            # "0보다 큰 실수"를 표현하지 못한다.
+            # 도움말이 파서 범위(`[x>=0.0]`)보다 좁은 것을 말하는 이유는 위
+            # `--tier1-max-ratio`와 같다. "0이면 신호가 죽습니다"만 적으면
+            # **허용값으로 읽힌다** - 실제로는 exit 2다.
+            help=(
+                f"재번역 온도 (기본 {_TIER1_DEFAULT_TEMPERATURE})."
+                " 실제 허용은 0 < x로 0은 거부됩니다 (0이면 샘플이 전부 같아 신호가 죽습니다)."
+            ),
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         # Task 4까지는 "경고 후 무시"(--review-budget과 같은 임시 처리)였다
@@ -602,6 +740,109 @@ def translate(
             err=True,
         )
         raise typer.Exit(2)
+
+    tier1_options_given = (
+        tier1_max_ratio is not None or tier1_samples is not None or tier1_temperature is not None
+    )
+    if tier1_options_given and not tier1:
+        # 조용히 무시하면 "켰다고 믿는" 실행이 생긴다. 그 실행은 종료 코드도
+        # 0이고 review.json도 정상이라 어떤 게이트에도 걸리지 않는다.
+        _echo("--tier1-* 옵션은 --tier1과 함께 써야 한다", err=True)
+        raise typer.Exit(2)
+    if tier1:
+        if review_threshold is not None:
+            # `triage_with_tier1`은 `select_by_budget`을 고정으로 쓴다(설계 D9).
+            # 회색지대 개념 자체가 예산 선별의 부산물이라, 임계값 정책에서는
+            # "후보로 뽑을 회색지대"의 정의가 서지 않는다.
+            _echo(
+                "--tier1은 --review-threshold와 함께 쓸 수 없다 (--review-budget을 쓴다)",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if review_budget is None:
+            # `triage_with_tier1`이 `budget_ratio`를 기본값 없는 필수 인자로
+            # 요구한다. 정책 없이 켜면 조달할 값이 없다.
+            _echo("--tier1은 --review-budget을 요구한다", err=True)
+            raise typer.Exit(2)
+        for _option_name, _option_value in (
+            ("--tier1-max-ratio", tier1_max_ratio),
+            ("--tier1-temperature", tier1_temperature),
+        ):
+            if _option_value is not None and not math.isfinite(_option_value):
+                # **click의 `min`/`max`는 NaN을 통과시킨다** - 위
+                # `--review-threshold`의 `math.isnan` 주석과 같은 구멍이다
+                # (`lt(nan, 0.0)`·`gt(nan, 1.0)`이 **둘 다 False**라 무력하다).
+                #
+                # 여기서 막지 않으면 아래 비용 한도 검사가 `nan > 0.3`을
+                # False로 읽어 **조용히 통과**한다 - 검사하지 않고 통과하는
+                # 게이트는 없는 게이트보다 나쁘다. `--tier1-temperature`는
+                # 상한이 없어 `inf`도 click을 빠져나오므로 `isnan`이 아니라
+                # `isfinite`로 본다(`--tier1-max-ratio`의 `inf`는 `max=1.0`이
+                # 이미 막지만 두 옵션을 같은 규칙으로 둔다).
+                _echo(f"{_option_name}를 숫자로 읽지 못했다: {_option_value}", err=True)
+                raise typer.Exit(2)
+        if tier1_max_ratio is not None and tier1_max_ratio == 0.0:
+            # 라이브러리가 `max_ratio=0.0`을 "사용자가 Tier 1을 껐다 - 정상"으로
+            # 정의한다(`tier1.py`의 후보 0건 진단). 스위치를 켜면서 0을 주는 것은
+            # 정면으로 모순이고, 통과시키면 "켰는데 안 도는" 실행이 된다.
+            _echo(
+                "--tier1-max-ratio 0은 Tier 1을 끄는 값이라 --tier1과 함께 줄 수 없다",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if tier1_temperature is not None and tier1_temperature <= 0.0:
+            # click의 `min=0.0`은 **경계를 포함**하므로 0.0이 여기까지 온다.
+            # 막지 않으면 `Tier1Context.__post_init__`이 나중에 던지고, 그때는
+            # 오류 메시지가 옵션 이름을 말하지 못한다.
+            _echo("--tier1-temperature는 0보다 커야 한다 (0이면 샘플이 전부 같아진다)", err=True)
+            raise typer.Exit(2)
+        effective_max_ratio = (
+            _TIER1_DEFAULT_MAX_RATIO if tier1_max_ratio is None else tier1_max_ratio
+        )
+        effective_samples = _TIER1_DEFAULT_SAMPLES if tier1_samples is None else tier1_samples
+        # 비용 검사에는 안 쓰이지만 **여기서 함께 정한다** - 셋이 흩어지면
+        # 한도 검사가 본 값과 실제로 넘어가는 값이 갈라질 수 있고, 그때
+        # 화면은 한도를 통과했다고 말하면서 다른 수로 돈다.
+        effective_temperature = (
+            _TIER1_DEFAULT_TEMPERATURE if tier1_temperature is None else tier1_temperature
+        )
+        cost_factor = effective_samples * effective_max_ratio
+        # **한도는 경계를 포함한다 - `>`가 아니라 "닿거나 넘으면"이다.** 설계
+        # D3과 `tier1.py`(단일 출처)가 "`max_ratio=0.10`이 한도에 **정확히**
+        # 걸린다"고 못 박았고, 그 3.0배가 §4의 "감당 불가"다.
+        #
+        # **`>=`만으로는 부족하다.** 곱이 이진 부동소수로 정확히 떨어지지 않아
+        # 같은 3.0배가 표현에 따라 갈린다(실측): `3 * 0.1`은
+        # `0.30000000000000004`라 `>`로도 걸리지만 `2 * 0.15`와 `30 * 0.01`은
+        # 정확히 `0.3`이라 빠져나간다. 이 가드가 없으면 세그먼트당 30회를
+        # 부르는 조합이 통과하고, 거부 메시지는 `0.30 > 0.3`이라는 거짓말을
+        # 찍는다. `isclose`의 기본 상대 허용오차(1e-09)는 이 오차(1e-16)보다
+        # 훨씬 크다.
+        #
+        # **`rel_tol`을 키우면 무엇이 깨지는가.** `max_ratio`는 연속값이라
+        # "구별해야 하는 이웃 값"이라는 근거가 성립하지 않는다 - 한도 바로
+        # 아래에 오거부 대역이 실제로 존재한다. 폭은 `rel_tol x 0.3`이고
+        # 기본값에서 **3e-10**이다(실측: `--tier1-samples 3
+        # --tier1-max-ratio 0.09999999995`는 곱이 0.29999999985로 엄격히
+        # 0.3 미만인데 거부되고 메시지는 "닿거나 넘는다"고 찍는다). 지금
+        # 무해한 이유는 둘이다 - 그 폭에 실사용자가 닿을 수 없고, 틀리는
+        # 방향이 비용을 **과대**평가하는 안전한 쪽이다. `rel_tol=1e-6`으로
+        # 키우면 대역이 **3e-7**이 되어 `0.0999999`처럼 사람이 칠 수 있는
+        # 값이 거부되기 시작한다 - 그때는 화면 메시지가 사실이 아니게 된다.
+        at_or_over_limit = cost_factor > _TIER1_COST_LIMIT or math.isclose(
+            cost_factor, _TIER1_COST_LIMIT
+        )
+        if at_or_over_limit:
+            # **곱과 한도를 둘 다 적는다.** 어느 쪽을 줄여야 하는지 알 수 없으면
+            # 사용자는 임의로 고르고, 그 선택이 다시 한도에 부딪힌다.
+            _echo(
+                f"--tier1-samples({effective_samples}) x"
+                f" --tier1-max-ratio({effective_max_ratio})"
+                f" = {cost_factor:.2f} 가 한도 {_TIER1_COST_LIMIT}에 닿거나 넘는다."
+                " 둘 중 하나를 줄인다 (요구사항정의서 §4)",
+                err=True,
+            )
+            raise typer.Exit(2)
 
     triage_requested = review_budget is not None or review_threshold is not None
 
@@ -807,6 +1048,11 @@ def translate(
                     if target in profiles
                 }
             ),
+            # **`tier1`일 때만 조립한다.** `effective_*`는 조합 검증 블록
+            # 안에서만 대입되므로 꺼진 실행에서 읽으면 UnboundLocalError다.
+            # 값 자체도 본 실행이 `_Tier1Settings`에 싣는 것과 **같은 변수**라
+            # 화면과 실행이 다른 수로 갈라질 수 없다.
+            tier1_bound=(effective_max_ratio, effective_samples) if tier1 else None,
         ):
             _echo(line)
         return
@@ -817,8 +1063,36 @@ def translate(
     # 결함이다. 사용자가 LLM 설정을 고쳐도 70은 사라지지 않는다.
     # **이 성질이 깨지면 아래 max()가 틀린 코드를 낸다** - 새 코드를 추가할 때
     # 반드시 확인한다. review.json 배선(FR-7.2)이 70을 추가하며 이 주석을 갱신했다.
+    # **번역과 Tier 1이 같은 디렉터리를 봐야 한다.** 두 자리에서 각자 조립하면
+    # 한쪽만 `--no-cache`를 반영하는 갈라짐이 조용히 생긴다 - 그때 Tier 1은
+    # 캐시가 켜진 줄 알고 매 실행 새 호출을 내면서 화면은 "캐시 꺼짐"을 말한다.
+    resolved_cache_dir = None if no_cache else (cache_dir or DEFAULT_CACHE_DIR)
+
     worst = 0
     for i, target in enumerate(targets):
+        # **대상 언어마다 새로 만든다.** `CountingProvider`는 누적기라 한
+        # 인스턴스를 공유하면 뒤 언어의 `review.json`이 앞 언어의 토큰까지 실어
+        # Tier 1 비용이 언어 수만큼 부풀어 보인다.
+        #
+        # **`provider`는 여기서 아직 raw다.** `CachingProvider`로 감싸는 것은
+        # `_translate_one` 안의 지역 변수 재바인딩이라 여기까지 오지 않는다.
+        # 그 성질에 기대는 것이 D7의 배치(`CachingProvider(CountingProvider(raw))`)를
+        # 성립시킨다 - `triage_with_tier1`이 이것을 다시 감싸므로 계측이 캐시
+        # 안쪽에 놓이고, 캐시 히트는 세지 않는다(실제로 쓰지 않은 토큰이다).
+        #
+        # **`identity`도 raw에서 뽑는다.** `CachingProvider`는 `cache_identity`를
+        # 위임하지 **않으므로**(Ruling R40 - 위임하면 이중 래핑이 조용히 켜진다)
+        # 감싼 뒤에 물으면 `None`이 나와 Tier 1 캐시가 통째로 꺼진다.
+        tier1_settings = None
+        if tier1:
+            tier1_settings = _Tier1Settings(
+                counting=CountingProvider(provider),
+                max_ratio=effective_max_ratio,
+                samples=effective_samples,
+                temperature=effective_temperature,
+                cache_dir=resolved_cache_dir,
+                identity=_cache_identity(provider),
+            )
         code = _translate_one(
             result=result,
             input_path=input,
@@ -829,12 +1103,13 @@ def translate(
             glossary_path=glossary,
             work_context=work_context,
             context_window=context_window,
-            cache_dir=None if no_cache else (cache_dir or DEFAULT_CACHE_DIR),
+            cache_dir=resolved_cache_dir,
             triage_profile=profiles.get(target),
             budget_ratio=budget_ratio,
             threshold=review_threshold,
             policy_label=policy_label,
             review_out=review_out,
+            tier1=tier1_settings,
         )
         worst = max(worst, code)
         if code == EXIT_UNAVAILABLE:
@@ -872,6 +1147,17 @@ def _dry_run_report(
     context_window: int,
     cache_dir: Path | None,
     review_paths: Mapping[str, Path],
+    # `--tier1`이 꺼져 있으면 `None`이라 상한 줄을 한 줄도 내지 않는다.
+    #
+    # **기본값을 주지 않는다.** 주면 호출자가 빠뜨렸을 때 Tier 1이 화면에서
+    # 조용히 사라지는데, 그것이 이 인자가 닫으려는 바로 그 결함이다.
+    #
+    # **`_Tier1Settings`를 통째로 받지 않는다.** dry-run은 `provider.complete()`를
+    # 부르지 않으므로 `CountingProvider`나 캐시 신원을 요구할 이유가 없고,
+    # 요구하면 "dry-run이 계측기를 만든다"는 오해가 시그니처에 굳는다. 필요한
+    # 둘을 낱개가 아니라 튜플 하나로 받는 것은 이 함수의 인자가 이미 많아
+    # 낱개로 더하면 그 문제를 키우기 때문이다.
+    tier1_bound: tuple[float, int] | None,
 ) -> list[str]:
     """실행하지 않고 추정치를 낸다 (NFR-2 · 설계 §7).
 
@@ -879,6 +1165,17 @@ def _dry_run_report(
     불러 정확히 세고, 캐시 히트는 키를 계산해 파일 존재만 확인한다. 토큰과
     비용은 내지 않는다 - 문자에서 토큰으로 가는 계수가 모델마다 다르고
     우리에게 출처가 없다(요구사항정의서 §11 R8).
+
+    **Tier 1 상한만은 실측이 아니라 산식이다**(설계 D10). `floor(n x
+    max_ratio) x samples`는 출처 없는 계수를 하나도 쓰지 않고 명령줄에 적힌
+    두 수와 세그먼트 수만으로 정해지는 **상한**이라 위 금지에 걸리지 않는다 -
+    실제 후보가 회색지대 크기에 눌려 이보다 적을 수는 있어도 많을 수는 없다.
+    이 줄이 없으면 `--tier1 --dry-run`이 exit 0과 함께 **가장 비싼 계층이
+    통째로 빠진 화면**을 낸다 - `--dry-run`의 존재 이유(비용 추정)와
+    `_TIER1_COST_LIMIT`의 존재 이유(비용 통제)가 서로 말을 하지 않는 상태다.
+    **이 줄이 채우는 것은 재번역 요청의 상한**이지 프로바이더 호출 수가
+    아니다 - 그쪽은 재시도·폴백이 얹혀 여전히 아무도 말하지 않는다(위
+    `_TIER1_BOUND_PREFIX` 주석과 같은 구분이다).
 
     **네트워크를 타지 않는다.** 이 함수는 프로바이더를 참조하지 않는다 -
     호출자(`translate()`)가 `_cache_identity(provider)`로 이미 뽑아 둔
@@ -1031,6 +1328,37 @@ def _dry_run_report(
                 f"  프롬프트 문자 system {system_chars:,} + user {user_chars:,}",
             ]
         )
+        if tier1_bound is not None:
+            max_ratio, samples = tier1_bound
+            # **상한이지 추정이 아니다**(설계 D10 · §11 R8). 실제 요청은 회색지대
+            # 크기에 눌려 이보다 적을 수 있지만 많을 수는 없다 - 그래서 화면
+            # 문구가 "예상"이 아니라 "최대"다.
+            #
+            # **세는 것은 재번역 요청이지 프로바이더 호출이 아니다.** 요청 하나가
+            # 재시도·개별 폴백을 쓰면 호출 수는 이 수를 넘는다. 괄호의
+            # `재시도·폴백 제외`를 빼면 형제 줄 `호출 필요 N개 이상`과 같은
+            # 낱말이 한 화면에서 하한과 상한을 동시에 말한다(접두 상수 주석).
+            #
+            # **`floor`가 아니면 무엇이 깨지는가.** `select_tier1_candidates`가
+            # 내림으로 상한을 잡으므로 여기서 올림하면 dry-run이 실행보다 **큰**
+            # 수를 말한다 - 상한이 상한이 아니게 되고, 사용자는 부풀린 비용을
+            # 보고 실행을 접는다.
+            #
+            # **`samples`를 곱하지 않으면** 후보 수를 요청 수로 오보한다. Tier 1은
+            # 후보 하나마다 N회를 **개별 요청**으로 낸다(§12 Q3 - `n>1` 단일
+            # 호출은 백엔드에 따라 조용히 사라져 이식성이 없다).
+            #
+            # **분모가 `len(result.segments)`이면 무엇이 어긋나는가.** 실행
+            # 경로가 쓰는 분모는 `len(scored)` - 세그먼트에서 **번역 실패분**을
+            # 뺀 수다. 둘이 갈라지는 조건은 번역 실패 그 하나뿐이고, 실패가
+            # 없는 실행에서는 정확히 같은 수가 나온다. 실패가 있으면 이 줄이
+            # 그만큼 크게 말하지만 방향이 상한 쪽이라 안전하다 - 실패분을 빼려
+            # 들면 이 함수가 번역을 실제로 돌려야 하고, 그러면 dry-run이 아니다.
+            bound = math.floor(len(result.segments) * max_ratio) * samples
+            lines.append(
+                f"  {_TIER1_BOUND_PREFIX}{bound}회 (재시도·폴백 제외"
+                f" · 후보 상한 비율 {max_ratio} · 샘플 {samples})"
+            )
         review_path = review_paths.get(target)
         if review_path is not None:
             # **실제 실행의 문구와 같은 형태로 낸다**(`_translate_one`의
@@ -1063,6 +1391,7 @@ def _translate_one(
     threshold: float | None,
     policy_label: str | None,
     review_out: Path | None,
+    tier1: _Tier1Settings | None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
 
@@ -1274,7 +1603,42 @@ def _translate_one(
                 budget_ratio=budget_ratio,
                 threshold=threshold,
                 policy_label=policy_label,
+                tier1=tier1,
             )
+        except FatalProviderError as exc:
+            # **Tier 1이 이 함수에서 LLM을 부르는 유일한 자리다**(설계 D14 · §3.4).
+            # 그물이 없으면 401이 미처리 traceback이 되어 exit 1이 되는데, 이 파일
+            # 머리말의 표에서 1은 "규격 위반 발견"이라 **설정 실수가 자막 결함으로
+            # 오보되고** 사용자는 멀쩡한 자막을 고치려 든다. 번역 경로(위쪽
+            # `translate_segments` 호출부)가 이미 같은 둘을 69로 낸다 - 대칭을 맞춘다.
+            #
+            # **문구에 `Tier 1`을 넣는 것이 계약이다.** 종료 코드만으로는 번역
+            # 경로의 69와 구별되지 않아, 사용자도 테스트도 어느 층이 죽었는지
+            # 모른다. 번역 파일은 이미 나갔고 트리아지만 못 돈 상태다.
+            _echo(f"[{target_lang}] Tier 1 프로바이더가 요청을 거부했다: {exc}", err=True)
+            return EXIT_UNAVAILABLE
+        except ProviderError as exc:
+            # **마지막 그물이고, 오늘은 도달 불가하다.** `signals/llm.py:162-173`이
+            # Tier 1의 전파 계약을 못 박는다 - `RetryableProviderError`는
+            # `translate_segments`가 이미 삼켜 `SegmentFailure`가 되고 위 절이 잡는
+            # `FatalProviderError`만 여기까지 올라온다. 그래도 절을 남기는 것은,
+            # 계약(`Provider.complete`의 "맨 `ProviderError`를 던지면 안 된다")을
+            # 어기는 서드파티 구현이 traceback으로 파이프라인을 죽이는 것보다
+            # 69로 막고 원인을 알리는 편이 낫기 때문이다(NFR-5 · §12 Q3).
+            # **그래서 위 절과 합치지 않는다** - 위는 실재하는 경로고 여기는
+            # 계약 위반 전용 그물이다. 번역 경로의 같은 이름 절과 짝이다.
+            #
+            # **절 순서는 지금 관측 불가하다.** 두 절의 본문이 글자 그대로 같아서
+            # 맞바꿔도 죽는 테스트가 **0건**이다(축2 리뷰 실측: 전량 생존). 자손이
+            # 뒤로 가면 이 절이 위를 가려 죽은 코드가 되지만, 가려진 결과가
+            # 원본과 바이트 동일이라 아무도 알아채지 못한다. 형제인 아래
+            # `except ValueError`와의 상대 순서는 의미조차 없다.
+            #
+            # 순서가 실제로 의미를 갖는 것은 **두 문구를 가르는 날**이고, 그때
+            # 틀린 순서를 잡을 게이트는 이 저장소에 없다 - 문구를 가르는 변경은
+            # 순서 회귀 테스트를 함께 들고 와야 한다.
+            _echo(f"[{target_lang}] Tier 1 프로바이더가 요청을 거부했다: {exc}", err=True)
+            return EXIT_UNAVAILABLE
         except ValueError as exc:
             # **정책 오류가 exit 1로 새는 것을 막는다.** 이 파일 머리말의 표에서
             # 1은 "규격 위반 발견"이라, 잡지 않으면 미처리 traceback이 exit 1이
@@ -1420,6 +1784,15 @@ def _cache_identity(provider: Provider) -> str | None:
     return str(identity) if identity else None
 
 
+# 계측 불능을 알리는 **공용 문구.** 번역 요약과 트리아지 요약이 각자 적으면
+# 같은 실행에서 두 문장이 다른 말을 하게 되고, 사용자는 그것을 서로 다른 두
+# 문제로 읽는다. 한쪽만 고쳐지는 것도 같은 결과다.
+#
+# **출력 문자열이라 em dash를 쓰지 않는다**(`test_help_output_has_no_em_dash`와
+# 같은 규율). 마침표로 끊는다.
+_UNREPORTED_TOKENS_NOTE = "백엔드가 토큰 수치를 내지 않았다. 0은 실제 사용량이 아니다"
+
+
 def _format_translate_summary(
     *,
     target_lang: str,
@@ -1447,12 +1820,27 @@ def _format_translate_summary(
     total = len(result.segments)
     failed = len(result.failures)
     cache_line = f"  캐시 히트 {hits}개 · 실제 호출 {misses}개" if cache_enabled else "  캐시 꺼짐"
+    # **화면은 침묵하지 않고 0을 사실로 주장한다.** usage를 안 내는 백엔드에서
+    # 이 줄은 `토큰 prompt 0 · completion 0 · calls 8`이 되는데, 한 줄 안에
+    # 모순이 있는데도 아무도 지적하지 않는다(§12 Q3의 "탐지·명시").
+    #
+    # **`review.json`으로는 이 사람을 못 구한다** - 그 파일은 `--review-out`이
+    # 있어야 생기므로 기본 경로 사용자는 신호를 전혀 보지 못한다.
+    #
+    # 판별식을 여기 두지 않고 `layer_tokens_reported`를 부르는 이유는 화면과
+    # 파일이 같은 실행에서 다른 말을 하면 사용자가 둘 중 하나를 오작동으로
+    # 읽기 때문이다.
+    token_line = (
+        f"  토큰 prompt {result.usage.prompt_tokens} · completion "
+        f"{result.usage.completion_tokens} · calls {result.usage.calls}"
+    )
+    if not layer_tokens_reported(result.usage):
+        token_line += f" ({_UNREPORTED_TOKENS_NOTE})"
     lines = [
         f"[{target_lang}] {out_path}",
         f"  세그먼트 {total}개 · 성공 {total - failed}개 · 실패 {failed}개",
         cache_line,
-        f"  토큰 prompt {result.usage.prompt_tokens} · completion "
-        f"{result.usage.completion_tokens} · calls {result.usage.calls}",
+        token_line,
     ]
     if result.failures:
         ids = ", ".join(f.segment_id for f in result.failures)
@@ -1524,7 +1912,52 @@ def _format_triage_summary(outcome: TriageOutcome) -> list[str]:
         # 바뀌면 화면이 달라지고 테스트가 흔들린다). 정렬이 두 곳에 있으면
         # 한쪽만 고쳐지고, 그때 화면과 `review.json`의 신호 순서가 갈라진다.
         lines.extend(f"    {name} {count}개" for name, count in counts.items())
+    # **번역 요약의 경고만으로는 이 사람을 구하지 못한다.** 그쪽은
+    # `result.usage`, 즉 **번역 계층만** 본다. "번역은 상용 API라 토큰을 내고
+    # Tier 1만 로컬이라 못 내는" 구성에서는 번역 줄이 정상으로 보이고,
+    # `review.json`은 `--review-out`이 있어야 생기므로 **기본 경로 사용자는
+    # Tier 1의 무음을 어디서도 못 본다**(§12 Q3 · NFR-2).
+    #
+    # **비어 있으면 아무 줄도 내지 않는다.** 언제나 붙는 경고는 읽히지 않는다.
+    if outcome.cost_unreported:
+        층 = ", ".join(outcome.cost_unreported)
+        lines.append(f"  토큰 수치를 못 받은 계층: {층} ({_UNREPORTED_TOKENS_NOTE})")
     return lines
+
+
+@dataclass(frozen=True, slots=True)
+class _Tier1Settings:
+    """`--tier1-*`가 조립한 Tier 1 실행 설정 (FR-4.3 · 설계 §5).
+
+    **낱개 파라미터로 풀지 않는다.** `_run_triage`는 이미 키워드 인자 8개를
+    받고 같은 파일의 `translate`·`_translate_one`이 각각 15개가 넘는다 - 여섯을
+    더 풀면 파라미터 폭발을 키운다.
+
+    `counting`을 `Provider`가 아니라 `CountingProvider`로 좁혀 받는 이유는
+    **호출자가 실행 후 `.usage`를 읽어야 하기 때문이다**(FR-7.4). 넓게 받으면
+    그 자리에서 `hasattr` 검사를 하게 된다.
+
+    **`counting`은 대상 언어마다 새로 만들어야 한다.** 누적기이므로 여러 언어가
+    한 인스턴스를 공유하면 뒤 언어의 `review.json`이 앞 언어의 토큰까지 실어
+    Tier 1 비용이 언어 수만큼 부풀어 보인다.
+
+    **`counting.inner`는 캐시로 감싸지 않은 raw 프로바이더여야 한다**(설계 D7).
+    `triage_with_tier1`의 `_provider_factory`가 이것을 `CachingProvider`로 다시
+    감싸므로 계측이 캐시 **안쪽**에 놓인다 - 캐시 히트는 토큰을 쓰지 않으므로
+    세면 안 된다. 이미 감싼 것을 넣으면 히트까지 세어 `cost`가 부풀고 이중
+    캐시가 된다.
+
+    **`identity`도 raw에서 뽑아야 한다.** `CachingProvider`는 `cache_identity`를
+    위임하지 **않으므로**(Ruling R40 - 위임하면 이중 래핑이 조용히 켜진다)
+    감싼 뒤에 물으면 `None`이 나와 Tier 1 캐시가 통째로 꺼진다.
+    """
+
+    counting: CountingProvider
+    max_ratio: float
+    samples: int
+    temperature: float
+    cache_dir: Path | None
+    identity: str | None
 
 
 def _run_triage(
@@ -1537,6 +1970,7 @@ def _run_triage(
     budget_ratio: float | None,
     threshold: float | None,
     policy_label: str,
+    tier1: _Tier1Settings | None = None,
 ) -> TriageOutcome:
     """번역 결과를 트리아지해 결과 객체를 낸다 (FR-6.1~6.3 · 설계 §4).
 
@@ -1556,6 +1990,11 @@ def _run_triage(
     **전량 실패에서도 객체를 낸다.** 요약 문자열을 조기 반환하면 `review.json`이
     "왜 비었나"를 말할 수 없다 - `risks=()`와 `excluded_failures=N`이 그 사실을
     파일에 남긴다. 화면 문구는 호출자가 만든다(설계 D8).
+
+    **`tier1`이 있으면 선별을 `triage_with_tier1`에 통째로 맡긴다**(FR-4.3).
+    수집·융합·예산 적용을 그쪽이 다시 하므로 여기서 `collect_all`을 부르지
+    않는다 - 부르면 전량 Tier 0 수집이 두 번 돈다. `tier1`이 `None`이면 기존
+    경로는 한 줄도 바뀌지 않는다(설계 D2 - 기본 꺼짐).
     """
     failed_ids = {f.segment_id for f in translated.failures}
     kept = [seg for seg in translated.segments if seg.id not in failed_ids]
@@ -1574,13 +2013,37 @@ def _run_triage(
         # 읽혀 미배선을 정상으로 오인한다.
         raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
 
-    def _outcome(risks: tuple[SegmentRisk, ...], segments: tuple[Segment, ...]) -> TriageOutcome:
-        """두 반환 지점이 같은 필드 조합을 쓰게 묶는다.
+    def _outcome(
+        risks: tuple[SegmentRisk, ...],
+        segments: tuple[Segment, ...],
+        *,
+        tier1_usage: TokenUsage | None = None,
+    ) -> TriageOutcome:
+        """세 반환 지점이 같은 필드 조합을 쓰게 묶는다.
 
         전량 실패 경로와 정상 경로가 각자 생성자를 부르면 필드 하나가 한쪽에서만
         채워져도 타입 검사와 화면 테스트를 모두 통과한다 - `usage`가 정확히 그런
         필드다(화면은 읽지 않고 `review.json`만 읽는다).
+
+        **`tier1_usage`는 `--tier1` 여부가 아니라 "실제로 돌았나"다.** 스위치가
+        켜져 있어도 Tier 1이 한 번도 안 도는 경로가 **둘** 있다.
+
+        | 경로 | 어디서 갈라지나 |
+        | --- | --- |
+        | 번역 전량 실패 | 아래 조기 반환이 `triage_with_tier1`보다 먼저 나간다 |
+        | **후보 0건** | `triage_with_tier1`의 `if not candidates:`가 `warn`을 부르고 반환한다 |
+
+        둘 다 `tier1.counting.usage`를 읽으면 `TokenUsage(0, 0, 0)`이 나가
+        `includes`가 "Tier 1을 셌다"고 거짓말한다(`calls == 0`이라 `unreported`
+        에는 안 실려 수치는 안 부푼다 - **화면 어디에도 신호가 없는 종류의
+        거짓말이다**). 기본값을 `None`으로 둔 것이 첫 경로를, 호출부의
+        `안_돈_사유`가 둘째 경로를 옳게 만든다. **둘째는 최종 리뷰 축B가
+        실주행으로 찾았다** - 첫째만 막았을 때 이 자리가 여전히 거짓말했다.
         """
+        # **`None`과 `TokenUsage(0, 0, calls=N)`은 다르다.** 전자는 "그 계층이
+        # 안 돌았다"(범위·합계에서 제외), 후자는 "돌았는데 무음"(`unreported`에
+        # 실린다). Tier 1이 안 돌았으면 `None`이다.
+        scope = resolve_cost_scope({"translation": translated.usage, "tier1": tier1_usage})
         return TriageOutcome(
             source_lang=source_lang,
             target_lang=target_lang,
@@ -1591,7 +2054,15 @@ def _run_triage(
             risks=risks,
             segments=segments,
             excluded_failures=len(failed_ids),
-            usage=translated.usage,
+            # **범위·판정·합계를 한 곳에서 받는다.** 셋을 손으로 적으면 계층을
+            # 늘린 쪽이 판정을 빠뜨리고, 그 계층의 무음 열화는 `tokens_reported`의
+            # `True`에 가려진다(실측: 합쳐 넘긴 `{"translation": tr + t1}`은
+            # `includes=("translation",)`·`unreported=()`를 내 Tier 1을 통째로
+            # 지운다). Tier 1을 켜는 배선은 이 매핑에 `"tier1"` 한 줄을 더한다 -
+            # 다른 곳은 건드릴 필요가 없다.
+            usage=scope.usage,
+            cost_includes=scope.includes,
+            cost_unreported=scope.unreported,
         )
 
     if not kept:
@@ -1608,6 +2079,68 @@ def _run_triage(
         source_lang=source_lang,
         target_lang=target_lang,
     )
+
+    if tier1 is not None:
+        # Tier 1 경로. **`policy_kind`가 "budget"인 것은 CLI가 이미 보장했다**
+        # (설계 D9 - threshold 조합은 exit 2로 거부된다). 여기서 다시 분기하면
+        # 도달 불가한 가지가 생겨 어떤 테스트도 밟지 못한다.
+        #
+        # **`excluded_ids`로 실패분을 넘긴다**(설계 D5). 넘기지 않으면 융합에
+        # 실패분이 들어가 hard fail이 예산 quota를 먹는다 - 실측 Recall@10% 0%.
+        # 게다가 반환 목록이 `kept`보다 길어져 `TriageOutcome`의 id 집합
+        # 불변식이 `ValueError`를 던지고 트리아지가 통째로 exit 2가 된다.
+        # **후보 0건이면 Tier 1은 한 번도 안 돈다 - 그 사실을 `warn`이 말한다**
+        # (최종 리뷰 축B). `triage_with_tier1`은 `if not candidates:` 한 자리에서만
+        # `warn`을 부르고 **즉시 반환한다.** 그 경로에서 `tier1.counting.usage`를
+        # 그대로 넘기면 `TokenUsage(0, 0, 0)`이 `resolve_cost_scope`의
+        # `usage is not None`을 통과해 **안 돈 계층이 비용 범위에 실린다** -
+        # 화면은 `Tier 1: 회색지대가 비었다`인데 파일은 `["translation", "tier1"]`
+        # 이라 말하는 상태다(실측: 5큐 실주행에서 `calls: 6`이 전부 번역이었다).
+        #
+        # **호출 수로 판정하면 안 된다.** `CountingProvider`는 캐시 **안쪽**이라
+        # 재실행에서 샘플이 전부 캐시 히트면 `calls == 0`인데 그때 Tier 1은
+        # **돌았다.** `calls > 0`을 기준으로 삼으면 같은 입력의 1회차와 2회차가
+        # 서로 다른 `includes`를 내 NFR-3 재현성이 깨진다.
+        안_돈_사유: list[str] = []
+
+        def _tier1_warn(message: str) -> None:
+            """후보 0건의 사유를 화면에 내고, 안 돌았다는 사실을 기록한다.
+
+            **`warn`을 침묵시키지 않는다**(Ruling P12). 여기서 조용하면 유료
+            계층이 통째로 안 돌아도 반환값의 형태가 완전히 같아 알아챌 수단이
+            없다. 후보 0건의 사유 6종이 화면에 나가야 한다.
+
+            **`err=True`를 주지 않는다.** 이것은 실패가 아니라 "무엇이
+            일어났는가"의 보고이고, 같은 함수의 트리아지 요약과 나란히 읽혀야
+            한다 - 한쪽만 stderr로 가면 리다이렉트한 로그에서 순서가 섞인다.
+
+            **`warn`이 다른 사유로도 불리게 되는 날 이 기록은 거짓이 된다.**
+            그때는 `triage_with_tier1`이 "돌았나"를 직접 돌려주게 바꿔야 한다 -
+            `test_후보가_0건이면_cost_includes에_tier1이_안_실린다`와
+            `test_tier1을_켜면_cost_includes에_tier1이_실린다`가 양방향으로 건다.
+            """
+            안_돈_사유.append(message)
+            _echo(f"[{target_lang}] {_TIER1_WARN_PREFIX}{message}")
+
+        scored = triage_with_tier1(
+            translated.segments,
+            ctx,
+            budget_ratio=policy_value,
+            provider=tier1.counting,
+            max_ratio=tier1.max_ratio,
+            warn=_tier1_warn,
+            samples=tier1.samples,
+            temperature=tier1.temperature,
+            cache_dir=tier1.cache_dir,
+            identity=tier1.identity,
+            excluded_ids=failed_ids,
+        )
+        return _outcome(
+            tuple(scored),
+            tuple(kept),
+            tier1_usage=None if 안_돈_사유 else tier1.counting.usage,
+        )
+
     # **수집과 융합의 입력이 다르다. 서로 다른 층의 요구이기 때문이다.**
     #
     # 수집(`collect_all`)은 **트랙 전체**를 본다 - 배치 신호가 이웃을 봐야

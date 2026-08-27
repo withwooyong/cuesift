@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 Role = Literal["system", "user", "assistant"]
@@ -68,6 +68,17 @@ class TokenUsage:
         ):
             if value < 0:
                 raise ValueError(f"{name}({value})은 음수일 수 없다")
+        # **`calls == 0`이면 토큰도 0이어야 한다.** 성공 응답이 없는데 토큰이
+        # 실린 것은 어느 경로로도 만들어지지 않는다(`_extract_usage`는 언제나
+        # `calls=1`을 내고 캐시는 저장된 값을 그대로 낸다 - 실측).
+        #
+        # 이 불변식에 **판정 하나가 얹혀 있다.** `report/models.py`의
+        # `layer_tokens_reported`가 `calls == 0`을 "토큰 0이 참이다"로 단축하는데,
+        # 그 단축이 성립하는 근거가 여기다. 이 검사가 사라지면 토큰을 쓴 실행이
+        # "계측 정상"으로 통과한다.
+        used = self.prompt_tokens + self.completion_tokens
+        if self.calls == 0 and used > 0:
+            raise ValueError(f"calls가 0인데 토큰이 {used}개 실렸다")
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
         """배치 루프가 빈 값부터 누적할 수 있게 한다."""
@@ -186,3 +197,88 @@ class Provider(Protocol):
         `openai_compat.py`가 이 셋을 지키는 참조 구현이다.
         """
         ...
+
+
+@dataclass
+class CountingProvider:
+    """통과한 `Completion`의 토큰을 누적하는 위임 래퍼 (FR-7.4 · 설계 D6·D7).
+
+    **`collect_tier1`의 반환형을 바꾸지 않고 Tier 1 비용을 얻는 수단이다.**
+    `Tier1Context.provider_for`가 팩토리라 CLI가 넘긴 프로바이더가 그대로
+    아래로 내려간다 - 그 성질을 이용한다(설계 §3.3).
+
+    **`CachingProvider`의 안쪽에 놓인다**(D7). 캐시 히트는 `complete`를
+    부르지 않으므로 여기 잡히지 않고, 그것이 정확한 동작이다 - 실제로 쓰지
+    않은 토큰이다. 바깥에 두면 *요청한* 호출을 세게 되어 `cost`가 청구서와
+    어긋난다.
+
+    **예외를 잡지 않는다.** `Provider.complete`의 계약 셋(오류는
+    `Retryable`/`Fatal`로 던진다 · `text`는 반드시 `str` · 재시도하지
+    않는다)을 위임으로 그대로 통과시킨다. 여기서 `except`를 달면
+    `SelfConsistency`가 `FatalProviderError`를 일부러 다시 던지는 설계
+    (`signals/llm.py`)가 무력해져, 401이 난 실행이 **"Tier 1이 돌았고
+    아무것도 안 걸렸다"** 로 보인다.
+
+    **`usage.calls`는 "네트워크 요청 수"가 아니라 "성공 응답 수"다.** 예외는
+    누적 줄 위에서 빠져나가므로 실패한 시도는 한 건도 안 센다 - 재시도 경로
+    (`engine._call_with_retry`)가 세 번 시도해 셋 다 죽으면 `usage`는
+    `(0, 0, 0)` 그대로다. 청구 관점에서는 이쪽이 맞지만 **`CachingProvider.misses`는
+    실패해도 증가**하므로 두 수치를 나란히 놓으면 어긋난다 - 그 차이가 곧
+    실패한 시도 수이지 계측 버그가 아니다.
+    """
+
+    inner: Provider
+    # `frozen=True`를 붙이면 안 된다 - `usage`는 호출마다 갈아 끼우는 누적값이라
+    # 동결하면 첫 `complete`에서 `FrozenInstanceError`가 난다.
+    usage: TokenUsage = field(default_factory=TokenUsage)
+
+    # --- 위임 표면 셋 ---
+    # `__getattr__` 통과가 아니라 **명시적 위임**을 골랐다. `__getattr__`은
+    # `copy`/`pickle`이 인스턴스에 직접 묻는 `__deepcopy__`·`__getstate__`
+    # 같은 탐침까지 `inner`로 넘겨 엉뚱한 객체의 답을 돌려주고, 오타
+    # (`counting.usaage`)마저 `inner`에서 해결돼 `AttributeError`가 사라진다.
+    # 명시적 위임이 낡을 위험(참조 구현에 다섯 번째 표면이 생기는 것)은
+    # `test_참조_구현의_공개_표면을_빠짐없이_덮는다`가 대신 잡는다.
+
+    @property
+    def name(self) -> str:
+        # **캐시가 갈라지는 것을 막는 장치가 아니다.** identity는
+        # `OpenAICompatibleProvider.cache_identity`가 자기 `self.name`으로
+        # 조립하므로 래퍼를 씌워도 그대로다. 여기서 위임하지 않으면 깨지는 것은
+        # `cli.py`의 경고 두 줄("...이 cache_identity를 제공하지 않아 캐시를 끈다")로,
+        # 사용자가 자기가 지정한 프로바이더가 아니라 래퍼 이름을 보게 된다.
+        return self.inner.name
+
+    @property
+    def cache_identity(self) -> str | None:
+        # **위임하지 않으면 캐시가 실행 전체에서 조용히 꺼진다** (NFR-3).
+        # `cli._cache_identity`가 `getattr(provider, "cache_identity", None)`으로
+        # 읽어 예외 없이 `None`으로 강등되고, 캐시가 꺼지면 같은 후보에 매번
+        # 새 호출이 나가 **Tier 1 비용이 실제보다 부풀어 오른다** - 토큰을
+        # 정확히 세겠다는 이 클래스의 목적과 정반대 실패다.
+        #
+        # `getattr` 기본값이 `None`인 것은 이 속성이 `Provider` 프로토콜에
+        # **없기** 때문이다. 안 가진 프로바이더가 실재하고(`tests/fakes`의
+        # `EchoProvider`), 그때 `None`으로 떨어져 캐시만 꺼지는 것이 정상
+        # 동작이다 - `AttributeError`로 바꾸면 그 프로바이더가 실행 불가가 된다.
+        return getattr(self.inner, "cache_identity", None)
+
+    def close(self) -> None:
+        # 위임하지 않으면 `cli.py`의 dry-run 경로가 `getattr(provider, "close", None)`
+        # 에서 `None`을 받아 **연결 풀을 정리하지 않고 끝난다.**
+        # 안쪽이 `close`를 안 가진 경우(테스트 가짜가 대부분)는 할 일이 없는
+        # 것이지 오류가 아니다 - 여기서 `AttributeError`를 내면 dry-run이 죽는다.
+        close = getattr(self.inner, "close", None)
+        if close is not None:
+            close()
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> Completion:
+        completion = self.inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        self.usage = self.usage + completion.usage
+        return completion
