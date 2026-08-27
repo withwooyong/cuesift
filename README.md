@@ -328,8 +328,9 @@ cuesift translate ep01.ko.srt --to en    --review-threshold 0.7  # 위험도 0.7
 en·ja의 LLM 비용을 실제로 쓴 뒤에 fr에서 죽습니다.
 
 **`--dry-run`에는 트리아지가 반영되지 않습니다.** dry-run은 번역을 하지 않으므로 트리아지도
-돌지 않고 아래 요약도 나오지 않습니다 — dry-run이 내는 것은 배치 수·문자 수·캐시 히트뿐입니다.
-**다만 프로파일 검증은 dry-run에서도 돕니다**(실측: `--to fr --review-budget 10% --dry-run`은
+돌지 않고 아래 요약도 나오지 않습니다 — dry-run이 내는 것은 배치 수·문자 수·캐시 히트,
+그리고 `--tier1`을 켰을 때의 **Tier 1 재번역 요청 상한**입니다(아래 Tier 1 절).
+**프로파일 검증도 dry-run에서 돕니다**(실측: `--to fr --review-budget 10% --dry-run`은
 종료 코드 2). 옵션 조합이 맞는지 **LLM을 부르기 전에** 확인하는 용도로는 쓸 수 있다는 뜻입니다.
 
 요약은 언어마다 나옵니다.
@@ -352,6 +353,99 @@ en·ja의 LLM 비용을 실제로 쓴 뒤에 fr에서 죽습니다.
 있어 `struct.empty`가 hard fail을 내고, hard fail은 예산을 우회하므로 프로바이더 장애
 하나가 진짜 오류를 큐에서 밀어냅니다(실측: 200큐·진짜 오류 20건·예산 10%에서 번역 실패
 20건이면 Recall이 **0%**). 번역 안 된 자막은 검수 대상이 아니라 **재실행 대상**입니다.
+
+#### Tier 1 자가일관성 — `--tier1` (FR-4.3, 동작합니다)
+
+**Tier 0는 의미를 보지 못합니다.** 문법적으로 완벽한데 뜻만 뒤집힌 문장은 결정론적 신호
+9종으로 예산 10%에서 **1.41%**만 잡히고, 이것은 같은 예산의 무작위(9.61%)보다도 낮습니다
+(위 "실측" 절과 같은 벤치마크). Tier 1은 그 구멍을 겨냥해 **같은 세그먼트를 N회 재번역하고
+결과들이 서로 얼마나 흔들리는지**를 잽니다 — 흔들리면 모델 자신이 확신하지 못한다는 뜻입니다.
+
+```bash
+cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1
+```
+
+**`--tier1`은 기본으로 꺼져 있고 `--review-budget`을 요구합니다.** LLM을 다시 부르므로
+비용이 실제로 발생하고, 후보를 고르려면 예산 컷라인이 있어야 합니다 — Tier 1은 컷라인
+**아래 회색지대**에서만 후보를 고릅니다(이미 검수 큐에 든 것과 hard fail은 제외).
+
+| 옵션 | 기본값 | 무엇을 |
+|---|---|---|
+| `--tier1` | 꺼짐 | 스위치. 이것 없이 아래 셋만 주면 종료 코드 2입니다 |
+| `--tier1-max-ratio` | `0.05` | 전체 세그먼트 중 Tier 1을 적용할 **최대 비율**(FR-4.3) |
+| `--tier1-samples` | `3` | 세그먼트당 재번역 횟수. 2 미만은 비교할 쌍이 없어 거부됩니다 |
+| `--tier1-temperature` | `1.0` | 재번역 온도. `0`이면 샘플이 전부 같아져 신호가 죽습니다 |
+
+##### 비용은 곱으로 막습니다
+
+번역 기준선 대비 배수는 `samples × max_ratio × 배치크기(10)`이고 **트랙 크기에
+무관합니다**(세그먼트 수가 약분됩니다). 요구사항정의서 §4가 "3배는 감당 불가"라 적었으므로
+게이트는 **`--tier1-samples × --tier1-max-ratio < 0.3`** 이고, 기본값 `3 × 0.05 = 0.15`는
+그 절반인 1.5배입니다. **한도에 정확히 닿아도 거부합니다** — 3.0배가 곧 §4가 막으려던 값입니다.
+
+```text
+$ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --tier1-samples 10
+--tier1-samples(10) x --tier1-max-ratio(0.05) = 0.50 가 한도 0.3에 닿거나 넘는다. 둘 중 하나를 줄인다 (요구사항정의서 §4)
+```
+
+**상한이 `samples` 단독이 아니라 곱에 걸린 것이 설계입니다.** `--tier1-samples`만 제한하면
+`--tier1-samples 10 --tier1-max-ratio 0.5`(배수 **50**)가 통과합니다 — 상한이 잘못된 축에
+걸려 있으면 막으려던 것을 못 막습니다.
+
+거부되는 조합은 넷이고 **전부 LLM을 부르기 전에** 종료 코드 2로 끝납니다(실측).
+
+| 무엇을 주면 | 화면 |
+|---|---|
+| `--tier1` 없이 `--tier1-*`만 | `--tier1-* 옵션은 --tier1과 함께 써야 한다` |
+| `--tier1` + `--review-threshold` | `--tier1은 --review-threshold와 함께 쓸 수 없다 (--review-budget을 쓴다)` |
+| `--tier1`인데 예산이 없다 | `--tier1은 --review-budget을 요구한다` |
+| 곱이 한도에 닿거나 넘는다 | 위 화면 |
+
+##### 얼마나 부를지 먼저 봅니다 — `--dry-run`
+
+`--tier1`을 켜면 dry-run 화면에 한 줄이 더 붙습니다. LLM은 부르지 않습니다.
+
+```text
+$ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --dry-run
+입력   ep01.ko.srt (srt) · 26 세그먼트
+모델   qwen2.5:3b @ http://127.0.0.1:11434/v1
+
+[en] ep01.en.srt
+  배치 3개 (size=10, context_window=3)
+  캐시 히트 0개 · 호출 필요 3개 이상
+  프롬프트 문자 system 945 + user 916
+  Tier 1 재번역 요청 최대 3회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 3)
+
+(토큰·비용은 내지 않는다 - 문자에서 토큰으로 가는 계수의 출처가 없다)
+```
+
+`26 × 0.05 = 1.3`을 내림해 후보 1개, 거기에 샘플 3을 곱해 **3회**입니다.
+
+**"호출"과 "재번역 요청"은 다른 낱말이고 섞으면 안 됩니다.** 위 화면의 `호출 필요 3개 이상`은
+프로바이더 호출을 세고, `Tier 1 재번역 요청 최대 3회`는 Tier 1이 요청할 재번역을 셉니다 —
+재시도와 개별 폴백이 얹히면 **실제 호출은 뒤의 수를 넘습니다.**
+
+##### 후보가 0개일 수 있습니다 — 그때는 사유를 냅니다
+
+`floor(세그먼트 수 × max_ratio)`가 후보 수이므로, 세그먼트가 `1/max_ratio`보다 적으면
+후보가 0개가 됩니다. **조용히 넘어가지 않고 이유를 찍습니다** — 유료 계층이 통째로 안 돌았는데
+화면이 같으면 사용자는 Tier 1이 돈 줄로 읽습니다.
+
+```text
+$ cuesift translate ep01.ko.srt --to en --review-budget 30% --tier1
+[en] Tier 1: 세그먼트 수(3)에 비해 max_ratio(0.05)가 작아 Tier 1 상한이 내림(floor)으로 0이 됐다 (select_tier1_candidates 독스트링 - n < 1/max_ratio)
+```
+
+회색지대 자체가 비었을 때도 같은 자리에 사유가 나옵니다
+(`Tier 1: 회색지대가 비었다 (전부 hard_fail이거나 이미 선별됨)`).
+
+##### Tier 1 토큰은 `review.json`에 합산됩니다 (FR-7.4)
+
+`--tier1`을 켠 실행의 `cost.includes`는 `["translation", "tier1"]`이 됩니다. 끈 실행은
+`["translation"]` 그대로입니다 — **목록이 곧 그 숫자가 무엇을 덮는지에 대한 진술입니다.**
+
+**Tier 1 프로바이더가 죽으면 종료 코드 69입니다.** 번역 파일은 이미 나갔고 트리아지만 못
+돈 상태이며, 화면 문구에 `Tier 1`이 들어가 번역 경로의 69와 구별됩니다.
 
 #### 검수 리포트 파일 — `--review-out` (FR-7.2, 동작합니다)
 
@@ -409,10 +503,12 @@ cuesift translate ep01.ko.srt --to en --review-budget 30% --review-out reports
     "hard_fail_count": 0,
     "signal_hits": { "spec.violation": 1 },
     "cost": {
-      "prompt_tokens": 239,
-      "completion_tokens": 45,
+      "prompt_tokens": 244,
+      "completion_tokens": 49,
       "calls": 1,
-      "includes": ["translation"]
+      "includes": ["translation"],
+      "basis": { "translation": "cached-included" },
+      "tokens_reported": true
     }
   },
   "segments": [
@@ -439,14 +535,15 @@ cuesift translate ep01.ko.srt --to en --review-budget 30% --review-out reports
 }
 ```
 
-전체 구조는 [요구사항정의서 §8.4](docs/요구사항정의서.md)에 있습니다. 읽을 때 알아야 할 것은 넷입니다.
+전체 구조는 [요구사항정의서 §8.4](docs/요구사항정의서.md)에 있습니다. 읽을 때 알아야 할 것은 다섯입니다.
 
 | 무엇 | 왜 그렇게 돼 있나 |
 |---|---|
 | **`segments[]`에는 선별된 것만** 담긴다 | FR-7.2가 "검수 **대상** 세그먼트 목록"입니다. 분모는 `summary`가 따로 냅니다 |
 | **세그먼트 수가 셋**이다 (`total`·`triaged`·`excluded_failures`) | `total = triaged + excluded`가 **파일 안에서 검산됩니다.** 하나로 두면 `review_ratio`의 분모가 무엇인지 알 수 없고, 그 값이 위 "실측" 절 배수의 분모입니다 |
 | **`policy.value`는 비율이지 퍼센트가 아니다** | `30%`는 `0.3`으로 실립니다. 화면 표시는 `× 100`을 거치므로 **반대 방향**입니다 |
-| **`cost.includes`가 집계 범위를 밝힌다** | 지금은 `["translation"]`뿐입니다 — Tier 1 토큰은 아직 여기 합산되지 않습니다. 목록에 `"tier1"`이 없다는 사실 자체가 그 부재를 알립니다 |
+| **`cost.includes`가 집계 범위를 밝힌다** | 위 예시는 Tier 1을 끈 실행이라 `["translation"]`입니다. `--tier1`을 켜면 `["translation", "tier1"]`이 되고 토큰도 합산됩니다(FR-7.4) — **목록이 곧 그 숫자가 무엇을 덮는지에 대한 진술입니다** |
+| **`cost.basis`와 `cost.tokens_reported`** | `basis`는 계층마다 **어떻게 셌나**를 밝힙니다(`cached-included` = 캐시 적중분 포함 · `sent-only` = 실제 전송분만). `tokens_reported`가 `false`면 `prompt_tokens: 0`은 "안 썼다"가 아니라 **"모른다"**입니다 — usage를 내지 않는 로컬 백엔드가 있습니다 |
 
 **통화 환산 비용(`estimated_usd`)은 넣지 않습니다.** 토큰당 단가가 모델·프로바이더마다
 다르고 우리에게 출처가 없습니다(NFR-2 · §11 R8). `0.0`도 `null`도 넣지 않습니다 —
