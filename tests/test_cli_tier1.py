@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,13 @@ from cuesift.cli import (
     app,
 )
 from cuesift.tier1 import triage_with_tier1
-from cuesift.translate import CountingProvider
+from cuesift.translate import (
+    ChatMessage,
+    Completion,
+    CountingProvider,
+    FatalProviderError,
+    ProviderError,
+)
 
 runner = CliRunner()
 
@@ -784,3 +791,101 @@ def test_번역이_전량_실패하면_tier1이_범위에서_빠진다(
     assert summary["excluded_failures"] == 10, "전량 실패가 아니면 아무것도 재지 못한다"
     assert summary["triaged_segments"] == 0
     assert summary["cost"]["includes"] == ["translation"]
+
+
+# --- Tier 1 프로바이더 예외 그물 (설계 D14 · 스펙 §3.4) ---------------------
+
+
+class _FailsAfterTranslation:
+    """번역은 성공시키고 **Tier 1 호출에서만** 던지는 가짜.
+
+    **번역에서 던지면 이 태스크를 검증하지 못한다** - `_translate_one`의 기존
+    `except FatalProviderError`가 잡아 똑같은 69를 내므로, 새 그물을 한 번도
+    밟지 않은 채 종료 코드 단언이 초록이 된다. 층을 가르는 것은 종료 코드가
+    아니라 화면 문구(`Tier 1`)와 `_assert_tier1_ran`이다.
+
+    호출 횟수로 층을 가른다. 이 파일의 픽스처는 10큐이고 `DEFAULT_BATCH_SIZE`가
+    10이라 번역은 **배치 1회**로 끝나므로, 그 다음 호출부터는 Tier 1뿐이다.
+    픽스처가 배치 하나를 넘게 커지면 번역 도중에 던지게 되는데, 그때는 번역
+    산출물 단언과 문구 단언이 함께 거짓 실패로 그 사실을 알린다.
+
+    시그니처는 `Provider` 프로토콜과 글자 그대로 같아야 한다
+    (`tests/fakes/provider.py` 머리말) - 기본값 하나만 붙여도 이탈이다.
+    """
+
+    name = "echo"
+    cache_identity = "echo|fake|v1"
+
+    def __init__(self, error: ProviderError, *, healthy_calls: int = 1) -> None:
+        self._inner = _clean_echo()
+        self._error = error
+        self._healthy_calls = healthy_calls
+        self.calls: list[list[ChatMessage]] = []
+        self.kwargs: list[tuple[float, int | None]] = []
+
+    def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> Completion:
+        # **던지기 전에 기록한다.** `_assert_tier1_ran`은 이 목록으로 "Tier 1이
+        # 프로바이더까지 닿았나"를 판정하는데, 예외로 끝난 호출도 닿은 것이다.
+        # 기록을 예외 뒤로 미루면 실패 경로에서 그 판정이 언제나 거짓이 되어
+        # "그물이 아니라 다른 이유로 69가 났다"를 구별할 수단이 사라진다.
+        self.calls.append(list(messages))
+        self.kwargs.append((temperature, max_tokens))
+        if len(self.calls) > self._healthy_calls:
+            raise self._error
+        return self._inner.complete(messages, temperature=temperature, max_tokens=max_tokens)
+
+
+def _assert_died_in_tier1(result: Result, fake: _FailsAfterTranslation, tmp_path: Path) -> None:
+    """69가 **Tier 1 층에서** 났는지 확인한다.
+
+    **종료 코드만 단언하면 안 된다.** 번역 경로도 같은 둘을 69로 내므로,
+    가짜가 번역에서 먼저 죽어도 코드는 69다 - 이 스위트에서 종료 코드만 보는
+    단언이 엉뚱한 층에서 만족된 사례가 세 번 있었다. 셋을 함께 본다.
+
+    1. 번역 산출물이 남았다 = 번역은 끝까지 갔다
+    2. 프로바이더가 번역 몫보다 더 불렸다 = Tier 1이 실제로 LLM에 닿았다
+    3. 화면 문구에 `Tier 1`이 있다 = 번역 경로의 그물이 아니다
+    """
+    assert result.exit_code == 69, result.output
+    assert (tmp_path / "subs" / "ten_cues.en.srt").exists(), "번역 단계에서 죽었다"
+    _assert_tier1_ran(fake)
+    assert "[en] Tier 1 프로바이더가 요청을 거부했다" in result.output
+
+
+def test_tier1의_프로바이더_실패는_69다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """**exit 1이 되면 설정 실수가 '규격 위반 발견'으로 오보된다**(설계 D14).
+
+    번역 경로(`cli.py`의 `_translate_one` 호출부)는 이미 같은 둘을 69로 낸다 -
+    여기가 그 대칭이다. 그물이 없으면 `SelfConsistency`가 다시 던지는
+    `FatalProviderError`가 미처리 traceback이 되어 exit 1이 되는데, 이 파일
+    머리말의 표에서 1은 "규격 위반 발견"이라 사용자는 멀쩡한 자막을 고치려 든다.
+    """
+    fake = _FailsAfterTranslation(FatalProviderError("HTTP 401: invalid api key"))
+
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=fake)
+
+    _assert_died_in_tier1(result, fake, tmp_path)
+    # **원인이 화면에 있어야 한다.** 없으면 사용자는 무엇을 고쳐야 할지 모른 채
+    # 69만 본다 - 자격증명 오류와 죽은 엔드포인트가 같은 화면이 된다.
+    assert "401" in result.output
+
+
+def test_tier1의_맨_ProviderError도_69다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """계약을 어기는 서드파티 구현이 파이프라인을 죽이는 것보다 낫다(NFR-5 · §12 Q3).
+
+    번역 경로의 '마지막 그물'과 대칭이다. `openai_compat.py`는 자손 둘 중
+    하나만 던지므로 오늘은 도달 불가지만, NFR-5가 "코드 수정 없이 프로바이더
+    추가"를 요구하는 한 계약 위반은 traceback이 아니라 69여야 한다.
+    """
+    fake = _FailsAfterTranslation(ProviderError("계약을 어긴 서드파티 구현"))
+
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=fake)
+
+    _assert_died_in_tier1(result, fake, tmp_path)
+    assert "계약을 어긴 서드파티 구현" in result.output

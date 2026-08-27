@@ -1510,6 +1510,27 @@ def _translate_one(
                 policy_label=policy_label,
                 tier1=tier1,
             )
+        except FatalProviderError as exc:
+            # **Tier 1이 이 함수에서 LLM을 부르는 유일한 자리다**(설계 D14 · §3.4).
+            # 그물이 없으면 401이 미처리 traceback이 되어 exit 1이 되는데, 이 파일
+            # 머리말의 표에서 1은 "규격 위반 발견"이라 **설정 실수가 자막 결함으로
+            # 오보되고** 사용자는 멀쩡한 자막을 고치려 든다. 번역 경로(위쪽
+            # `translate_segments` 호출부)가 이미 같은 둘을 69로 낸다 - 대칭을 맞춘다.
+            #
+            # **문구에 `Tier 1`을 넣는 것이 계약이다.** 종료 코드만으로는 번역
+            # 경로의 69와 구별되지 않아, 사용자도 테스트도 어느 층이 죽었는지
+            # 모른다. 번역 파일은 이미 나갔고 트리아지만 못 돈 상태다.
+            _echo(f"[{target_lang}] Tier 1 프로바이더가 요청을 거부했다: {exc}", err=True)
+            return EXIT_UNAVAILABLE
+        except ProviderError as exc:
+            # **마지막 그물이다.** `FatalProviderError` 절보다 **뒤에** 와야 한다 -
+            # 그 절이 자손을 먼저 잡지 않으면 이 절이 죽은 코드가 된다.
+            # 계약(`Provider.complete`의 "맨 `ProviderError`를 던지면 안 된다")을
+            # 어기는 서드파티 구현이 traceback으로 파이프라인을 죽이는 것보다는
+            # 69로 막고 원인을 알리는 편이 낫다(NFR-5 · §12 Q3). 번역 경로의
+            # 같은 이름 절과 짝이다.
+            _echo(f"[{target_lang}] Tier 1 프로바이더가 요청을 거부했다: {exc}", err=True)
+            return EXIT_UNAVAILABLE
         except ValueError as exc:
             # **정책 오류가 exit 1로 새는 것을 막는다.** 이 파일 머리말의 표에서
             # 1은 "규격 위반 발견"이라, 잡지 않으면 미처리 traceback이 exit 1이
