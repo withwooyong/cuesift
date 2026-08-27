@@ -956,7 +956,7 @@ def _bound_lines(output: str) -> list[str]:
     **`"15" in output`으로 세지 않는 이유**: 같은 화면에 세그먼트 수·배치
     수·호출 필요 수·프롬프트 문자 수가 함께 있고 문자 수는 천 단위 쉼표가
     붙은 네 자리 이상이라, 상한과 무관하게 부분 문자열이 만족될 수 있다
-    (실측: 100큐 실행의 `프롬프트 문자 system 1,151`이 `"15"`를 품는다).
+    (실측: 100큐 실행의 `프롬프트 문자 system 3,150`이 `"15"`를 품는다).
     줄 단위로 뽑아 두면 단언이 상한 줄 하나만 본다.
     """
     return [line for line in output.splitlines() if _TIER1_BOUND_PREFIX in line]
@@ -976,11 +976,13 @@ def test_dry_run이_tier1_상한을_말한다(tmp_path: Path, monkeypatch: pytes
     result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1"))
 
     assert result.exit_code == 0, result.output
-    # floor(100 x 0.05) x 3 = 15. **줄 전체를 못 박는다** - 화면 문구가
-    # "예상"으로 바뀌면 상한이 추정으로 오해되므로(§11 R8) 그 변경은 조용히
-    # 지나가면 안 된다.
+    # floor(100 x 0.05) x 3 = 15. **줄 전체를 못 박되 문구 자체는 이 단언이
+    # 지키지 못한다** - 기대값과 `_bound_lines()`의 필터가 같은 상수를 보간해
+    # 함께 움직이기 때문이다(리뷰 라운드 1 Important B 실측: 접두를 바꾸는
+    # 변이에서 사망 0건). 문구는 아래
+    # `test_상한_줄의_문구를_리터럴로_못_박는다`가 리터럴로 지킨다.
     assert _bound_lines(result.output) == [
-        f"  {_TIER1_BOUND_PREFIX}15회 (후보 상한 비율 0.05 · 샘플 3)"
+        f"  {_TIER1_BOUND_PREFIX}15회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 3)"
     ]
 
 
@@ -1000,7 +1002,7 @@ def test_상한은_올림이_아니라_내림이다(tmp_path: Path, monkeypatch:
     assert result.exit_code == 0, result.output
     # floor(97 x 0.05) x 3 = 12. 올림·반올림이면 15다.
     assert _bound_lines(result.output) == [
-        f"  {_TIER1_BOUND_PREFIX}12회 (후보 상한 비율 0.05 · 샘플 3)"
+        f"  {_TIER1_BOUND_PREFIX}12회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 3)"
     ]
 
 
@@ -1010,10 +1012,13 @@ def test_상한은_올림이_아니라_내림이다(tmp_path: Path, monkeypatch:
         # floor(100 x 0.02) x 3 = 6. `max_ratio`를 상수로 굳히면 15가 된다.
         (
             ("--tier1-max-ratio", "0.02"),
-            f"  {_TIER1_BOUND_PREFIX}6회 (후보 상한 비율 0.02 · 샘플 3)",
+            f"  {_TIER1_BOUND_PREFIX}6회 (재시도·폴백 제외 · 후보 상한 비율 0.02 · 샘플 3)",
         ),
         # floor(100 x 0.05) x 5 = 25. `samples`를 안 곱하면 5가 된다.
-        (("--tier1-samples", "5"), f"  {_TIER1_BOUND_PREFIX}25회 (후보 상한 비율 0.05 · 샘플 5)"),
+        (
+            ("--tier1-samples", "5"),
+            f"  {_TIER1_BOUND_PREFIX}25회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 5)",
+        ),
     ],
 )
 def test_상한이_명시된_값을_그대로_쓴다(
@@ -1099,3 +1104,35 @@ def test_tier1_조합_오류는_dry_run에서도_난다(input_srt: Path) -> None
 
     assert result.exit_code == 2
     assert "--review-threshold" in result.output
+
+
+def test_상한_줄의_문구를_리터럴로_못_박는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**이 파일에서 유일하게 `_TIER1_BOUND_PREFIX`를 쓰지 않는 단언이다.**
+
+    나머지 상한 단언은 기대값과 `_bound_lines()`의 필터가 같은 상수를 보간해
+    **함께 움직인다** - 접두를 통째로 바꾸는 변이에서 사망이 0건이었다(리뷰
+    라운드 1 Important B 실측: `1266 passed`). 그런데 이 줄의 두 낱말은 장식이
+    아니라 계약이다.
+
+    - **`최대`가 `예상`이 되면**: 이 수가 출처 없는 추정으로 읽힌다 - §11 R8이
+      금지하는 바로 그것이다. 상한은 산식에서 나오므로 허용되는데, 낱말 하나가
+      그 구분을 지운다.
+    - **`재시도·폴백 제외`가 빠지면**: 형제 줄 `호출 필요 N개 이상`과 같은
+      화면에서 "호출"이 하한과 상한을 동시에 말한다. 재번역 요청 하나는
+      재시도·개별 폴백으로 여러 호출이 된다.
+
+    그래서 헬퍼를 거치지 않고 원시 출력에서 **줄 전체**를 찾는다 - 부분
+    문자열로는 안 된다(`프롬프트 문자 system 3,150`이 `"15"`를 품는다).
+    """
+    src = _srt_with_cues(tmp_path / "hundred.srt", 100)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1"))
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "  Tier 1 재번역 요청 최대 15회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 3)"
+        in result.output.splitlines()
+    ), result.output
