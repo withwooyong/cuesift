@@ -286,7 +286,7 @@ CLI:  counting = CountingProvider(real_provider)
 | `--tier1` + `--review-threshold` | **2** | D9 |
 | `--tier1` + 트리아지 정책 없음 | **2** | `budget_ratio`가 필수 인자다 |
 | `--tier1 --tier1-max-ratio 0.0` | **2** | 라이브러리가 `0.0`을 "껐다"로 정의한다. 스위치와 모순 |
-| `samples × max_ratio > 0.3` | **2** | §6.1. 오류 메시지에 **곱과 한도를 함께 적는다** — 어느 쪽을 줄여야 하는지 알 수 없으면 사용자는 임의로 고른다 |
+| `samples × max_ratio ≥ 0.3` | **2** | §6.1. **경계를 포함한다** — 곱이 정확히 `0.30`인 조합(`2 × 0.15` · `30 × 0.01`)도 거부된다. 오류 메시지에 **곱과 한도를 함께 적는다** — 어느 쪽을 줄여야 하는지 알 수 없으면 사용자는 임의로 고른다 |
 | `samples < 2` · `temperature <= 0` | **2** | `Tier1Context.__post_init__`이 이미 던진다. CLI가 옵션 이름을 붙여 다시 낸다 |
 | Tier 1 실행 중 `FatalProviderError` | **69** | D14 · §3.4. 지금은 잡는 절이 없어 traceback이 **exit 1**(= "규격 위반 발견")로 오보된다 |
 | Tier 1 실행 중 맨 `ProviderError` | **69** | 번역 경로의 "마지막 그물"(`cli.py:1159`)과 대칭. 계약을 어기는 서드파티 구현이 파이프라인을 죽이는 것보다 낫다(NFR-5) |

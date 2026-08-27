@@ -428,11 +428,12 @@ $ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --dry-run
 ##### 후보가 0개일 수 있습니다 — 그때는 사유를 냅니다
 
 `floor(세그먼트 수 × max_ratio)`가 후보 수이므로, 세그먼트가 `1/max_ratio`보다 적으면
-후보가 0개가 됩니다. **조용히 넘어가지 않고 이유를 찍습니다** — 유료 계층이 통째로 안 돌았는데
+후보가 0개가 됩니다. 아래는 **3큐짜리 다른 파일**(`short.ko.srt`)입니다 — 위 dry-run의
+`ep01.ko.srt`는 26큐라 후보가 1개 나옵니다. **조용히 넘어가지 않고 이유를 찍습니다** — 유료 계층이 통째로 안 돌았는데
 화면이 같으면 사용자는 Tier 1이 돈 줄로 읽습니다.
 
 ```text
-$ cuesift translate ep01.ko.srt --to en --review-budget 30% --tier1
+$ cuesift translate short.ko.srt --to en --review-budget 30% --tier1
 [en] Tier 1: 세그먼트 수(3)에 비해 max_ratio(0.05)가 작아 Tier 1 상한이 내림(floor)으로 0이 됐다 (select_tier1_candidates 독스트링 - n < 1/max_ratio)
 ```
 
@@ -441,8 +442,19 @@ $ cuesift translate ep01.ko.srt --to en --review-budget 30% --tier1
 
 ##### Tier 1 토큰은 `review.json`에 합산됩니다 (FR-7.4)
 
-`--tier1`을 켠 실행의 `cost.includes`는 `["translation", "tier1"]`이 됩니다. 끈 실행은
-`["translation"]` 그대로입니다 — **목록이 곧 그 숫자가 무엇을 덮는지에 대한 진술입니다.**
+`cost.includes`는 **스위치가 아니라 "그 계층이 실제로 돌았나"를 말합니다.** 경우는 둘이 아니라
+셋입니다.
+
+| 실행 | `cost.includes` |
+|---|---|
+| `--tier1`이 없다 | `["translation"]` |
+| `--tier1`이 있고 Tier 1이 돌았다 | `["translation", "tier1"]` |
+| `--tier1`이 있는데 **번역이 전량 실패했다** | `["translation"]` — Tier 1은 한 번도 안 돕니다 |
+
+**셋째 줄을 "스위치가 안 먹었다"로 읽지 마십시오.** 번역이 전부 실패하면 트리아지에 넣을
+세그먼트가 없어 Tier 1까지 가지 못하고, 그때 `"tier1"`을 실으면 목록이 **안 쓴 비용을
+셌다고** 거짓말합니다 — `calls`가 0이라 수치는 부풀지 않고 화면에도 신호가 남지 않는
+종류의 거짓말입니다. **목록이 곧 그 숫자가 무엇을 덮는지에 대한 진술입니다.**
 
 **Tier 1 프로바이더가 죽으면 종료 코드 69입니다.** 번역 파일은 이미 나갔고 트리아지만 못
 돈 상태이며, 화면 문구에 `Tier 1`이 들어가 번역 경로의 69와 구별됩니다.
@@ -542,7 +554,7 @@ cuesift translate ep01.ko.srt --to en --review-budget 30% --review-out reports
 | **`segments[]`에는 선별된 것만** 담긴다 | FR-7.2가 "검수 **대상** 세그먼트 목록"입니다. 분모는 `summary`가 따로 냅니다 |
 | **세그먼트 수가 셋**이다 (`total`·`triaged`·`excluded_failures`) | `total = triaged + excluded`가 **파일 안에서 검산됩니다.** 하나로 두면 `review_ratio`의 분모가 무엇인지 알 수 없고, 그 값이 위 "실측" 절 배수의 분모입니다 |
 | **`policy.value`는 비율이지 퍼센트가 아니다** | `30%`는 `0.3`으로 실립니다. 화면 표시는 `× 100`을 거치므로 **반대 방향**입니다 |
-| **`cost.includes`가 집계 범위를 밝힌다** | 위 예시는 Tier 1을 끈 실행이라 `["translation"]`입니다. `--tier1`을 켜면 `["translation", "tier1"]`이 되고 토큰도 합산됩니다(FR-7.4) — **목록이 곧 그 숫자가 무엇을 덮는지에 대한 진술입니다** |
+| **`cost.includes`가 집계 범위를 밝힌다** | 위 예시는 Tier 1을 끈 실행이라 `["translation"]`입니다. **판정 기준은 스위치가 아니라 "그 계층이 실제로 돌았나"입니다** — `--tier1`을 켜도 번역이 전량 실패하면 Tier 1까지 가지 못해 `["translation"]`입니다(경우 셋은 위 Tier 1 절의 표). 돌았으면 `["translation", "tier1"]`이 되고 토큰도 합산됩니다(FR-7.4) |
 | **`cost.basis`와 `cost.tokens_reported`** | `basis`는 계층마다 **어떻게 셌나**를 밝힙니다(`cached-included` = 캐시 적중분 포함 · `sent-only` = 실제 전송분만). `tokens_reported`가 `false`면 `prompt_tokens: 0`은 "안 썼다"가 아니라 **"모른다"**입니다 — usage를 내지 않는 로컬 백엔드가 있습니다 |
 
 **통화 환산 비용(`estimated_usd`)은 넣지 않습니다.** 토큰당 단가가 모델·프로바이더마다
