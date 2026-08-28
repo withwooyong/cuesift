@@ -15,11 +15,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import html
+import os
 from pathlib import Path
 from string import Template
 
+from cuesift.report.highlight import split_spans
 from cuesift.report.models import TriageOutcome
+from cuesift.segment import Segment, SegmentRisk, Signal
 
 _CSS = """
 :root { color-scheme: light dark; }
@@ -34,6 +38,15 @@ h1 { font-size: 1.25rem; margin: 0 0 1rem; }
 .summary dt { font-size: 0.8rem; opacity: 0.7; }
 .summary dd { margin: 0; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
 .meta { margin: 0.75rem 0 0; font-size: 0.85rem; opacity: 0.7; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td {
+  border-bottom: 1px solid currentColor; padding: 0.5rem;
+  text-align: left; vertical-align: top;
+}
+th { font-size: 0.75rem; opacity: 0.7; }
+td.tc, td.score, td.id { white-space: nowrap; font-variant-numeric: tabular-nums; }
+tr.seg[data-hardfail="1"] td.score { font-weight: 700; }
+mark { background: Highlight; color: HighlightText; padding: 0 0.1em; border-radius: 2px; }
 """
 
 # Task 7의 필터가 채운다. 빈 문자열이어도 `<script></script>`는 그대로 나가는데,
@@ -73,6 +86,24 @@ _SUMMARY = Template(
 </section>"""
 )
 
+_TABLE = Template(
+    """<table>
+<thead><tr><th>ID</th><th>시각</th><th>위험도</th><th>원문</th><th>번역</th><th>사유</th></tr></thead>
+<tbody id="rows">$rows</tbody>
+</table>"""
+)
+
+_ROW = Template(
+    """<tr class="seg" data-hardfail="$hardfail" data-signals="$signals">
+<td class="id">$id</td>
+<td class="tc">$timecode</td>
+<td class="score">$score</td>
+<td class="src">$source</td>
+<td class="tgt">$target</td>
+<td class="why">$reasons</td>
+</tr>"""
+)
+
 
 def esc(value: object) -> str:
     """HTML 이스케이프. 속성에도 들어가므로 따옴표까지 변환한다.
@@ -107,6 +138,67 @@ def _summary_html(outcome: TriageOutcome) -> str:
     )
 
 
+def _timecode(ms: int) -> str:
+    """밀리초를 `HH:MM:SS`로. 검수자가 자막 편집기에서 그 자리를 찾는 데 쓴다.
+
+    **세 항이 전부 필요하다.** 강연 자막은 한 시간을 넘으므로 `//3600`을 지우면
+    두 번째 시간대의 자막이 전부 첫 시간대의 자리를 가리킨다 - 검수자가 그
+    자리를 못 찾으면 리포트의 존재 이유가 사라진다. `% 3600`이 없으면 분이
+    60을 넘어 `01:62:03` 같은 값이 나간다.
+    """
+    total = ms // 1000
+    return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def _highlighted(text: str, signals: list[Signal], side: str) -> str:
+    """한쪽 텍스트를 구간별로 칠한다 (FR-7.3 · 설계 D7).
+
+    **이스케이프는 분할 뒤에 조각 단위로 건다.** `html.escape`는 길이를
+    보존하지 않으므로(`<` 1자 -> `&lt;` 4자) 먼저 걸면 오프셋이 전부
+    어긋난다 - 그리고 **예외가 나지 않는다.** 어긋난 오프셋도 유효한
+    슬라이스라 엉뚱한 구간이 조용히 칠해진다.
+
+    자막에 태그가 들어오는 것은 가정이 아니다 - `struct.tag_lost`가 태그를
+    세고 있는 것이 그 증거다.
+
+    **`span.side` 걸러내기를 빼면 반대쪽 칸의 오프셋으로 이 칸을 칠한다.**
+    길이가 우연히 맞으면 유효한 슬라이스라 역시 예외가 나지 않는다.
+    """
+    pairs = [(sig.name, span) for sig in signals for span in sig.spans if span.side == side]
+    return "".join(
+        esc(frag.text)
+        if not frag.signals
+        else f'<mark data-sig="{esc(" ".join(frag.signals))}">{esc(frag.text)}</mark>'
+        for frag in split_spans(text, pairs)
+    )
+
+
+def _row_html(risk: SegmentRisk, segment: Segment) -> str:
+    """세그먼트 하나. `SegmentRisk`와 `Segment`를 조인한다 - `_segment_doc`의 형제다.
+
+    **`data-*` 둘은 JS가 읽는 계약이다.** 파이썬이 보장하는 것은 이 속성이
+    outcome과 일치한다는 것까지고, 필터 동작 자체는 live로 확인한다(설계 D3).
+
+    `signals`를 정렬하는 것은 재현성(NFR-3)이다 - 정렬을 빼면 파이썬의 문자열
+    해시 무작위화가 같은 입력에 다른 HTML을 내 diff가 무의미해진다.
+
+    **`target_text`의 `or ""`를 빼면 안 된다.** `None`은 `esc(None)`을 거쳐
+    문자열 `"None"`이 되는데, 그것은 예외가 아니라 화면에 그럴듯하게 찍히는
+    거짓 번역문이다.
+    """
+    names = sorted({sig.name for sig in risk.signals})
+    return _ROW.substitute(
+        hardfail="1" if risk.hard_fail else "0",
+        signals=esc(" ".join(names)),
+        id=esc(segment.id),
+        timecode=_timecode(segment.start_ms),
+        score=f"{risk.risk_score:.2f}",
+        source=_highlighted(segment.source_text, risk.signals, "source"),
+        target=_highlighted(segment.target_text or "", risk.signals, "target"),
+        reasons=esc(" · ".join(risk.reasons)) or "&nbsp;",
+    )
+
+
 def build_html(outcome: TriageOutcome) -> str:
     """트리아지 결과를 단일 파일 HTML로 만든다 (FR-7.3).
 
@@ -116,14 +208,24 @@ def build_html(outcome: TriageOutcome) -> str:
     **치환된 값을 다시 `substitute`에 넣지 않는다.** `Template`은 템플릿의 `$`만
     보고 값은 재스캔하지 않으므로, 이 순서에서는 자막 본문의 `$100`이 안전하다.
     조립을 한 겹 더 감싸면 그 자막이 `KeyError`나 엉뚱한 치환이 된다.
+
+    **행은 `outcome.selected`로 만든다** - `review.json`의 `segments[]`와 같은
+    집합이다(설계 D3·D4). `risks` 전체를 돌면 예산 밖으로 밀린 것까지 화면에
+    올라와 "검수 대상" 칸의 수치와 행 개수가 갈린다.
+
+    **조인은 위치가 아니라 id로 한다.** `selected`는 걸러낸 부분집합이라
+    `segments`와 순서가 어긋나고, 위치로 맞추면 **다른 세그먼트의 본문이 다른
+    세그먼트의 위험도와 함께** 조용히 나간다.
     """
+    by_id = {seg.id: seg for seg in outcome.segments}
+    rows = "".join(_row_html(risk, by_id[risk.segment_id]) for risk in outcome.selected)
     return _SHELL.substitute(
         title=f"검수 리포트 · {esc(outcome.source_lang)} -&gt; {esc(outcome.target_lang)}",
         css=_CSS,
         js=_JS,
         summary=_summary_html(outcome),
         filters="",
-        table="",
+        table=_TABLE.substitute(rows=rows),
     )
 
 
@@ -136,6 +238,40 @@ def write_html(outcome: TriageOutcome, path: Path) -> None:
     **`encoding="utf-8"`을 생략하면 안 된다.** 윈도우의 기본은 `cp949`라
     문서가 선언한 `charset="utf-8"`과 어긋나는데, 파일은 정상 생성되고 종료
     코드도 0이라 브라우저에서만 깨져 보인다.
+
+    **원자성도 `write_review`와 같은 계약이다.** 두 산출물이 같은
+    `--review-out`으로 나가는데 한쪽만 원자적이면, 같은 실패에서 한 파일은
+    보존되고 다른 파일은 파괴된다 - 사용자가 그 차이를 알 방법이 없다.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(build_html(outcome), encoding="utf-8")
+    # **직렬화를 끝내고 나서 연다.** `build_html`이 던지면 파일에 손을 대기
+    # 전이어야 한다.
+    text = build_html(outcome)
+    # **임시 파일에 쓰고 `os.replace`로 갈아 끼운다** - `write_text`는 먼저
+    # truncate하며 열고 **그 다음에** 인코딩하므로, 서로게이트(`\ud800`)가 섞인
+    # 자막이 오면 재실행에서 지난 실행의 정상 리포트가 **0바이트로 파괴된다**
+    # (`json_report.py`의 실측 근거가 그것이다). 자막 본문이 이 문자열에
+    # 들어오는 것은 Task 6부터다 - Task 5까지는 언어 코드·규격 이름·정책
+    # 라벨뿐이라 도달 경로가 없었고, 게이트를 세울 수 없는 코드를 미리 넣지
+    # 않았다.
+    #
+    # **같은 디렉터리에 둬야 한다.** `os.replace`는 같은 파일시스템 안에서만
+    # 원자적이고 `tempfile.gettempdir()`은 다른 볼륨일 수 있다.
+    # **PID를 이름에 넣는 것은 동시 실행 때문이다** - 고정 이름이면 두
+    # 프로세스가 같은 임시 파일을 밟는다.
+    #
+    # **`newline="\n"`이 없으면 줄바꿈이 플랫폼마다 갈린다.** 텍스트 모드의
+    # 기본값은 `\n`을 `os.linesep`으로 번역하므로 Windows에서는 CRLF가, Linux
+    # CI에서는 LF가 나간다 - 같은 입력이 다른 바이트를 낸다(NFR-3).
+    #
+    # **`finally`의 `unlink`를 `contextlib.suppress(OSError)`로 감싼다.** 감싸지
+    # 않으면 정리 실패가 진행 중이던 예외를 **대체**해, 호출자가
+    # `UnicodeEncodeError` 대신 `PermissionError`를 보고 다른 종료 코드로
+    # 분류한다.
+    tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)

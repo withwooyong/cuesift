@@ -9,10 +9,7 @@ import pytest
 
 from cuesift.report import build_html, write_html
 from cuesift.report.models import TriageOutcome
-from cuesift.segment import Segment, SegmentRisk
-
-# `Signal`·`Span`은 Task 6에서 쓴다. 지금 import하면 ruff의 F401(미사용)에
-# 걸려 `ruff check .`가 실패한다 - 그때 함께 더한다.
+from cuesift.segment import Segment, SegmentRisk, Signal, Span
 
 
 def _outcome(
@@ -255,3 +252,397 @@ def test_write_html이_한국어를_utf8로_쓴다(tmp_path: Path) -> None:
     write_html(_outcome(policy_label="예산 10% · 한국어"), path)
 
     assert "한국어" in path.read_text(encoding="utf-8")
+
+
+def _risk_with_span(segment_id: str, name: str, start: int, end: int, side: str) -> SegmentRisk:
+    """구간 하나를 가진 hard fail 위험. 하이라이트 테스트의 공용 픽스처다."""
+    return SegmentRisk(
+        segment_id=segment_id,
+        signals=[
+            Signal(
+                name=name,
+                tier=0,
+                score=1.0,
+                hard_fail=True,
+                spans=(Span(start=start, end=end, side=side),),
+            )
+        ],
+        risk_score=1.0,
+        hard_fail=True,
+        selected=True,
+        reasons=[name],
+    )
+
+
+def _marked(html_out: str) -> str:
+    """첫 `<mark>`가 감싼 텍스트. 속성이 붙어 있어도 본문만 꺼낸다."""
+    return html_out.split("<mark", 1)[1].split(">", 1)[1].split("</mark>", 1)[0]
+
+
+def test_태그가_있는_원문에서_하이라이트가_어긋나지_않는다() -> None:
+    """**이 계획의 최우선 게이트다** (설계 D7 · §10.1).
+
+    `html.escape`는 길이를 보존하지 않는다 - `<`(1자)가 `&lt;`(4자)가 된다.
+    이스케이프를 분할보다 먼저 하면 오프셋이 전부 밀리는데 **예외는 나지
+    않는다.** 엉뚱한 구간이 조용히 칠해진다.
+
+    자막에 태그가 들어오는 것은 가정이 아니라 사실이다 - `struct.tag_lost`가
+    태그를 세고 있다.
+    """
+    source = "He said <i>2024</i> loudly"
+    # **이 단언이 픽스처의 게이트다.** 계획서 초안은 `[12, 16)`을 적었는데
+    # `"He said "`가 8자라 실제 자리는 `[11, 15)`였다 - 이 줄이 없었다면 아래
+    # 실패가 "오프셋을 잘못 적었다"가 아니라 "D7을 어겼다"로 읽혔다.
+    assert source[11:15] == "2024"
+
+    seg = Segment(
+        id="s1",
+        index=0,
+        start_ms=0,
+        end_ms=1000,
+        source_text=source,
+        target_text="크게 말했다",
+    )
+    risk = _risk_with_span("s1", "struct.number_missing", 11, 15, "source")
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert "<mark" in html_out
+    # 칠해진 것이 2024여야 한다. 이스케이프를 먼저 걸었다면 "&gt;20" 근처가 칠해진다.
+    assert _marked(html_out) == "2024"
+
+
+def test_원문의_태그가_이스케이프되어_실행되지_않는다() -> None:
+    """자막 원문이 그대로 마크업이 되면 안 된다."""
+    seg = Segment(
+        id="s1",
+        index=0,
+        start_ms=0,
+        end_ms=1000,
+        source_text="<script>alert(1)</script>",
+        target_text="a",
+    )
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert "<script>alert(1)</script>" not in html_out
+    assert "&lt;script&gt;" in html_out
+
+
+def test_번역문의_태그도_이스케이프된다() -> None:
+    """원문만 이스케이프하는 변이가 **원문 테스트만으로는 생존한다.**
+
+    `_row_html`은 두 칸을 각각 부르므로 한쪽만 걸어도 다른 쪽은 그대로 나간다.
+    번역문은 LLM 출력이라 원문보다 예측이 어렵다.
+    """
+    seg = Segment(
+        id="s1",
+        index=0,
+        start_ms=0,
+        end_ms=1000,
+        source_text="가",
+        target_text="<img src=x onerror=alert(1)>",
+    )
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert "<img src=x" not in html_out
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html_out
+
+
+def test_구간이_없는_신호는_하이라이트를_만들지_않는다() -> None:
+    """신호 10종 중 7종은 구간 개념이 성립하지 않는다 (스펙 §3.2).
+
+    빈 것과 아직 안 만든 것을 구분할 필요가 없다 - 배지로만 보여준다.
+    """
+    seg = Segment(
+        id="s1", index=0, start_ms=0, end_ms=1000, source_text="가나다", target_text="abc"
+    )
+    risk = SegmentRisk(
+        segment_id="s1",
+        signals=[Signal(name="length.ratio", tier=0, score=0.8)],
+        risk_score=0.8,
+        hard_fail=False,
+        selected=True,
+    )
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert "<mark" not in html_out
+    assert "length.ratio" in html_out
+
+
+def test_side가_source면_원문_칸만_칠한다() -> None:
+    """`Span.side`가 어느 칸을 칠할지 가르는 유일한 판별자다."""
+    seg = Segment(
+        id="s1", index=0, start_ms=0, end_ms=1000, source_text="2024년", target_text="the year"
+    )
+    risk = _risk_with_span("s1", "struct.number_missing", 0, 4, "source")
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert html_out.count("<mark") == 1
+    # **칸까지 봐야 한다.** 개수만 세면 두 칸을 맞바꾼 변이가 통과한다 -
+    # 양쪽 텍스트가 각각 유효 오프셋을 가지면 개수가 그대로 1이다.
+    assert '<td class="src"><mark' in html_out
+
+
+def test_side가_target이면_번역문_칸을_칠한다() -> None:
+    seg = Segment(
+        id="s1",
+        index=0,
+        start_ms=0,
+        end_ms=1000,
+        source_text="중요",
+        target_text="<b>important</b>",
+    )
+    risk = _risk_with_span("s1", "struct.tag_lost", 0, 3, "target")
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert html_out.count("<mark") == 1
+    assert '<td class="tgt"><mark' in html_out
+    # 칠해진 것이 `<b>`여야 한다 - 이스케이프 순서가 번역문 칸에서도 같다.
+    assert _marked(html_out) == "&lt;b&gt;"
+
+
+def test_선별되지_않은_세그먼트는_행이_없다() -> None:
+    """선별된 것만 담는다 (설계 D4 · review.json의 D3와 같은 집합)."""
+    segs = [
+        Segment(id=f"s{i}", index=i, start_ms=0, end_ms=1000, source_text="가", target_text="a")
+        for i in range(3)
+    ]
+    risks = [
+        SegmentRisk(
+            segment_id=f"s{i}", signals=[], risk_score=0.5, hard_fail=False, selected=i == 0
+        )
+        for i in range(3)
+    ]
+    html_out = build_html(_outcome(risks=risks, segments=segs))
+
+    assert html_out.count('<tr class="seg"') == 1
+
+
+def test_행이_짝이_맞는_세그먼트와_조인된다() -> None:
+    """**위치가 아니라 id로 조인한다.**
+
+    선별된 것이 첫 번째면 위치 조인과 id 조인의 결과가 같아 구별되지 않는다 -
+    앞의 테스트가 정확히 그 배치다. 선별을 **마지막**에 두면 갈린다.
+    """
+    texts = ["원숭이", "너구리", "다람쥐"]
+    segs = [
+        Segment(id=f"s{i}", index=i, start_ms=0, end_ms=1000, source_text=t, target_text="a")
+        for i, t in enumerate(texts)
+    ]
+    risks = [
+        SegmentRisk(
+            segment_id=f"s{i}", signals=[], risk_score=0.5, hard_fail=False, selected=i == 2
+        )
+        for i in range(3)
+    ]
+    html_out = build_html(_outcome(risks=risks, segments=segs))
+
+    assert "다람쥐" in html_out
+    assert "원숭이" not in html_out
+    assert '<td class="id">s2</td>' in html_out
+
+
+def test_행이_타임코드를_읽을_수_있게_담는다() -> None:
+    """검수자가 자막 편집기에서 그 자리를 찾아야 한다."""
+    seg = Segment(
+        id="s1", index=0, start_ms=192000, end_ms=195000, source_text="가", target_text="a"
+    )
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert "00:03:12" in html_out
+
+
+def test_타임코드가_한_시간을_넘겨도_맞는다() -> None:
+    """**192초짜리 하나로는 시(時) 항이 재어지지 않는다.**
+
+    `//3600`을 지운 변이도, `% 3600`을 지운 변이도 3분 12초에서는 같은 값을
+    낸다. 강연 자막은 한 시간을 넘고, 그때 타임코드가 틀리면 검수자가 그
+    자리를 못 찾는다 - 리포트의 존재 이유가 사라진다.
+    """
+    seg = Segment(
+        id="s1", index=0, start_ms=3_723_000, end_ms=3_724_000, source_text="가", target_text="a"
+    )
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert '<td class="tc">01:02:03</td>' in html_out
+
+
+def test_행이_위험도를_소수점_둘째_자리로_담는다() -> None:
+    """점수가 없으면 검수자가 큐의 순서를 신뢰할 근거를 잃는다.
+
+    0.5·1.0 같은 값은 요약의 다른 수치와 겹쳐 우연히 통과한다 - 겹치지 않는
+    값을 쓴다(Task 5 ②가 배운 것과 같다).
+    """
+    seg = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="가", target_text="a")
+    risk = SegmentRisk(
+        segment_id="s1", signals=[], risk_score=0.4237, hard_fail=False, selected=True
+    )
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert '<td class="score">0.42</td>' in html_out
+
+
+def test_행이_선별_사유를_담는다() -> None:
+    """FR-6.4. **사유 없이는 검수자가 무엇을 볼지 모른다.**
+
+    `data-signals`와 다른 집합이다 - 사유는 0점 신호를 담지 않는다
+    (`fuse.py`: "0점 신호를 사유에 넣으면 리포트가 거짓말한다").
+    """
+    seg = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="가", target_text="a")
+    risk = SegmentRisk(
+        segment_id="s1",
+        signals=[],
+        risk_score=0.5,
+        hard_fail=False,
+        selected=True,
+        reasons=["용어집 위반", "숫자 누락"],
+    )
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert '<td class="why">용어집 위반 · 숫자 누락</td>' in html_out
+
+
+def test_행의_신호_이름은_정렬해_담는다() -> None:
+    """NFR-3(재현성). 같은 입력이 다른 HTML을 내면 diff가 무의미해진다.
+
+    **이름이 넷이어야 한다.** 파이썬이 문자열 해시를 프로세스마다
+    무작위화하므로 `sorted` 제거 변이가 집합 순회 순서만으로 통과할 수 있다 -
+    Task 4의 실측에서 둘이면 20회 중 2회 생존, 넷이면 0회였다.
+    """
+    seg = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="가", target_text="a")
+    names = ["struct.tag_lost", "glossary.miss", "length.ratio", "banned.term"]
+    risk = SegmentRisk(
+        segment_id="s1",
+        signals=[Signal(name=n, tier=0, score=0.5) for n in names],
+        risk_score=0.5,
+        hard_fail=False,
+        selected=True,
+    )
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert 'data-signals="banned.term glossary.miss length.ratio struct.tag_lost"' in html_out
+
+
+@pytest.mark.parametrize(("hard_fail", "expected"), [(True, "1"), (False, "0")])
+def test_행이_hard_fail_여부를_속성으로_담는다(hard_fail: bool, expected: str) -> None:
+    """**JS가 읽는 계약이다** (설계 D3).
+
+    파이썬이 보장하는 것은 이 속성이 outcome과 일치한다는 것까지고, 필터
+    동작 자체는 Task 9에서 live로 확인한다. 여기서 재지 않으면 속성을
+    상수로 만든 변이가 **양쪽 모두** 생존한다.
+
+    **`data-hardfail="1"`만으로 단언하면 안 된다.** CSS의
+    `tr.seg[data-hardfail="1"] td.score`가 그 문자열을 문서에 **항상** 넣어
+    두므로 행을 통째로 지워도 참이 된다 - 실측으로 변이가 생존했다. 태그
+    문맥까지 묶어야 행을 재는 것이 된다(Task 5 ②의 `padding: 1.5rem`과 같다).
+    """
+    seg = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="가", target_text="a")
+    risk = SegmentRisk(
+        segment_id="s1", signals=[], risk_score=0.5, hard_fail=hard_fail, selected=True
+    )
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert f'<tr class="seg" data-hardfail="{expected}"' in html_out
+
+
+def test_번역문이_없는_세그먼트도_행이_나온다() -> None:
+    """`target_text`는 `None`이 될 수 있다 (`segment/models.py`).
+
+    `or ""`를 빼면 `esc(None)`이 문자열 **"None"** 을 내는데, 그것은 예외가
+    아니라 화면에 그럴듯하게 찍히는 거짓 번역문이다.
+    """
+    seg = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="가", target_text=None)
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert '<td class="tgt"></td>' in html_out
+    assert "None" not in html_out
+
+
+def test_세그먼트_id가_이스케이프된다() -> None:
+    """id는 자막 파일에서 온다 - 우리가 만든 값이 아니다."""
+    seg = Segment(id='s"1<x>', index=0, start_ms=0, end_ms=1000, source_text="가", target_text="a")
+    risk = SegmentRisk(
+        segment_id='s"1<x>', signals=[], risk_score=1.0, hard_fail=True, selected=True
+    )
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert "<x>" not in html_out
+    assert "s&quot;1&lt;x&gt;" in html_out
+
+
+def test_자막_본문의_달러_기호가_치환으로_해석되지_않는다() -> None:
+    """`$table`이 값이 아니라 **템플릿**에 있을 때만 치환된다.
+
+    행 문자열을 다시 `substitute`에 넣으면 그 순간 이 성질이 깨진다 -
+    자막의 `$100`이 `KeyError`나 엉뚱한 치환이 된다.
+    """
+    seg = Segment(
+        id="s1",
+        index=0,
+        start_ms=0,
+        end_ms=1000,
+        source_text="$table $summary $100",
+        target_text="a",
+    )
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+    html_out = build_html(_outcome(risks=[risk], segments=[seg]))
+
+    assert "$table $summary $100" in html_out
+
+
+def test_write_html이_실패해도_기존_리포트를_보존한다(tmp_path: Path) -> None:
+    """**Task 5가 Task 6으로 넘긴 미결이다.**
+
+    `write_text`는 먼저 truncate하며 열고 **그 다음에** 인코딩한다 - 그 순서가
+    방어선의 바깥이다. 서로게이트가 섞인 자막이 오면 재실행에서 지난 실행의
+    정상 리포트가 **0바이트로 파괴된다**(`write_review`의 실측 근거와 같다).
+
+    Task 5에서 맞추지 않은 이유는 도달 경로가 없었기 때문이다 - 요약에 실리는
+    넷은 언어 코드·규격 이름·정책 라벨이라 자막 본문이 아니었다. **세그먼트
+    본문이 들어오는 지금 그 경로가 생겼다.**
+    """
+    path = tmp_path / "report.html"
+    seg_ok = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="정상", target_text="a")
+    risk_ok = SegmentRisk(
+        segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True
+    )
+    write_html(_outcome(risks=[risk_ok], segments=[seg_ok]), path)
+    before = path.read_bytes()
+    assert before
+
+    seg_bad = Segment(
+        id="s1", index=0, start_ms=0, end_ms=1000, source_text="깨진 \ud800 자막", target_text="a"
+    )
+    with pytest.raises(UnicodeEncodeError):
+        write_html(_outcome(risks=[risk_ok], segments=[seg_bad]), path)
+
+    assert path.read_bytes() == before
+
+
+def test_write_html이_실패해도_임시_파일을_남기지_않는다(tmp_path: Path) -> None:
+    """남은 `.tmp`는 다음 실행에서 사람이 산출물로 오인한다."""
+    path = tmp_path / "report.html"
+    seg = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="\ud800", target_text="a")
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+
+    with pytest.raises(UnicodeEncodeError):
+        write_html(_outcome(risks=[risk], segments=[seg]), path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_write_html이_줄바꿈을_LF로_쓴다(tmp_path: Path) -> None:
+    """NFR-3(재현성). 텍스트 모드의 기본값은 `\\n`을 `os.linesep`으로 번역하므로
+    Windows는 CRLF를, Linux CI는 LF를 낸다 - **같은 입력이 다른 바이트를 낸다.**
+    `write_review`가 같은 이유로 `newline="\\n"`을 건다.
+    """
+    path = tmp_path / "report.html"
+    seg = Segment(id="s1", index=0, start_ms=0, end_ms=1000, source_text="가", target_text="a")
+    risk = SegmentRisk(segment_id="s1", signals=[], risk_score=1.0, hard_fail=True, selected=True)
+    write_html(_outcome(risks=[risk], segments=[seg]), path)
+
+    assert b"\r\n" not in path.read_bytes()
