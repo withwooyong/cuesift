@@ -1,7 +1,9 @@
 # Session Handoff
 
 > Last updated: 2026-08-28 (KST)
-> **브랜치 `feat/report-html`이 계획서 태스크 10개를 전부 끝냈다** — 커밋 21개.
+> **브랜치 `feat/report-html`이 계획서 태스크 10개를 전부 끝냈다.**
+> 커밋 수는 `git rev-list --count main..HEAD`로 센다 — 여기 숫자를 적으면
+> 그 문장을 고치는 커밋이 자기 자신을 틀리게 만든다(실측으로 한 번 겪었다).
 > **FR-7.3이 닫혔고 그것으로 WP5(출력)가 완료됐다.** v0.1 완료 개수 34 → **35**.
 > 다음 작업은 **WP6 나머지(FR-8.3~8.5)** — `transcribe` 배선·`cuesift.yaml` 로더·진행 표시.
 > **브랜치는 `origin`에 있고 PR은 아직 없다 — 즉 CI가 한 번도 돌지 않았다.**
@@ -88,7 +90,7 @@ grep -rn "Span(" --include=*.py src/ tests/
 ## 배포 절차 — **"푸시했다"와 "CI가 돌았다"는 다르다**
 
 **이 브랜치(`feat/report-html`)는 `origin`에 있지만 PR이 없어 CI가 돌지 않았다.**
-커밋 21개가 원격에 있고 `git rev-list --count origin/feat/report-html..HEAD`는 0이다.
+`git rev-list --count origin/feat/report-html..HEAD`가 0이다 — 미푸시 커밋이 없다.
 게이트는 로컬 5종만 통과한 상태다 — **로컬 venv는 3.14이고 CI는 3.11·3.12라 그
 통과가 CI 통과를 뜻하지 않는다.**
 
