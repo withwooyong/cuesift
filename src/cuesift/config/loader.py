@@ -77,6 +77,11 @@ def load_config(path: Path) -> Config:
     except yaml.YAMLError as exc:
         raise ValueError(f"{path}: YAML을 읽을 수 없다 - {exc}") from exc
     except RecursionError as exc:
+        # **PyYAML은 이것을 `YAMLError`로 감싸지 않는다** - `'['*5000`으로 실측했다.
+        # 잡지 않으면 미처리 `RecursionError`가 종료 코드 1로 나가고, 1은 이 저장소에서
+        # "규격 위반 발견"이라 설정 오류가 자막 오류로 둔갑한다.
+        # **테스트를 두지 않는 것은 의도다** - 재귀 한계가 파이썬 버전·플랫폼마다 달라
+        # 3.11~3.14 매트릭스에서 간헐 실패하는 게이트가 된다.
         raise ValueError(f"{path}: YAML 중첩이 너무 깊다") from exc
 
     if raw is None:
