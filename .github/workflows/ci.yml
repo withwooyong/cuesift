@@ -20,9 +20,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # requires-python은 >=3.11이지만, torch 계열 휠이 안정적으로
-        # 제공되는 버전만 검증 대상으로 삼는다.
-        python-version: ["3.11", "3.12"]
+        # **`pyproject.toml`의 `requires-python`과 같은 집합이어야 한다.**
+        # `>=3.11`이라 적어 놓고 3.11·3.12만 돌리면 3.13·3.14는 지원한다고
+        # 선언된 채 아무도 검사하지 않는다 - 검사하지 않는 것을 검사한다고
+        # 적으면 그 게이트는 없는 것보다 나쁘다. 개발자 로컬이 3.14라
+        # 그 하나만 우연히 돌고 있었고, 그것은 게이트가 아니다.
+        #
+        # 옛 판은 'torch 계열 휠이 안정적인 버전만'이라 적어 좁혔는데,
+        # **torch는 지금 의존성이 아니다**(런타임 4종: typer·pysubs2·
+        # pyyaml·httpx). WP9(STT)가 붙는 시점에 3.14 휠이 없으면 그때
+        # 이 목록과 `requires-python`을 **함께** 좁힌다 - 한쪽만 좁히면
+        # 선언과 검증이 다시 갈라진다.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v7
