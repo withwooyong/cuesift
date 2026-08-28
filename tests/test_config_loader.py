@@ -61,6 +61,32 @@ def test_후보가_없으면_후보절을_붙이지_않는다(tmp_path: Path) ->
     assert "가까운 키" not in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    ("yaml_text", "dotted", "child"),
+    [
+        ("spec: ko\n", "spec", "spec.profile"),
+        ("signals:\n  tier1: true\n", "signals.tier1", "signals.tier1.enabled"),
+        ("llm: http://h/v1\n", "llm", "llm.base_url"),
+    ],
+)
+def test_가지_키에_스칼라를_주면_원인을_말한다(
+    tmp_path: Path, yaml_text: str, dotted: str, child: str
+) -> None:
+    """**진단이 자기 자신을 제안하면 안 된다.**
+
+    이전 판은 `spec: ko`에 `모르는 키 'spec'. 가까운 키: spec`을 냈다 -
+    `difflib`이 자기 자신을 가장 가까운 후보로 골랐기 때문이다. 설계 D11이
+    `profiles_dir`을 `spec.profile`로 바꾼 직후라 `spec: ko`는 실제로 나올
+    오타인데, 사용자는 이미 맞게 쓴 키를 노려보게 된다.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        load_config(_write(tmp_path, yaml_text))
+    message = str(excinfo.value)
+    assert f"'{dotted}'의 값이 매핑이 아니다" in message
+    assert child in message
+    assert "모르는 키" not in message
+
+
 def test_지원하지_않는_provider를_거부한다(tmp_path: Path) -> None:
     path = _write(tmp_path, "llm:\n  provider: anthropic\n")
     with pytest.raises(ValueError, match="llm.provider"):
@@ -84,10 +110,15 @@ def test_weights는_기본값_위에_얹힌다(tmp_path: Path) -> None:
 
 
 def test_모르는_신호_이름을_거부한다(tmp_path: Path) -> None:
+    # **경로 접두사를 잃으면 최상위 키처럼 읽힌다.** 이전 판은 1-튜플을
+    # 넘겨 `모르는 키 'spec.violaton'`을 냈는데, 신호 이름 자체에 점이 있어
+    # 사용자는 그것을 `spec` 아래의 키로 읽는다.
     path = _write(tmp_path, "signals:\n  weights:\n    spec.violaton: 0.3\n")
     with pytest.raises(ValueError) as excinfo:
         load_config(path)
-    assert "가까운 키: spec.violation" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "모르는 키 'signals.weights.spec.violaton'" in message
+    assert "가까운 키: signals.weights.spec.violation" in message
 
 
 def test_숫자가_아닌_가중치를_거부한다(tmp_path: Path) -> None:
@@ -141,6 +172,15 @@ def test_targets가_문자열이면_그대로_쓴다(tmp_path: Path) -> None:
 def test_targets가_매핑이면_거부한다(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="targets는 목록이거나"):
         load_config(_write(tmp_path, "targets:\n  en: 1\n")).to_default_map()
+
+
+@pytest.mark.parametrize("literal", ["[en, null]", "[en, 1]", "[en, [ja]]"])
+def test_targets의_원소가_문자열이_아니면_거부한다(tmp_path: Path, literal: str) -> None:
+    # `str(item)`은 무엇이든 받아 `to="en,None"`을 만든다. `--to`는 검증 없이
+    # `_output_path`를 거쳐 **파일 이름 조각**이 되므로, 언어 코드 `None`으로
+    # 파일이 나가고 종료 코드는 0이다.
+    with pytest.raises(ValueError, match="targets의 원소가 문자열이 아니다"):
+        load_config(_write(tmp_path, f"targets: {literal}\n")).to_default_map()
 
 
 def test_cache_enabled가_no_cache로_뒤집힌다(tmp_path: Path) -> None:

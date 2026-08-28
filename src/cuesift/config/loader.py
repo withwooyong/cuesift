@@ -104,11 +104,30 @@ def _flatten(path: Path, raw: dict[object, object]) -> dict[tuple[str, ...], obj
                 out[here] = value
             elif here in ALLOWED_PATHS:
                 out[here] = value
-            elif here in BRANCH_PATHS and isinstance(value, dict):
+            elif here in BRANCH_PATHS:
+                if not isinstance(value, dict):
+                    # **실제 원인을 낸다.** 키는 맞고 값의 모양이 틀린 것이다.
+                    # 미지 키로 흘려보내면 `difflib`이 자기 자신을 후보로 골라
+                    # `모르는 키 'spec'. 가까운 키: spec`이 나가고, 사용자는
+                    # 이미 맞게 쓴 키를 노려보게 된다(설계 D11이 `profiles_dir`을
+                    # `spec.profile`로 바꾼 직후라 `spec: ko`는 실제로 나올 오타다).
+                    raise ValueError(_not_a_mapping(path, here))
                 stack.append((here, value))
             else:
                 raise ValueError(_unknown_key(path, here, ALLOWED_PATHS | BRANCH_PATHS))
     return out
+
+
+def _not_a_mapping(path: Path, here: tuple[str, ...]) -> str:
+    """가지 키에 스칼라가 온 경우의 진단. 하위 키를 함께 낸다 (설계 §6)."""
+    dotted = ".".join(here)
+    depth = len(here) + 1
+    children = sorted(
+        ".".join(p)
+        for p in ALLOWED_PATHS | BRANCH_PATHS
+        if len(p) == depth and p[: len(here)] == here
+    )
+    return f"{path}: '{dotted}'의 값이 매핑이 아니다. 하위 키: {', '.join(children)}"
 
 
 def _unknown_key(path: Path, here: tuple[str, ...], known: frozenset[tuple[str, ...]]) -> str:
@@ -180,11 +199,14 @@ def _read_weights(path: Path, raw: object) -> dict[str, float] | None:
         raise ValueError(f"{path}: signals.weights가 매핑이 아니다")
 
     merged = dict(DEFAULT_WEIGHTS)
-    known = frozenset((name,) for name in DEFAULT_WEIGHTS)
+    # **경로 접두사를 붙여야 한다.** 1-튜플을 넘기면 진단이 `모르는 키
+    # 'spec.violaton'`이 되는데, 신호 이름 자체에 점이 있어 사용자는 그것을
+    # `spec` 아래의 최상위 키로 읽는다.
+    known = frozenset((*_WEIGHTS_PATH, name) for name in DEFAULT_WEIGHTS)
     for key, value in raw.items():
         name = str(key)
         if name not in DEFAULT_WEIGHTS:
-            raise ValueError(_unknown_key(path, (name,), known))
+            raise ValueError(_unknown_key(path, (*_WEIGHTS_PATH, name), known))
         # `bool`을 먼저 막는다. `bool`은 `int`의 하위형이라 `float()`에
         # 통과하고, `true`가 1.0이 되면 "가중치를 껐다"고 믿은 사용자가
         # 1.0으로 검수받는다.

@@ -368,6 +368,30 @@ def test_실제_translate에서도_환경변수가_설정을_이긴다(
     assert "env-model" in result.stdout
 
 
+def test_실제_translate에서_설정의_base_url이_도착한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**환경변수를 치우고 설정만 남긴 e2e.**
+
+    바로 위 두 건은 환경변수가 이기는 것을 재므로, `ctx.default_map` 대입을
+    지워도 환경변수 값이 그대로 나와 **초록으로 남는다**(변이 실측). 설정의
+    값이 `translate` 본문까지 실제로 도달하는지는 여기서만 관측된다.
+    """
+    monkeypatch.delenv("CUESIFT_BASE_URL", raising=False)
+    monkeypatch.delenv("CUESIFT_MODEL", raising=False)
+    cfg = _config(tmp_path, "llm:\n  base_url: http://from-config\n  model: config-model\n")
+    target = _srt(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), "translate", str(target), "--to", "en", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "http://from-config" in result.stdout
+    assert "config-model" in result.stdout
+
+
 def test_실제_translate에서_CLI가_환경변수를_이긴다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

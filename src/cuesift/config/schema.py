@@ -16,7 +16,13 @@ def join_targets(value: object) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, list | tuple):
-        return ",".join(str(item) for item in value)
+        for item in value:
+            # **`str(item)`은 무엇이든 받는다.** `[en, null]`이 `"en,None"`이
+            # 되고, `--to`는 검증 없이 `_output_path`를 거쳐 파일 이름 조각이
+            # 되므로 언어 코드 `None`으로 파일이 나가고 종료 코드는 0이다.
+            if not isinstance(item, str):
+                raise ValueError(f"targets의 원소가 문자열이 아니다 ({item!r})")
+        return ",".join(value)
     raise ValueError("targets는 목록이거나 쉼표로 구분한 문자열이어야 한다")
 
 
