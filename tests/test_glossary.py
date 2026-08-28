@@ -2,7 +2,7 @@
 
 import pytest
 
-from cuesift.glossary import Glossary, GlossaryEntry, load_glossary
+from cuesift.glossary import Glossary, GlossaryEntry, load_glossary, term_offsets
 
 SAMPLE = """
 entries:
@@ -192,3 +192,56 @@ def test_terms_in_반환_순서는_용어집_등재_순이다() -> None:
     )
     found = g.terms_in("기후변화 대응은 탄소중립으로 간다")
     assert [e.source for e in found] == ["탄소중립", "기후변화"]
+
+
+# --- term_offsets: 원문 구간 (FR-7.3) ---
+
+
+def test_term_offsets_finds_all_occurrences() -> None:
+    """같은 용어가 여러 번 나오면 모두 찾는다."""
+    assert term_offsets("open source and open source", "open source") == [(0, 11), (16, 27)]
+
+
+def test_term_offsets_is_case_insensitive_but_keeps_original_offsets() -> None:
+    """대소문자를 무시하되 오프셋은 **원본 기준**이다 (FR-7.3 · 설계 D7).
+
+    `lower()`한 문자열에서 오프셋을 얻으면 원본과 어긋날 수 있다 - `str.lower()`는
+    길이를 보존하지 않는 경우가 있다(예: `İ`). 여기서는 대소문자가 다른 매칭에서도
+    반환된 오프셋으로 원본 문자열을 슬라이스했을 때 정확히 그 용어가 나와야 한다.
+    """
+    text = "OpenSource is here"
+    assert term_offsets(text, "opensource") == [(0, 10)]
+    assert text[0:10] == "OpenSource"
+
+
+def test_term_offsets_respects_the_same_word_boundary_as_the_judgement() -> None:
+    """`_contains_term`과 같은 경계 규칙을 쓴다.
+
+    ASCII 영숫자에 둘러싸인 것은 매치가 아니다. 규칙이 갈리면 위반으로 잡은
+    용어의 위치를 못 찾아 하이라이트가 조용히 빈다.
+    """
+    assert term_offsets("opensourceX is not a match", "opensource") == []
+
+
+def test_term_offsets_does_not_apply_boundary_to_cjk() -> None:
+    """CJK에는 경계를 적용하지 않는다.
+
+    `\b`가 CJK를 전부 깨뜨린 전례가 있다(CLAUDE.md). 한국어는 조사가 붙으므로
+    `오픈소스를`에서 `오픈소스`를 찾아야 한다.
+    """
+    assert term_offsets("오픈소스를 쓴다", "오픈소스") == [(0, 4)]
+
+
+def test_term_offsets_returns_positions_in_ascending_order() -> None:
+    """위치 순으로 낸다 (설계 D9 - review.json 배열 순서의 재현성).
+
+    **기대값을 하드코딩한다.** `offsets == sorted(offsets)`는 자기 자신과의
+    비교라 빈 리스트에서도, 구현이 항상 `[]`를 반환해도 통과한다 - 실제로
+    변이 검증에서 `term_offsets`가 `[]`를 내도 이 테스트만 살아남았다.
+    """
+    text = "a term b term c term"
+    offsets = term_offsets(text, "term")
+
+    assert len(offsets) == 3
+    assert offsets == [(2, 6), (9, 13), (16, 20)]
+    assert [text[s:e] for s, e in offsets] == ["term", "term", "term"]

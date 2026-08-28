@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from cuesift.report.highlight import Fragment, split_spans
+from cuesift.report.html_report import build_html, write_html
 from cuesift.report.json_report import build_review, write_review
 from cuesift.report.models import (
     COST_BASIS,
@@ -21,9 +23,13 @@ __all__ = [
     "COST_BASIS_VOCABULARY",
     "COST_INCLUDES_TRANSLATION",
     "CostScope",
+    "Fragment",
     "TriageOutcome",
+    "build_html",
     "build_review",
     "layer_tokens_reported",
     "resolve_cost_scope",
+    "split_spans",
+    "write_html",
     "write_review",
 ]

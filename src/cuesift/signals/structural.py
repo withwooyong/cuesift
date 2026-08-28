@@ -14,7 +14,7 @@ import re
 import unicodedata
 from collections import Counter
 
-from cuesift.segment import Segment, Signal
+from cuesift.segment import Segment, Signal, Span
 from cuesift.signals.base import SignalContext, register
 
 # 언어별 고유 문자 범위. 미번역 잔존 판정에 쓴다.
@@ -95,6 +95,32 @@ def _longest_consecutive_repeat(tokens: list[str]) -> tuple[int, str | None]:
     return best_count, best_unit
 
 
+def _number_matches(text: str) -> list[tuple[str, int, int]]:
+    """텍스트의 숫자를 (정규화된 값, 시작, 끝)으로 뽑는다.
+
+    **오프셋은 정규화 전 원본 기준이다.** 값은 NFKC 정규화와 천 단위 구분자
+    제거를 거치므로 원문 표기와 다르다(`５０` → `50`, `1,000` → `1000`).
+    값으로 원문 위치를 되찾으면 `str.find`가 -1을 내고 **예외 없이**
+    하이라이트만 빈다 — 검수자는 칠해지지 않은 것을 "문제 없음"으로 읽는다
+    (FR-7.3 · 설계 D8).
+
+    `_numbers`가 이 함수 위에 얹혀 있어 **추출 규칙이 하나다.** 둘로 갈리면
+    판정한 숫자와 칠하는 숫자가 어긋난다.
+    """
+    matches = []
+    for m in _NUMBER.finditer(text):
+        # **후행 쉼표를 구간에서 잘라낸다.** `_NUMBER`의 `[\\d,]*`는 천 단위
+        # 구분자를 살리려고 쉼표를 먹으므로 `"3, 4"`에서 `"3,"`까지 매치한다.
+        # 값은 어차피 쉼표를 전부 지워 `"3"`이 되는데 구간만 2글자로 남으면
+        # **`detail`이 말하는 것과 칠해지는 것이 어긋난다** — 검수자는 위험
+        # 구간에 섞인 문장 부호를 보고 무엇이 지적됐는지 되짚어야 한다.
+        # 값 자체는 바뀌지 않으므로 판정(hard_fail·score)은 그대로다.
+        raw = m.group().rstrip(",")
+        value = unicodedata.normalize("NFKC", raw).replace(",", "")
+        matches.append((value, m.start(), m.start() + len(raw)))
+    return matches
+
+
 def _numbers(text: str) -> list[str]:
     """텍스트의 숫자를 천 단위 구분자를 제거하고 NFKC 정규화해 뽑는다.
 
@@ -112,17 +138,33 @@ def _numbers(text: str) -> list[str]:
     아라비아 매핑에는 파서가 필요하고 `十分に`(≠ 10분)·`万一`(≠ 10001) 같은
     관용구에서 hard fail 신호에 새 오탐을 만든다.
     """
+    return [value for value, _, _ in _number_matches(text)]
+
+
+def _tag_matches(text: str) -> list[tuple[str, int, int]]:
+    """텍스트의 태그를 (정규화된 이름, 시작, 끝)으로 뽑는다.
+
+    이름 정규화는 `_tag_names`와 **같다** — 닫는 태그는 `/` 접두어, 소문자.
+    두 곳에 규칙을 따로 두면 손실로 **센** 태그와 **칠하는** 태그가 어긋나
+    판정과 하이라이트가 다른 말을 한다. 그래서 `_tag_names`를 이 함수 위에
+    얹는다(FR-7.3).
+
+    구간은 **태그 전체**다(`<font color="red">`). 이름만 덮으면 검수자가
+    어디까지가 그 태그인지 못 본다.
+    """
     return [
-        unicodedata.normalize("NFKC", m.group()).replace(",", "") for m in _NUMBER.finditer(text)
+        (
+            ("/" if m.group(0).startswith("</") else "") + m.group(1).lower(),
+            m.start(),
+            m.end(),
+        )
+        for m in _TAG.finditer(text)
     ]
 
 
 def _tag_names(text: str) -> Counter[str]:
     """텍스트의 태그를 이름 기준으로 센다. 닫는 태그는 `/` 접두어로 구분한다."""
-    return Counter(
-        ("/" if m.group(0).startswith("</") else "") + m.group(1).lower()
-        for m in _TAG.finditer(text)
-    )
+    return Counter(name for name, _, _ in _tag_matches(text))
 
 
 class Untranslated:
@@ -205,12 +247,12 @@ class NumberMissing:
     tier = 0
 
     def collect(self, seg: Segment, ctx: SignalContext) -> Signal | None:
-        source_numbers = _numbers(seg.source_text)
-        if not source_numbers:
+        source_matches = _number_matches(seg.source_text)
+        if not source_matches:
             return None
 
         target_numbers = set(_numbers(seg.target_text or ""))
-        missing = [n for n in source_numbers if n not in target_numbers]
+        missing = [(v, s, e) for v, s, e in source_matches if v not in target_numbers]
         if not missing:
             return None
 
@@ -222,13 +264,18 @@ class NumberMissing:
         #
         # 두 자리 이상(연도·금액·시각)은 단어로 적는 일이 거의 없으므로
         # hard fail을 유지한다.
-        multi_digit = any(len(n) > 1 for n in missing)
+        multi_digit = any(len(v) > 1 for v, _, _ in missing)
+
+        # **누락된 것만 칠한다.** 전부 칠하면 정상 번역된 숫자까지 위험
+        # 구간으로 보여 검수자가 헛짚는다. `finditer` 순서가 곧 위치 순이라
+        # 정렬이 필요 없다(설계 D9).
         return Signal(
             name=self.name,
             tier=0,
             score=1.0 if multi_digit else 0.5,
             hard_fail=multi_digit,
-            detail={"missing": missing},
+            spans=tuple(Span(start=s, end=e, side="source") for _, s, e in missing),
+            detail={"missing": [v for v, _, _ in missing]},
         )
 
 
@@ -239,17 +286,43 @@ class TagLost:
     tier = 0
 
     def collect(self, seg: Segment, ctx: SignalContext) -> Signal | None:
-        source_tags = _tag_names(seg.source_text)
-        target_tags = _tag_names(seg.target_text or "")
+        source_matches = _tag_matches(seg.source_text)
+        target_matches = _tag_matches(seg.target_text or "")
+        source_tags = Counter(name for name, _, _ in source_matches)
+        target_tags = Counter(name for name, _, _ in target_matches)
         if source_tags == target_tags:
             return None
 
         # 없던 태그가 생긴 것도 불일치다. LLM이 서식을 지어내는 사고가 있다.
+        #
+        # **양방향을 각각 칠한다** — 원문에서 사라진 것은 원문을, 번역문에만
+        # 생긴 것은 번역문을 가리킨다. 이 신호가 `Span.side`가 존재하는
+        # 이유의 실물이다(FR-7.3 · `Span` 독스트링). 다른 Tier 0 누락 신호는
+        # 언제나 source다.
+        #
+        # `Counter` 뺄셈은 음수를 버리므로 "부족한 만큼"만 남는다. 개수가
+        # 아니라 **이름 집합**으로 칠하는 이유는, 같은 이름이 3개 중 1개만
+        # 사라졌을 때 어느 것이 사라졌는지 알 방법이 없기 때문이다 —
+        # 그 이름의 태그를 모두 칠해 검수자가 세게 한다.
+        #
+        # 살아남은 태그는 칠하지 않는다. 전부 칠하면 멀쩡한 마크업까지
+        # 위험 구간으로 보여 검수자가 헛짚는다.
+        lost = set(source_tags - target_tags)
+        invented = set(target_tags - source_tags)
+
+        spans = [
+            Span(start=s, end=e, side="source") for name, s, e in source_matches if name in lost
+        ]
+        spans += [
+            Span(start=s, end=e, side="target") for name, s, e in target_matches if name in invented
+        ]
+
         return Signal(
             name=self.name,
             tier=0,
             score=1.0,
             hard_fail=True,
+            spans=tuple(spans),
             detail={"source": dict(source_tags), "target": dict(target_tags)},
         )
 
