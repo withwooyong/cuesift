@@ -36,6 +36,7 @@ from typing import IO, Annotated
 import typer
 
 from cuesift import __version__
+from cuesift.config import Config, load_config
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
 from cuesift.report import (
@@ -105,6 +106,11 @@ EXIT_BAD_INPUT = 66
 # 70("미구현·내부 오류")과 나누는 이유는 CI가 "아직 안 만든 기능"과
 # "LLM 서버가 401을 냈다"에 같은 대응을 하면 안 되기 때문이다.
 EXIT_UNAVAILABLE = 69
+
+# 자동 탐색은 현재 디렉터리 한 칸뿐이다(설계 D2). 상위로 올라가면 사용자가
+# 존재를 모르는 파일이 검수 기준을 바꾸고, 가중치와 hard fail 임계가 실린
+# 파일에서 그것은 Recall@Budget 수치를 조용히 오염시킨다.
+_DEFAULT_CONFIG_NAME = "cuesift.yaml"
 
 # 기본 캐시 위치. 프로젝트 디렉터리 안에 두는 것은 `.gitignore`에 한 줄로
 # 넣을 수 있고 작업물과 함께 옮겨지기 때문이다.
@@ -419,6 +425,7 @@ def _echo(message: str = "", *, err: bool = False) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -436,30 +443,77 @@ def main(
             "-c",
             # `--help`로 출력되는 문자열이므로 em dash를 쓰지 않는다(전역 제약).
             #
-            # **현재형으로 약속하지 않는다.** 이전 판은 "기본: ./cuesift.yaml"과
-            # "CLI 인자가 설정 파일보다 우선합니다"를 현재형으로 적었는데 둘 다 거짓이다 —
-            # `./cuesift.yaml`은 읽히지 않고 우선순위 해결도 존재하지 않는다.
-            help="설정 파일 경로 (FR-8.4). 아직 구현되지 않아 지정해도 무시됩니다. "
-            "구현되면 CLI 인자가 설정 파일보다 우선하게 됩니다.",
+            # **이제는 현재형이 참이다.** 자동 탐색과 우선순위 해결이 아래
+            # `_apply_config`에 있다. 미구현 문구를 남겨 두면 이번에는
+            # 반대 방향의 거짓말이 된다(설계 §4.3 함정 ③).
+            help="설정 파일 경로 (FR-8.4). 기본은 현재 디렉터리의 ./cuesift.yaml입니다. "
+            "CLI 인자가 설정 파일보다 우선합니다.",
         ),
     ] = None,
 ) -> None:
     """공통 옵션."""
     _harden_output_streams()
-    if config is not None:
-        # 설계 D12 — **조용한 무시는 이 저장소의 규율에 어긋난다.**
-        # 경고가 없으면 사용자는 자기 규격으로 검사됐다고 믿는데 실제로는 내장
-        # 기본값으로 검사되고 **종료 코드 0**이 나간다. 그것이 이 저장소가 1급으로
-        # 금지한 "검사하지 않고 통과하는 게이트"다.
-        #
-        # **`_harden_output_streams()` 뒤여야 한다.** 이 줄에 사용자가 준 경로가
-        # 그대로 실리므로, 하드닝 전에 쓰면 cp949로 인코딩할 수 없는 경로에서
-        # `UnicodeEncodeError`가 나고 종료 코드 1("규격 위반 발견")로 오보된다.
-        _echo(
-            f"경고: --config는 아직 구현되지 않았습니다 (FR-8.4). "
-            f"지정한 '{config}'는 무시되고 CLI 인자만 반영됩니다.",
-            err=True,
-        )
+    _apply_config(ctx, config)
+
+
+def _apply_config(ctx: typer.Context, config: Path | None) -> None:
+    """설정 파일을 읽어 `ctx`에 싣는다 (FR-8.4 · 설계 §4.2).
+
+    **우선순위 해결 코드를 쓰지 않는다.** click이 파라미터 **단위로**
+    `COMMANDLINE > DEFAULT_MAP > DEFAULT`를 해결한다(설계 D1 · P2). 손으로
+    병합하면 22개 옵션의 기본값을 전부 `None` 센티널로 옮겨야 하고, 그러면
+    `--help`의 기본값 표시가 사라진다.
+
+    **`_harden_output_streams()` 뒤여야 한다.** 출처 줄에 사용자가 준 경로가
+    그대로 실리므로, 하드닝 전에 쓰면 cp949로 인코딩할 수 없는 경로에서
+    `UnicodeEncodeError`가 나고 종료 코드 1("규격 위반 발견")로 오보된다.
+
+    **`typer.BadParameter`로 던지는 이유**는 `--spec`의 선례를 따르기
+    때문이다(설계 D10) - 설정 파일은 명령줄의 연장이므로 종료 코드가 2다.
+    66으로 보내면 "자막 파일이 깨졌다"로 오독된다.
+    """
+    if config is None:
+        # 자동 탐색은 현재 디렉터리 한 칸이다(설계 D2). `Path`가 상대라서
+        # 매 호출의 cwd를 본다 - 모듈 임포트 시점이 아니다.
+        candidate = Path(_DEFAULT_CONFIG_NAME)
+        if not candidate.is_file():
+            # 없으면 조용히 넘어간다. **이것이 정상 경로다** - 여기서
+            # 경고를 내면 설정 파일을 쓰지 않는 사용자가 매 실행마다
+            # stderr 한 줄을 받는다.
+            return
+        source = candidate
+    elif not config.is_file():
+        raise typer.BadParameter(f"{config}: 설정 파일이 없다", param_hint="--config")
+    else:
+        source = config
+
+    try:
+        cfg: Config = load_config(source)
+    except OSError as exc:
+        # `load_config`는 내용 오류를 전부 `ValueError`로 정규화하지만 읽기
+        # 자체의 실패(권한·잠금)는 `OSError`로 샌다. 여기서 받지 않으면
+        # 미처리 traceback이 종료 코드 1로 오보된다.
+        raise typer.BadParameter(f"{source}: {exc}", param_hint="--config") from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
+
+    try:
+        ctx.default_map = cfg.to_default_map()
+    except ValueError as exc:
+        # `targets`의 list->str 변환만이 여기서 실패할 수 있다(설계 §5 2행).
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
+
+    # `signals.weights`는 CLI 옵션이 아니라 `ctx.obj`로 간다(설계 D6).
+    # `fuse(weights=)`로 내려보내는 것은 다음 태스크의 몫이다.
+    ctx.obj = cfg
+
+    # **출처를 낸다**(설계 D7). click의 오류 메시지가 `Invalid value for
+    # '--review-format'`이라 그 옵션을 친 적 없는 사용자가 명령줄을
+    # 노려보게 된다. 자동 탐색(D2)이 있으면 특히 필요하다.
+    #
+    # **stderr다.** 산출물이 아니라 실행 조건 보고이므로
+    # `cuesift check ... > violations.txt`를 오염시키면 안 된다(설계 §7.1).
+    _echo(f"설정을 읽었다: {source}", err=True)
 
 
 def _resolve_llm(base_url: str | None, model: str | None) -> tuple[str, str, str | None]:
