@@ -79,7 +79,7 @@ npx --yes markdownlint-cli2
   - `LEAF_PATHS: frozenset[tuple[str, ...]]` — `("signals","weights")` 하나. 하위로 내려가지 않는다
   - `join_targets(value) -> str` · `negate(value) -> bool`
 
-- [ ] **Step 1: 상등 게이트 테스트를 쓴다**
+- [x] **Step 1: 상등 게이트 테스트를 쓴다**
 
 `tests/test_config_schema.py`:
 
@@ -130,12 +130,12 @@ def test_signals_weights는_잎이다() -> None:
     assert LEAF_PATHS == frozenset({("signals", "weights")})
 ```
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_config_schema.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'cuesift.config'`
 
-- [ ] **Step 3: `schema.py`를 쓴다**
+- [x] **Step 3: `schema.py`를 쓴다**
 
 ```python
 """`cuesift.yaml`의 키를 CLI 파라미터에 잇는 매핑표 (FR-8.4 · 설계 §5).
@@ -235,12 +235,12 @@ BRANCH_PATHS: frozenset[tuple[str, ...]] = frozenset(
 from __future__ import annotations
 ```
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_config_schema.py -v`
 Expected: PASS 4건
 
-- [ ] **Step 5: 게이트를 실패시켜 본다**
+- [x] **Step 5: 게이트를 실패시켜 본다**
 
 `BINDINGS`의 마지막 행(`spec.limit`)을 주석 처리하고 다시 돌린다.
 
@@ -249,7 +249,7 @@ Expected: FAIL — 상등이 깨진다. **확인한 뒤 주석을 되돌린다.*
 
 이 리포의 규율이다 — 실패시켜 보지 않은 게이트는 게이트가 아니다.
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check . && .venv/Scripts/python.exe -m ruff format --check .
@@ -280,7 +280,7 @@ git commit -m "기능: FR-8.4 설정 키와 CLI 옵션을 잇는 매핑표와 �
   - `Config(source: Path, values: dict[tuple[str, ...], object], weights: dict[str, float] | None)`
   - `load_config(path: Path) -> Config` — 모든 내용 오류를 `ValueError`로 정규화한다
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_config_loader.py`:
 
@@ -398,12 +398,12 @@ def test_weights가_매핑이_아니면_거부한다(tmp_path: Path) -> None:
         load_config(_write(tmp_path, "signals:\n  weights: 0.3\n"))
 ```
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_config_loader.py -v`
 Expected: FAIL — `ImportError: cannot import name 'load_config'`
 
-- [ ] **Step 3: `loader.py`를 쓴다**
+- [x] **Step 3: `loader.py`를 쓴다**
 
 ```python
 """`cuesift.yaml`을 읽어 검증한다 (FR-8.4 · 설계 §6).
@@ -565,19 +565,19 @@ from cuesift.config.loader import Config, load_config
 __all__ = ["Config", "load_config"]
 ```
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_config_loader.py -v`
 Expected: PASS 14건
 
-- [ ] **Step 5: 게이트를 실패시켜 본다**
+- [x] **Step 5: 게이트를 실패시켜 본다**
 
 `_read_weights`의 `isinstance(value, bool)` 항을 지우고 돌린다.
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_config_loader.py::test_불리언_가중치를_거부한다 -v`
 Expected: FAIL. **확인한 뒤 되돌린다.**
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check . && .venv/Scripts/python.exe -m ruff format --check .
@@ -608,7 +608,7 @@ float()에 통과하기 때문이다."
 - Consumes: Task 1의 `BINDINGS`, Task 2의 `Config`
 - Produces: `Config.to_default_map() -> dict[str, dict[str, object]]`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_config_loader.py` 아래에 덧붙인다:
 
@@ -730,12 +730,12 @@ def test_매핑_전수가_도착한다(
 > **`Path`·`Enum` 변환은 여기서 일어나지 않는다** — click이 파라미터를 해결할
 > 때 한다(설계 P4). 그래서 기대값이 `"./out"`이지 `Path("./out")`이 아니다.
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_config_loader.py -k default_map -v`
 Expected: FAIL — `AttributeError: 'Config' object has no attribute 'to_default_map'`
 
-- [ ] **Step 3: `Config`에 메서드를 더한다**
+- [x] **Step 3: `Config`에 메서드를 더한다**
 
 `loader.py`의 `Config` 안에 넣는다. `from cuesift.config.schema import BINDINGS`를 import에 더한다.
 
@@ -762,12 +762,12 @@ Expected: FAIL — `AttributeError: 'Config' object has no attribute 'to_default
         return out
 ```
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_config_loader.py -v`
 Expected: PASS 24건
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check . && .venv/Scripts/python.exe -m ruff format --check .
@@ -795,7 +795,7 @@ git commit -m "기능: FR-8.4 도메인 중첩을 커맨드 중첩으로 접는�
 - Consumes: Task 2·3의 `load_config` · `Config.to_default_map`
 - Produces: `ctx.default_map`이 채워진 상태 · `ctx.obj`가 `Config | None`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_cli_config.py`:
 
@@ -947,12 +947,12 @@ def test_help에서_미구현_문구가_사라졌다() -> None:
     assert "아직 구현되지" not in result.output
 ```
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_config.py -v`
 Expected: FAIL — 자동 탐색·출처 줄·경고 제거가 전부 미구현
 
-- [ ] **Step 3: `main` 콜백을 고친다**
+- [x] **Step 3: `main` 콜백을 고친다**
 
 `cli.py`의 import에 더한다:
 
@@ -1041,17 +1041,17 @@ def _apply_config(ctx: typer.Context, config: Path | None) -> None:
 
 **`_apply_config`의 옛 경고 블록을 지운다.** `main` 본문에 있던 `if config is not None: _echo("경고: --config는 아직 구현되지 않았습니다 ...")`가 그것이다.
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_config.py -v`
 Expected: PASS 11건
 
-- [ ] **Step 5: 기존 테스트가 깨지지 않았는지 본다**
+- [x] **Step 5: 기존 테스트가 깨지지 않았는지 본다**
 
 Run: `.venv/Scripts/python.exe -m pytest -q`
 Expected: 1379 + 신규 통과. **`--config` 경고문을 단언하던 기존 테스트가 있으면 이번에 고친다** — 검색: `git grep -n "아직 구현되지" tests/`
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check . && .venv/Scripts/python.exe -m ruff format --check .
@@ -1085,7 +1085,7 @@ COMMANDLINE > DEFAULT_MAP > DEFAULT를 해결한다.
 - Consumes: Task 4의 `ctx`
 - Produces: `_resolve_llm(ctx: typer.Context | None, base_url: str | None, model: str | None) -> tuple[str, str, str | None]` — **첫 인자가 늘었다**
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_cli_config.py`에 덧붙인다:
 
@@ -1141,12 +1141,12 @@ def test_ctx가_없어도_동작한다(monkeypatch) -> None:
     assert base == "http://cli"
 ```
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_config.py -k 환경변수 -v`
 Expected: FAIL — `_resolve_llm() takes 2 positional arguments but 3 were given`
 
-- [ ] **Step 3: `_resolve_llm`을 고친다**
+- [x] **Step 3: `_resolve_llm`을 고친다**
 
 ```python
 def _from_config(ctx: typer.Context | None, name: str) -> bool:
@@ -1198,19 +1198,19 @@ def _resolve_llm(
 
 Run: `git grep -n "_resolve_llm(" src/`
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_config.py -v && .venv/Scripts/python.exe -m pytest -q`
 Expected: 전부 PASS
 
-- [ ] **Step 5: 게이트를 실패시켜 본다**
+- [x] **Step 5: 게이트를 실패시켜 본다**
 
 `_prefer_env`의 본문을 `return value or os.environ.get(env_name)`으로 되돌리고 돌린다.
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_config.py::test_설정보다_환경변수가_우선한다 -v`
 Expected: FAIL — `assert 'http://config' == 'http://env'`. **확인한 뒤 되돌린다.**
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check . && .venv/Scripts/python.exe -m ruff format --check .
@@ -1240,7 +1240,7 @@ get_parameter_source가 DEFAULT_MAP인지를 보고 양보시킨다. 값은 어�
 - Consumes: Task 2의 `Config.weights`, Task 4의 `ctx.obj`
 - Produces: `_run_triage(..., weights: Mapping[str, float] | None = None)` — 키워드 인자가 하나 늘었다
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_cli_tier1.py` 끝에 덧붙인다. 이 파일의 기존 헬퍼 `_full_args` ·
 `_patch_provider` · `_clean_echo` · `_TIER1_RUNS`를 그대로 쓴다.
@@ -1310,12 +1310,12 @@ def test_설정이_없으면_기본_가중치를_쓴다(
 > `cli_module`·`runner`·`pytest`·`Sequence`·`Path`는 이 파일에 이미
 > import돼 있다. 없으면 더한다.
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_tier1.py -k 가중치 -v`
 Expected: FAIL — `weights`가 `None`이다
 
-- [ ] **Step 3: 통로를 연다**
+- [x] **Step 3: 통로를 연다**
 
 `_run_triage` 시그니처에 더한다:
 
@@ -1351,12 +1351,12 @@ def _config_weights(ctx: typer.Context | None) -> Mapping[str, float] | None:
 
 `translate` 시그니처의 첫 인자로 `ctx: typer.Context`를 더하고(Task 5에서 이미 더했으면 그대로 쓴다), `_run_triage(...)` 호출에 `weights=_config_weights(ctx)`를 넘긴다.
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_tier1.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check . && .venv/Scripts/python.exe -m ruff format --check .
@@ -1386,7 +1386,7 @@ CLI 옵션을 만들지 않는다. 10개 실수를 명령줄에 쓰는 것은 �
 - Consumes: Task 6의 `weights` · `_write_weights_config` · `_spy_fuse`
 - Produces: `triage_with_tier1(..., weights: Mapping[str, float] | None = None)`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 Task 6이 만든 헬퍼 둘을 그대로 쓴다. 다른 것은 `_spy_fuse`의 대상 모듈이
 `cli_module`이 아니라 `tier1_module`이라는 것뿐이다.
@@ -1431,12 +1431,12 @@ def test_Tier1_경로의_융합_두_곳도_설정_가중치를_쓴다(
 > 박는다. 이것이 없으면 후보 0건으로 조기 반환한 실행에서도 위 단언이
 > 성립해 버린다 — 이 파일의 기존 테스트들이 같은 이유로 그 헬퍼를 쓴다.
 
-- [ ] **Step 2: 실패를 확인한다**
+- [x] **Step 2: 실패를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_tier1.py -k Tier1_경로의 -v`
 Expected: FAIL — `unexpected keyword argument 'weights'`
 
-- [ ] **Step 3: `tier1.py`를 고친다**
+- [x] **Step 3: `tier1.py`를 고친다**
 
 `triage_with_tier1` 시그니처에 더한다:
 
@@ -1466,19 +1466,19 @@ Expected: FAIL — `unexpected keyword argument 'weights'`
 
 `cli.py`의 `_run_triage`에서 `triage_with_tier1(...)` 호출에 `weights=weights`를 더한다.
 
-- [ ] **Step 4: 통과를 확인한다**
+- [x] **Step 4: 통과를 확인한다**
 
 Run: `.venv/Scripts/python.exe -m pytest -q`
 Expected: 전부 PASS
 
-- [ ] **Step 5: 게이트를 실패시켜 본다**
+- [x] **Step 5: 게이트를 실패시켜 본다**
 
 `rescored` 줄의 `weights`만 지우고 돌린다 (②는 남긴다).
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_cli_tier1.py -k Tier1_경로의 -v`
 Expected: FAIL. **이것이 이 태스크의 핵심이다** — ②만 고치고 ⑥을 두는 것이 가장 흔한 누락이다. **확인한 뒤 되돌린다.**
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check . && .venv/Scripts/python.exe -m ruff format --check .
@@ -1502,7 +1502,7 @@ fuse 호출부가 셋인데 tier1.py의 둘을 빼먹으면 --tier1 유무로 �
 - Modify: `docs/WBS.md` (WP6 행 · "다음 작업 순서")
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: §8.2 예시를 다시 쓴다**
+- [x] **Step 1: §8.2 예시를 다시 쓴다**
 
 정정 5건이다 (설계 §7).
 
@@ -1567,29 +1567,29 @@ spec:
 | 모르는 키 | 종료 코드 2로 거부하고 가까운 키를 제시한다 |
 | 부분 지정 | 명시하지 않은 키는 기본값을 유지한다. `signals.weights`도 같다 |
 
-- [ ] **Step 2: FR-6.1과 FR-4.3의 상태 칸을 고친다**
+- [x] **Step 2: FR-6.1과 FR-4.3의 상태 칸을 고친다**
 
 두 칸이 "§8.2의 그 키는 여전히 미구현이다"를 적고 있다. 고치지 않으면 요구사항정의서가 자기 자신과 어긋난다.
 
 - FR-6.1: "가중치를 사용자가 설정하는 통로는 아직 없다" → **`cuesift.yaml`의 `signals.weights`가 열렸다(FR-8.4).** `DEFAULT_WEIGHTS`는 여전히 전부 1.0이고 **튜닝하지 않는다** — 사용자가 바꿀 수 있는 것과 우리가 맞추는 것은 다르다.
 - FR-4.3: "§8.2 설정 파일의 `signals.tier1.max_ratio`는 여전히 미구현이다" → **열렸다(FR-8.4).**
 
-- [ ] **Step 3: FR-8.4 상태 칸을 ✅로 바꾸고 근거를 적는다**
+- [x] **Step 3: FR-8.4 상태 칸을 ✅로 바꾸고 근거를 적는다**
 
 갱신 규칙상 **근거 커밋을 함께 적는다.** 상태만 바꾸고 근거가 없으면 이 문서는 검증할 수 없는 주장이 된다.
 
-- [ ] **Step 4: WBS를 갱신한다**
+- [x] **Step 4: WBS를 갱신한다**
 
 - 현재 위치 진척: v0.1 완료 **35 → 36** (FR-8.4). WP6은 8.3·8.5가 남아 여전히 🟡
 - "30 → 32 → 34 → 35" 산수 표에 한 줄 더한다: `FR-8.4` `+1` — ⬜ → ✅
 - WP6 행에 `--config` 배선을 적고 설계 스펙을 링크한다
 - "다음 작업 순서"의 1순위를 갱신한다: **FR-8.5**(진행 표시·CI 감지)가 남고, FR-8.3은 WP9 선행이 필요하다는 사실을 명시한다
 
-- [ ] **Step 5: CHANGELOG에 적는다**
+- [x] **Step 5: CHANGELOG에 적는다**
 
 Keep a Changelog 형식의 `Added`에 넣는다.
 
-- [ ] **Step 6: 문서 게이트를 돌린다**
+- [x] **Step 6: 문서 게이트를 돌린다**
 
 ```bash
 git add -A docs/ CHANGELOG.md
@@ -1599,7 +1599,7 @@ npx --yes markdownlint-cli2
 
 **두 도구의 파일 개수가 같은지 본다.** 다르면 새 문서가 `git add`되지 않은 것이고, 그 문서는 링크 검사를 아예 받지 않는다.
 
-- [ ] **Step 7: 커밋**
+- [x] **Step 7: 커밋**
 
 ```bash
 git commit -m "문서: FR-8.4를 닫고 §8.2 예시를 CLI 옵션 23개에 맞춘다
@@ -1625,7 +1625,7 @@ v0.1 완료 35 -> 36."
 
 **pytest는 실제 파일시스템의 현재 디렉터리에서 CLI를 띄우지 않는다.** 자동 탐색(D2)이 `CliRunner`가 아니라 진짜 프로세스에서 도는지는 서브프로세스로만 확인된다 — WP7b가 재개를 실물 확인한 것과 같은 이유다.
 
-- [ ] **Step 1: 임시 디렉터리에 설정과 자막을 둔다**
+- [x] **Step 1: 임시 디렉터리에 설정과 자막을 둔다**
 
 ```bash
 mkdir -p /tmp/cuesift-live && cd /tmp/cuesift-live
@@ -1647,7 +1647,7 @@ signals:
     spec.violation: 0.3
 ```
 
-- [ ] **Step 2: 옵션 없이 실행한다**
+- [x] **Step 2: 옵션 없이 실행한다**
 
 ```bash
 <리포>/.venv/Scripts/python.exe -m cuesift translate a.ko.srt --dry-run
@@ -1655,7 +1655,7 @@ signals:
 
 Expected: stderr 첫 줄에 `설정을 읽었다: cuesift.yaml`, `--to` 없이도 `Missing option`이 나오지 않는다.
 
-- [ ] **Step 3: CLI가 이기는지 확인한다**
+- [x] **Step 3: CLI가 이기는지 확인한다**
 
 ```bash
 <리포>/.venv/Scripts/python.exe -m cuesift translate a.ko.srt --to ja --dry-run
@@ -1663,7 +1663,7 @@ Expected: stderr 첫 줄에 `설정을 읽었다: cuesift.yaml`, `--to` 없이�
 
 Expected: 대상 언어가 `ja`다 (설정의 `en`이 아니다).
 
-- [ ] **Step 4: 상위 디렉터리를 읽지 않는지 확인한다**
+- [x] **Step 4: 상위 디렉터리를 읽지 않는지 확인한다**
 
 ```bash
 mkdir -p sub && cd sub
@@ -1672,7 +1672,7 @@ mkdir -p sub && cd sub
 
 Expected: `설정을 읽었다` 줄이 **나오지 않는다.**
 
-- [ ] **Step 5: 모르는 키가 2로 죽는지 확인한다**
+- [x] **Step 5: 모르는 키가 2로 죽는지 확인한다**
 
 ```bash
 cd /tmp/cuesift-live
@@ -1683,11 +1683,11 @@ echo "exit=$?"
 
 Expected: `exit=2`, 메시지에 `가까운 키: triage.review_budget`
 
-- [ ] **Step 6: 결과를 `HANDOFF.md`에 적는다**
+- [x] **Step 6: 결과를 `HANDOFF.md`에 적는다**
 
 **값을 옮겨 적지 말고 실행한 명령과 관측한 것을 적는다.**
 
-- [ ] **Step 7: 최종 게이트와 커밋**
+- [x] **Step 7: 최종 게이트와 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check .
@@ -1705,6 +1705,54 @@ npx --yes markdownlint-cli2
 git add -A
 git commit -m "문서: FR-8.4 실물 확인 - 자동 탐색과 우선순위를 서브프로세스로 검증"
 ```
+
+---
+
+## 구현 중 바뀐 결정
+
+**이 절이 위 본문의 코드 블록보다 최신이다.** 계획은 실행되기 전에 쓰였고, 아래는 실행이 가르쳐 준 것이다.
+
+### 계획서가 틀렸던 곳
+
+| # | 계획서 | 실제 | 어떻게 처리했나 |
+| --- | --- | --- | --- |
+| 1 | Task 3 Step 4가 "PASS 24건" 예고 | 매핑 전수 parametrize는 **23건** (22행 중 `source_lang`이 두 커맨드로 뿌려져 23) | 설계 §5의 산수가 옳다. 테스트를 고치지 않고 계획서 숫자만 낡은 것으로 판정 |
+| 2 | Task 6이 `translate`에서 `weights=`를 넘기라고 지시 | `_run_triage` 호출부는 **`_translate_one`** 안에 있다 | `_translate_one`에 `weights` 키워드를 하나 더 뚫어 전달 |
+| 3 | 파이썬 식별자 `본 것` | 공백이 들어가 **문법 오류** | `본것`으로 |
+| 4 | Task 7 Step 2가 `unexpected keyword argument 'weights'` 실패를 예고 | 진짜 `fuse`가 이미 그 파라미터를 갖고 있어 **수집된 `weights`가 전부 `None`**인 형태로 실패한다 | 예상 문구만 다르고 red는 정상 |
+| 5 | `test_진리표_둘_다_있으면_CLI가_이긴다`가 설정과 CLI에 **같은 값**을 넣는다 | 어느 쪽이 이겨도 결과가 같아 **방향을 못 가린다** | 설정 `hard` / CLI `none`으로 뒤집어 exit 0을 단언 |
+| 6 | Task 9가 `signals.tier1.max_ratio: 0.25`를 예시로 지시 | `load_config`는 통과하지만 **CLI의 곱 게이트에서 exit 2** | 예시를 `0.05`로 고치고, §8.2 게이트를 로더가 아니라 **CLI까지** 태우도록 넓혔다 |
+
+### 리포가 가르쳐 준 것 (브리프에 없으면 반복해서 걸린다)
+
+| 사실 | 결과 |
+| --- | --- |
+| ruff **SIM300** — 단언에서 대문자 상수를 왼쪽에 두면 Yoda condition으로 잡힌다 | `assert derived == CONSTANT` 순서로. 집합 상등은 방향이 없어 단언의 힘은 그대로다 |
+| `result.output`은 stdout이 아니라 **stdout+stderr 혼합** 스트림(typer 0.27 `StreamMixer`) | D7의 출처 줄이 stdout을 오염시키지 않는지 재려면 `.stdout`/`.stderr`를 나눠야 한다 |
+| 부정 단언(`not in`)은 rich의 강제 개행에 **뚫린다** | `normalize_rich_message`를 통과시킨 뒤 단언 |
+| conftest 임포트 관례는 `from conftest import ...` | `from tests.conftest`가 아니다 |
+| `typer`가 `ctx: typer.Context`를 click 파라미터 목록에서 **제외**한다 | R5 상등 게이트가 그 성질에 의존한다 |
+
+### 이중 리뷰가 찾은 것 — 계획에도 설계에도 없던 결함
+
+| # | 결함 | 왜 계획이 못 봤나 |
+| --- | --- | --- |
+| **1** | **상호배타 검사가 값의 출처를 안 본다.** 설정에 `review_threshold`가 있으면 CLI `--review-budget`이 exit 2로 죽는다 | D1의 전제는 "click이 우선순위를 해결한다"인데, click의 해결 **뒤에** 도는 검사는 값의 출처를 모른다. P1~P4 탐침이 click의 경계를 짚었지만 **경계 바깥**은 못 봤다 |
+| **2** | **자동 탐색(D2)이 테스트 스위트를 cwd에 종속시킨다.** 리포 루트에 `cuesift.yaml` 한 줄이면 81건이 깨진다 | 기능으로서는 정확히 의도대로 동작한다. 문제는 그 기능이 **테스트 하네스와 충돌**한다는 것이고, 설계는 하네스를 보지 않는다 |
+| **3** | **`cache.enabled`가 로더·click 양쪽 검증을 빠져나간다.** `"false"`→캐시 켜짐, `null`→캐시 꺼짐 | D5가 "`signals.weights`만 click을 안 거친다"고 했는데, `cache.enabled`는 click을 거치되 `negate()`가 **먼저 먹어치워** 볼 값이 남지 않는다. D5의 예외가 하나 더 있었다 |
+| **4** | **`test_틀린_값은_click이_종료_코드_2로_낸다`가 아무것도 검사하지 않았다** | 같은 명령이 `--base-url` 없음으로도 exit 2를 낸다. 종료 코드만 보는 단언의 전형적 실패 |
+
+**1·3은 같은 부류다** — "click에 맡긴다"(D5·D1)의 경계를 실제보다 넓게 그렸다. 맡길 수 있는 것과 없는 것의 선은 탐침으로 확인한 자리(P1~P4)에서만 정확했다.
+
+### 게이트에 대해 알게 된 것
+
+- **`conftest`의 자동 탐색 차단은 인프로세스 전용이다.** `monkeypatch`라 `subprocess`로 CLI를 띄우는 테스트에는 안 듣는다. `test_cli_pipe.py`가 `cwd=`로 닫았고, **앞으로 서브프로세스로 CLI를 띄우는 테스트를 추가하면 같은 조치가 필요하다**
+- **스펙 R1의 완화책이 실제보다 넓었다.** "P1~P4의 성질을 테스트가 직접 확인한다"고 적었으나, 실측 결과 **P4의 "검증"은 게이트가 잡고 "변환"은 안 잡는다**. 스펙 §9.1에 정정했다
+- `loader.py`의 `RecursionError` 분기는 **도달 가능하다**(`'['*5000`으로 실측). PyYAML이 `YAMLError`로 감싸지 않는다. **테스트를 두지 않는 것은 의도다** — 재귀 한계가 파이썬 버전·플랫폼마다 달라 3.11~3.14 매트릭스에서 간헐 실패하는 게이트가 된다
+
+### 최종 게이트 수치
+
+착수 **1379** → 최종 **1480 passed, 3 deselected** (+101) · 커버리지 **99%** · ruff 2종 통과 · `109 files already formatted` · 링크 체커 35개 문서 175링크 0 broken · markdownlint 35 files 0 issues.
 
 ---
 
