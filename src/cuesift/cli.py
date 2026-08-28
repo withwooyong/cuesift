@@ -504,7 +504,7 @@ def _apply_config(ctx: typer.Context, config: Path | None) -> None:
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
 
     # `signals.weights`는 CLI 옵션이 아니라 `ctx.obj`로 간다(설계 D6).
-    # `fuse(weights=)`로 내려보내는 것은 다음 태스크의 몫이다.
+    # `_config_weights`가 여기서 꺼내 `fuse(weights=)`까지 내려보낸다.
     ctx.obj = cfg
 
     # **출처를 낸다**(설계 D7). click의 오류 메시지가 `Invalid value for
@@ -514,6 +514,21 @@ def _apply_config(ctx: typer.Context, config: Path | None) -> None:
     # **stderr다.** 산출물이 아니라 실행 조건 보고이므로
     # `cuesift check ... > violations.txt`를 오염시키면 안 된다(설계 §7.1).
     _echo(f"설정을 읽었다: {source}", err=True)
+
+
+def _config_weights(ctx: typer.Context | None) -> Mapping[str, float] | None:
+    """설정 파일의 신호 가중치를 꺼낸다 (FR-8.4 · FR-6.1 · 설계 D6).
+
+    `ctx.obj`는 `_apply_config`가 심는다. 설정이 없으면 `None`이고 그때
+    `fuse`가 `DEFAULT_WEIGHTS`를 쓴다 - **빈 딕셔너리를 내면 안 된다**.
+    `fuse`의 `total_weight <= 0` 경로로 흘러 전량이 같은 점수가 되고,
+    그러면 예산 선별이 id 순서로 뽑는다.
+
+    CLI 옵션을 두지 않는 이유는 D6이다 - 10개 실수를 명령줄에 쓰는 것은
+    쓸모가 없고, 두면 "설정 파일 전용 값"이라는 범주가 사라진다.
+    """
+    cfg = getattr(ctx, "obj", None)
+    return getattr(cfg, "weights", None)
 
 
 def _from_config(ctx: typer.Context | None, name: str) -> bool:
@@ -1321,6 +1336,7 @@ def translate(
             review_out=review_out,
             review_format=review_format,
             tier1=tier1_settings,
+            weights=_config_weights(ctx),
         )
         worst = max(worst, code)
         if code == EXIT_UNAVAILABLE:
@@ -1610,6 +1626,7 @@ def _translate_one(
     review_out: Path | None,
     review_format: ReviewFormat,
     tier1: _Tier1Settings | None,
+    weights: Mapping[str, float] | None = None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
 
@@ -1822,6 +1839,7 @@ def _translate_one(
                 threshold=threshold,
                 policy_label=policy_label,
                 tier1=tier1,
+                weights=weights,
             )
         except FatalProviderError as exc:
             # **Tier 1이 이 함수에서 LLM을 부르는 유일한 자리다**(설계 D14 · §3.4).
@@ -2230,6 +2248,7 @@ def _run_triage(
     threshold: float | None,
     policy_label: str,
     tier1: _Tier1Settings | None = None,
+    weights: Mapping[str, float] | None = None,
 ) -> TriageOutcome:
     """번역 결과를 트리아지해 결과 객체를 낸다 (FR-6.1~6.3 · 설계 §4).
 
@@ -2254,6 +2273,11 @@ def _run_triage(
     수집·융합·예산 적용을 그쪽이 다시 하므로 여기서 `collect_all`을 부르지
     않는다 - 부르면 전량 Tier 0 수집이 두 번 돈다. `tier1`이 `None`이면 기존
     경로는 한 줄도 바뀌지 않는다(설계 D2 - 기본 꺼짐).
+
+    **`weights`는 설정 파일에서만 온다**(FR-8.4 · FR-6.1 · 설계 D6). `None`이면
+    `fuse`가 `DEFAULT_WEIGHTS`를 쓴다. **세 `fuse` 호출에 모두 가야 한다** -
+    여기 하나와 `triage_with_tier1` 안의 둘이며, 하나라도 빠지면 `--tier1`
+    유무로 순위가 갈린다(설계 §4.3 ②).
     """
     failed_ids = {f.segment_id for f in translated.failures}
     kept = [seg for seg in translated.segments if seg.id not in failed_ids]
@@ -2417,7 +2441,7 @@ def _run_triage(
     signals = collect_all(translated.segments, ctx)
     # `collect_all`은 신호가 없는 세그먼트도 빈 리스트로 키를 갖는다
     # (`signals/base.py`) - KeyError 없이 전량을 돌 수 있다는 보장이다.
-    risks = [fuse(seg.id, signals[seg.id]) for seg in kept]
+    risks = [fuse(seg.id, signals[seg.id], weights) for seg in kept]
 
     # **위에서 정한 `policy_kind`로 분기한다 - `budget_ratio`를 다시 보지
     # 않는다.** 두 번 판정하면 `review.json`이 "budget으로 돌렸다"고 적어 둔

@@ -1242,3 +1242,70 @@ def test_상한_줄의_문구를_리터럴로_못_박는다(
         "  Tier 1 재번역 요청 최대 15회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 3)"
         in result.output.splitlines()
     ), result.output
+
+
+# --- FR-8.4 설정 가중치가 `fuse`까지 가는가 (설계 §4.3 ②) ---
+
+
+def _write_weights_config(tmp_path: Path) -> Path:
+    """가중치만 담은 설정 파일 (FR-8.4 · 설계 §5.1).
+
+    **다른 키를 넣지 않는 것이 중요하다** - 넣으면 이 테스트가 무엇 때문에
+    통과했는지 알 수 없어진다. `spec.violation` 하나만 부분 지정하는 것은
+    설계 §5.1의 "부분 지정을 허용한다"를 함께 재는 셈이다.
+    """
+    path = tmp_path / "cuesift.yaml"
+    path.write_text("signals:\n  weights:\n    spec.violation: 0.3\n", encoding="utf-8")
+    return path
+
+
+def _spy_fuse(monkeypatch: pytest.MonkeyPatch, module: object) -> list[object]:
+    """`module.fuse`가 받은 `weights`를 호출 순서대로 모은다 (설계 §4.3 ②).
+
+    **진짜 `fuse`를 그대로 부른다.** 가짜로 갈아치우면 통로만 재고 값이
+    실제로 위험도에 반영되는지는 재지 못한다.
+    """
+    본것: list[object] = []
+    진짜 = module.fuse
+
+    def spy(segment_id: str, signals: Sequence[object], weights: object = None) -> object:
+        본것.append(weights)
+        return 진짜(segment_id, signals, weights)
+
+    monkeypatch.setattr(module, "fuse", spy)
+    return 본것
+
+
+def test_설정_가중치가_Tier0_융합에_도달한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-8.4 · FR-6.1 - `_run_triage`가 `weights`를 넘기는지 본다.
+
+    **`assert 본것`을 먼저 둔다.** 호출이 0건이면 아래 `all(...)`이 공허참이
+    되어 통로를 통째로 지워도 초록이 된다.
+    """
+    cfg = _write_weights_config(tmp_path)
+    본것 = _spy_fuse(monkeypatch, cli_module)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, ["--config", str(cfg), *_full_args(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert 본것, "fuse가 한 번도 불리지 않았다 - 이 테스트는 아무것도 검사하지 않는다"
+    assert all(w is not None and w["spec.violation"] == 0.3 for w in 본것), 본것
+
+
+def test_설정이_없으면_기본_가중치를_쓴다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """반대 방향. `weights=`를 무조건 딕셔너리로 채우는 구현을 막는다.
+
+    `None`이어야 `fuse`가 `DEFAULT_WEIGHTS`를 쓴다 - 여기서 빈 딕셔너리가
+    가면 `total_weight <= 0` 경로로 흘러 전량이 같은 점수가 된다.
+    """
+    본것 = _spy_fuse(monkeypatch, cli_module)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _full_args(tmp_path))
+
+    assert result.exit_code == 0, result.output
+    assert 본것, "fuse가 한 번도 불리지 않았다 - 이 테스트는 아무것도 검사하지 않는다"
+    assert all(w is None for w in 본것), 본것
