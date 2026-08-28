@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from cuesift.report import build_html, write_html
+from cuesift.report.html_report import _JS
 from cuesift.report.models import TriageOutcome
 from cuesift.segment import Segment, SegmentRisk, Signal, Span
 
@@ -646,3 +647,216 @@ def test_write_html이_줄바꿈을_LF로_쓴다(tmp_path: Path) -> None:
     write_html(_outcome(risks=[risk], segments=[seg]), path)
 
     assert b"\r\n" not in path.read_bytes()
+
+
+def _filtered(*specs: tuple[str, bool, tuple[str, ...]]) -> TriageOutcome:
+    """`(세그먼트 id, 선별 여부, 신호 이름들)`로 outcome을 만든다.
+
+    `_pair`는 모든 위험의 `signals`가 비어 있어 **선별된 것과 아닌 것의 신호가
+    갈리는** 상황을 만들지 못한다 - 필터 어휘가 `risks` 전체에서 나오는 변이가
+    그 상황에서만 드러난다.
+    """
+    segments = [
+        Segment(
+            id=sid,
+            index=i,
+            start_ms=i * 1000,
+            end_ms=(i + 1) * 1000,
+            source_text="가",
+            target_text="a",
+        )
+        for i, (sid, _, _) in enumerate(specs)
+    ]
+    risks = [
+        SegmentRisk(
+            segment_id=sid,
+            signals=[Signal(name=name, tier=0, score=0.8) for name in names],
+            risk_score=0.8,
+            hard_fail=False,
+            selected=selected,
+        )
+        for sid, selected, names in specs
+    ]
+    return _outcome(risks=risks, segments=segments)
+
+
+# **행 여는 태그 전체를 묶는다.** `data-signals="` 만 찾으면 CSS의 속성 선택자가
+# 단언을 참으로 만든다 - Task 6의 `data-hardfail` 사례가 그것이었다.
+_ROW_SIGNALS_RE = r'<tr class="seg" data-hardfail="[01]" data-signals="([^"]*)"'
+
+
+def test_필터_체크박스가_등장한_신호만큼_있다() -> None:
+    """신호 목록을 하드코딩하지 않는다 (설계 D2 · NFR-5).
+
+    하드코딩하면 신호가 추가될 때 필터에서만 빠지고 그 사실이 화면에
+    드러나지 않는다.
+    """
+    html_out = build_html(
+        _filtered(("s0", True, ("length.ratio",)), ("s1", True, ("struct.tag_lost",)))
+    )
+
+    assert html_out.count('class="f-sig"') == 2
+    assert 'value="length.ratio"' in html_out
+    assert 'value="struct.tag_lost"' in html_out
+    # 등장하지 않은 신호는 체크박스가 없다
+    assert 'value="glossary.miss"' not in html_out
+
+
+def test_등장하지_않은_신호는_체크박스가_없다() -> None:
+    html_out = build_html(_outcome())
+
+    assert 'class="f-sig"' not in html_out
+
+
+def test_선별되지_않은_위험의_신호는_체크박스가_없다() -> None:
+    """**행과 체크박스는 같은 집합에서 나와야 한다** (설계 D3·D4).
+
+    행은 `outcome.selected`로만 만들어진다(`build_html`). 체크박스를 `risks`
+    전체에서 뽑으면 **어떤 행도 갖지 않은 신호**가 필터에 뜬다 - 끄면 아무 일도
+    일어나지 않고 켜도 이미 다 보이므로, 검수자는 필터가 고장났다고 읽는다.
+    """
+    html_out = build_html(
+        _filtered(("s0", True, ("length.ratio",)), ("s1", False, ("glossary.miss",)))
+    )
+
+    assert 'value="length.ratio"' in html_out
+    assert 'value="glossary.miss"' not in html_out
+
+
+def test_hard_fail_토글이_있다() -> None:
+    """**태그 문맥까지 묶는다.** `id="f-hardfail"`만 보면 CSS의 선택자나 JS의
+    `getElementById` 인자가 단언을 참으로 만든다 (Task 6의 `data-hardfail` 사례).
+    """
+    assert '<input type="checkbox" id="f-hardfail">' in build_html(_outcome())
+
+
+def test_noscript_폴백이_있다() -> None:
+    """JS가 없으면 필터를 못 쓴다. 그 사실을 말하고 전량을 보여준다 (설계 D3).
+
+    태그만 보면 내용이 빈 `<noscript></noscript>`도 통과한다 - 그것은 폴백이
+    아니라 침묵이다.
+    """
+    html_out = build_html(_outcome())
+
+    assert "<noscript>" in html_out
+    assert "필터가 동작하지 않습니다" in html_out
+
+
+def test_필터_체크박스_값이_행의_data_signals와_같은_어휘다() -> None:
+    """**마크업 계약이다.** 두 값이 갈라지면 필터가 조용히 아무것도 못 거른다.
+
+    JS는 행의 `data-signals`를 공백으로 쪼개 체크박스 `value`와 비교한다.
+    파이썬이 보장할 수 있는 것은 두 어휘가 같다는 것까지다.
+
+    **마지막 단언이 없으면 안 된다** - 양쪽이 모두 비면 `set() == set()`이
+    참이라 렌더러를 통째로 지운 변이가 통과한다.
+    """
+    html_out = build_html(
+        _filtered(
+            ("s0", True, ("length.ratio", "spec.violation")),
+            ("s1", True, ("struct.tag_lost",)),
+        )
+    )
+
+    from_boxes = set(re.findall(r'class="f-sig" value="([^"]+)"', html_out))
+    from_rows = {name for attr in re.findall(_ROW_SIGNALS_RE, html_out) for name in attr.split()}
+
+    assert from_boxes == from_rows
+    assert from_boxes == {"length.ratio", "spec.violation", "struct.tag_lost"}
+
+
+def test_체크박스는_처음에_전부_켜져_있다() -> None:
+    """`checked`가 빠지면 **로드 직후 `apply()`가 신호를 가진 행을 전부 숨긴다.**
+
+    필터를 건드리지도 않은 검수자가 빈 표를 본다 - 예외도 경고도 없이 리포트가
+    아무것도 없는 것처럼 보이는 실패다.
+    """
+    html_out = build_html(_filtered(("s0", True, ("length.ratio",))))
+
+    assert '<input type="checkbox" class="f-sig" value="length.ratio" checked>' in html_out
+
+
+def test_체크박스에_보이는_이름이_붙는다() -> None:
+    """`value`는 JS만 읽는다 - 라벨 본문이 없으면 검수자에게는 **이름 없는 네모**
+    열 개가 늘어선다. 무엇을 끄는 체크박스인지 알 방법이 없다.
+    """
+    html_out = build_html(_filtered(("s0", True, ("length.ratio",))))
+
+    assert '" checked> length.ratio</label>' in html_out
+
+
+def test_필터_체크박스가_이름순으로_나온다() -> None:
+    """재현성(NFR-3). 집합을 정렬 없이 돌면 같은 입력이 실행마다 다른 HTML을 낸다 -
+    `_row_html`의 `data-signals`가 같은 이유로 이미 정렬돼 있다.
+    """
+    html_out = build_html(
+        _filtered(
+            ("s0", True, ("spec.violation", "glossary.miss")),
+            ("s1", True, ("length.ratio",)),
+        )
+    )
+
+    assert re.findall(r'class="f-sig" value="([^"]+)"', html_out) == [
+        "glossary.miss",
+        "length.ratio",
+        "spec.violation",
+    ]
+
+
+def test_신호_이름이_이스케이프되어_속성을_탈출하지_못한다() -> None:
+    """`Signal.name`은 제약 없는 `str`이다 - 수집기가 원문 조각을 이름에 실으면
+    따옴표가 들어온다. 이스케이프를 빼면 `value` 속성이 닫히고 그 뒤가 마크업이 된다.
+    """
+    html_out = build_html(_filtered(("s0", True, ('a" onx="1',))))
+
+    assert 'value="a&quot; onx=&quot;1"' in html_out
+    assert 'onx="1"' not in html_out
+
+
+def test_카운터가_검수_대상_수로_시작한다() -> None:
+    """카운터는 `표시 중 N / M`이다 - 필터로 몇 개가 숨었는지 검수자가 알아야 한다.
+
+    **분모는 총 세그먼트가 아니라 검수 대상이다.** 표에 있는 행이 그것뿐이므로
+    총 70건 중 13건을 선별한 리포트에서 `13 / 70`은 영원히 채워지지 않는 분수다.
+    """
+    html_out = build_html(_rich_outcome())
+
+    assert '표시 중 <span id="count">13</span> / 13' in html_out
+
+
+def test_JS가_참조하는_식별자를_문서가_전부_담는다() -> None:
+    """**JS의 동작이 아니라 어휘를 잰다.** 필터가 실제로 거르는지는 자동 게이트가
+    없고 live로 확인한다(설계 D3 · Task 9).
+
+    잴 수 있는 것은 JS가 찾는 이름을 렌더러가 실제로 내보내는가다 - 한쪽만
+    이름을 바꾸면 `querySelector`가 `null`을 돌려주고 필터는 **예외 없이**
+    아무것도 하지 않는다.
+    """
+    html_out = build_html(_filtered(("s0", True, ("length.ratio",))))
+    row_tags = re.findall(r'<tr class="seg"[^>]*>', html_out)
+    assert row_tags
+    # 어휘가 맞아도 스크립트가 안 실려 나가면 필터는 없는 것이다.
+    assert f"<script>{_JS}</script>" in html_out
+
+    ids = sorted(set(re.findall(r"getElementById\('([\w-]+)'\)", _JS)))
+    classes = sorted(set(re.findall(r"querySelectorAll\('\.([\w-]+)'\)", _JS)))
+    attrs = sorted(set(re.findall(r"getAttribute\('(data-[\w-]+)'\)", _JS)))
+    # 셋 다 비면 아래 루프가 전부 공회전한다 - 통과가 아니라 미측정이다.
+    assert ids and classes and attrs
+
+    for ident in ids:
+        assert f'id="{ident}"' in html_out
+    for cls in classes:
+        assert f'class="{cls}"' in html_out
+    for attr in attrs:
+        assert all(f'{attr}="' in tag for tag in row_tags)
+
+
+def test_숨은_행을_감추는_CSS가_있다() -> None:
+    """`hidden` 속성만으로는 표 행이 사라지지 않는다.
+
+    브라우저 기본 스타일시트의 `tr { display: table-row }`가 `[hidden]`의
+    `display: none`과 같은 명시도로 겨루다 **나중에 선언된 쪽**이 이긴다 - 이
+    한 줄이 빠지면 JS는 정상 동작하는데 화면에서는 아무것도 걸러지지 않는다.
+    """
+    assert "tr.seg[hidden] { display: none; }" in build_html(_outcome())

@@ -47,11 +47,48 @@ th { font-size: 0.75rem; opacity: 0.7; }
 td.tc, td.score, td.id { white-space: nowrap; font-variant-numeric: tabular-nums; }
 tr.seg[data-hardfail="1"] td.score { font-weight: 700; }
 mark { background: Highlight; color: HighlightText; padding: 0 0.1em; border-radius: 2px; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+.filters .sigs { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.filters label { font-size: 0.85rem; cursor: pointer; }
+.filters .count { margin: 0; font-size: 0.85rem; opacity: 0.7; }
+noscript { display: block; width: 100%; font-size: 0.85rem; opacity: 0.8; }
+tr.seg[hidden] { display: none; }
 """
 
-# Task 7의 필터가 채운다. 빈 문자열이어도 `<script></script>`는 그대로 나가는데,
-# 그것이 정상이다 - 태그를 조건부로 없애면 Task 7이 셸까지 고쳐야 한다.
-_JS = ""
+# **`tr.seg[hidden]`이 없으면 필터가 화면에서만 안 먹는다.** 브라우저 기본
+# 스타일시트의 `tr { display: table-row }`는 `[hidden]`의 `display: none`과 명시도가
+# 같아 나중에 선언된 쪽이 이기는데, 그것이 기본 스타일이다 - JS는 `row.hidden`을
+# 정상으로 세우고 행은 그대로 보인다. 예외도 콘솔 경고도 없다.
+
+_JS = """
+(function () {
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tr.seg'));
+  var hardOnly = document.getElementById('f-hardfail');
+  var sigBoxes = Array.prototype.slice.call(document.querySelectorAll('.f-sig'));
+  var counter = document.getElementById('count');
+  if (!rows.length || !hardOnly || !counter) { return; }
+
+  function apply() {
+    var allowed = {};
+    sigBoxes.forEach(function (box) { if (box.checked) { allowed[box.value] = true; } });
+    var shown = 0;
+    rows.forEach(function (row) {
+      var names = (row.getAttribute('data-signals') || '').split(' ').filter(Boolean);
+      // 신호가 하나도 없는 행은 신호 필터로 거르지 않는다 - 거를 근거가 없다.
+      var bySignal = !names.length || names.some(function (n) { return allowed[n]; });
+      var byHard = !hardOnly.checked || row.getAttribute('data-hardfail') === '1';
+      var visible = bySignal && byHard;
+      row.hidden = !visible;
+      if (visible) { shown += 1; }
+    });
+    counter.textContent = String(shown);
+  }
+
+  hardOnly.addEventListener('change', apply);
+  sigBoxes.forEach(function (box) { box.addEventListener('change', apply); });
+  apply();
+})();
+"""
 
 _SHELL = Template(
     """<!DOCTYPE html>
@@ -84,6 +121,19 @@ _SUMMARY = Template(
 </dl>
 <p class="meta">$source_lang -&gt; $target_lang · 규격 $profile · 정책 $policy</p>
 </section>"""
+)
+
+_FILTERS = Template(
+    """<section class="filters">
+<label><input type="checkbox" id="f-hardfail"> hard fail만</label>
+<div class="sigs">$checkboxes</div>
+<p class="count">표시 중 <span id="count">$total</span> / $total</p>
+<noscript>브라우저에서 스크립트를 쓸 수 없어 필터가 동작하지 않습니다. 전량을 표시합니다.</noscript>
+</section>"""
+)
+
+_CHECKBOX = Template(
+    '<label><input type="checkbox" class="f-sig" value="$name" checked> $name</label>'
 )
 
 _TABLE = Template(
@@ -135,6 +185,34 @@ def _summary_html(outcome: TriageOutcome) -> str:
         target_lang=esc(outcome.target_lang),
         profile=esc(outcome.profile_name),
         policy=esc(outcome.policy_label),
+    )
+
+
+def _filters_html(outcome: TriageOutcome) -> str:
+    """필터 UI (FR-7.3 · 설계 D2·D3).
+
+    **신호 목록을 하드코딩하지 않는다.** 하드코딩하면 신호가 추가될 때
+    필터에서만 빠지고 그 사실이 화면에 드러나지 않는다 - 검수자는 그 신호로
+    걸린 행을 영원히 못 좁힌다(NFR-5).
+
+    **`selected`에서 뽑는다.** 행이 `outcome.selected`로만 만들어지므로
+    (`build_html`) `risks` 전체에서 뽑으면 **어떤 행도 갖지 않은 신호**가
+    필터에 뜬다 - 끄든 켜든 화면이 그대로라 필터가 고장난 것처럼 보인다.
+
+    **정렬은 재현성이다**(NFR-3). 집합을 정렬 없이 돌면 같은 입력이 실행마다
+    다른 HTML을 내 diff가 무의미해진다 - `_row_html`의 `data-signals`가 같은
+    이유로 이미 정렬돼 있고, 두 어휘가 같아야 JS의 비교가 성립한다.
+
+    **`checked`를 빼면 안 된다.** JS는 로드 직후 `apply()`를 한 번 돌리므로,
+    꺼진 채로 시작하면 신호를 가진 행이 **전부** 숨은 빈 표가 검수자를 맞는다.
+
+    파이썬이 보장하는 것은 여기까지다 - 체크박스가 실제로 행을 거르는지는
+    자동 게이트가 없고 live로 확인한다(설계 D3 · §10.6).
+    """
+    names = sorted({sig.name for risk in outcome.selected for sig in risk.signals})
+    return _FILTERS.substitute(
+        checkboxes="".join(_CHECKBOX.substitute(name=esc(name)) for name in names),
+        total=outcome.selected_for_review,
     )
 
 
@@ -224,7 +302,7 @@ def build_html(outcome: TriageOutcome) -> str:
         css=_CSS,
         js=_JS,
         summary=_summary_html(outcome),
-        filters="",
+        filters=_filters_html(outcome),
         table=_TABLE.substitute(rows=rows),
     )
 
