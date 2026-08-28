@@ -1,20 +1,22 @@
 # Session Handoff
 
 > Last updated: 2026-08-28 (KST)
-> **브랜치 `feat/report-html`에 커밋 3개가 있다** — 설계 스펙 `3cdac38`,
-> 구현 계획 `df9a67b`, **Task 1 구현**. 계획서 10개 중 **1개가 끝났다.**
-> 다음 작업은 계획서의 **Task 2**(`struct.number_missing`이 원문 구간을 낸다)다.
+> **브랜치 `feat/report-html`에 커밋 4개가 있다** — 설계 스펙 `3cdac38`,
+> 구현 계획 `df9a67b`, **Task 1 구현** `4cd3dbb`, **Task 2 구현**.
+> 계획서 10개 중 **2개가 끝났다.**
+> 다음 작업은 계획서의 **Task 3**(`struct.tag_lost`가 태그 구간을 낸다)다.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
 ## Current Status
 
-**FR-7.3의 스펙·계획서를 쓰고 Task 1까지 구현했다. 태스크 10개 중 1개 완료.**
+**FR-7.3의 스펙·계획서를 쓰고 Task 2까지 구현했다. 태스크 10개 중 2개 완료.**
 
 | 무엇 | 커밋 | 분량 |
 | --- | --- | --- |
 | [설계 스펙](docs/superpowers/specs/2026-08-27-report-html-design.md) | `3cdac38` | 499줄 · 결정 10건 · 근거 조사 6건 |
 | [구현 계획](docs/superpowers/plans/2026-08-27-report-html.md) | `df9a67b` | 2663줄 · 태스크 10개 |
-| Task 1 — `glossary.miss`가 원문 구간을 낸다 | 이 커밋 | 6파일 · 테스트 +10 |
+| Task 1 — `glossary.miss`가 원문 구간을 낸다 | `4cd3dbb` | 6파일 · 테스트 +10 |
+| Task 2 — `struct.number_missing`이 원문 구간을 낸다 | 이 커밋 | 4파일 · 테스트 +6 |
 
 직전 작업 패키지 WP8b(Tier 1 CLI 배선)는 PR [#10](https://github.com/withwooyong/cuesift/pull/10)으로
 `main`에 들어갔다(merge commit `5970143`). 그 내용은 CHANGELOG와 git에 있다.
@@ -38,11 +40,11 @@ grep -rn "Span(" --include=*.py src/ tests/
 착수 시점에 프로덕션 코드에서 **0건**이었다. 테스트 파일 두 개에만 있었다. 즉
 `Signal.spans`는 언제나 `()`였고 **하이라이트의 입력이 비어 있었다.**
 
-> **지금은 다르다 (Task 1 완료 후).** 같은 `grep`이 프로덕션 **1건**
-> (`src/cuesift/signals/derived.py`) · 테스트 **5건**(`test_report_json.py`·
-> `test_segment_models.py`)을 낸다. `glossary.miss`는 더 이상 `()`가 아니다.
-> **그러나 10종 중 1종뿐이다** — `struct.number_missing`·`struct.tag_lost`는
-> 여전히 0건이고(계획서 Task 2·3), 나머지 7종은 구간 개념이 없어 성질상 0건이다.
+> **지금은 다르다 (Task 2 완료 후).** 같은 `grep`이 프로덕션 **2건**
+> (`src/cuesift/signals/derived.py`·`src/cuesift/signals/structural.py`)을 낸다.
+> `glossary.miss`와 `struct.number_missing`은 더 이상 `()`가 아니다.
+> **그러나 10종 중 2종뿐이다** — `struct.tag_lost`는 여전히 0건이고
+> (계획서 Task 3), 나머지 7종은 구간 개념이 없어 성질상 0건이다.
 > **아래 교훈 ⓐ는 그대로 유효하다**: "채우는 코드가 1건 생겼다"와 "하이라이트의
 > 입력이 갖춰졌다"는 여전히 다른 말이다. 문서 정정은 Task 10 범위다.
 

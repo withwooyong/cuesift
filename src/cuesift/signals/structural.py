@@ -14,7 +14,7 @@ import re
 import unicodedata
 from collections import Counter
 
-from cuesift.segment import Segment, Signal
+from cuesift.segment import Segment, Signal, Span
 from cuesift.signals.base import SignalContext, register
 
 # 언어별 고유 문자 범위. 미번역 잔존 판정에 쓴다.
@@ -95,6 +95,32 @@ def _longest_consecutive_repeat(tokens: list[str]) -> tuple[int, str | None]:
     return best_count, best_unit
 
 
+def _number_matches(text: str) -> list[tuple[str, int, int]]:
+    """텍스트의 숫자를 (정규화된 값, 시작, 끝)으로 뽑는다.
+
+    **오프셋은 정규화 전 원본 기준이다.** 값은 NFKC 정규화와 천 단위 구분자
+    제거를 거치므로 원문 표기와 다르다(`５０` → `50`, `1,000` → `1000`).
+    값으로 원문 위치를 되찾으면 `str.find`가 -1을 내고 **예외 없이**
+    하이라이트만 빈다 — 검수자는 칠해지지 않은 것을 "문제 없음"으로 읽는다
+    (FR-7.3 · 설계 D8).
+
+    `_numbers`가 이 함수 위에 얹혀 있어 **추출 규칙이 하나다.** 둘로 갈리면
+    판정한 숫자와 칠하는 숫자가 어긋난다.
+    """
+    matches = []
+    for m in _NUMBER.finditer(text):
+        # **후행 쉼표를 구간에서 잘라낸다.** `_NUMBER`의 `[\\d,]*`는 천 단위
+        # 구분자를 살리려고 쉼표를 먹으므로 `"3, 4"`에서 `"3,"`까지 매치한다.
+        # 값은 어차피 쉼표를 전부 지워 `"3"`이 되는데 구간만 2글자로 남으면
+        # **`detail`이 말하는 것과 칠해지는 것이 어긋난다** — 검수자는 위험
+        # 구간에 섞인 문장 부호를 보고 무엇이 지적됐는지 되짚어야 한다.
+        # 값 자체는 바뀌지 않으므로 판정(hard_fail·score)은 그대로다.
+        raw = m.group().rstrip(",")
+        value = unicodedata.normalize("NFKC", raw).replace(",", "")
+        matches.append((value, m.start(), m.start() + len(raw)))
+    return matches
+
+
 def _numbers(text: str) -> list[str]:
     """텍스트의 숫자를 천 단위 구분자를 제거하고 NFKC 정규화해 뽑는다.
 
@@ -112,9 +138,7 @@ def _numbers(text: str) -> list[str]:
     아라비아 매핑에는 파서가 필요하고 `十分に`(≠ 10분)·`万一`(≠ 10001) 같은
     관용구에서 hard fail 신호에 새 오탐을 만든다.
     """
-    return [
-        unicodedata.normalize("NFKC", m.group()).replace(",", "") for m in _NUMBER.finditer(text)
-    ]
+    return [value for value, _, _ in _number_matches(text)]
 
 
 def _tag_names(text: str) -> Counter[str]:
@@ -205,12 +229,12 @@ class NumberMissing:
     tier = 0
 
     def collect(self, seg: Segment, ctx: SignalContext) -> Signal | None:
-        source_numbers = _numbers(seg.source_text)
-        if not source_numbers:
+        source_matches = _number_matches(seg.source_text)
+        if not source_matches:
             return None
 
         target_numbers = set(_numbers(seg.target_text or ""))
-        missing = [n for n in source_numbers if n not in target_numbers]
+        missing = [(v, s, e) for v, s, e in source_matches if v not in target_numbers]
         if not missing:
             return None
 
@@ -222,13 +246,18 @@ class NumberMissing:
         #
         # 두 자리 이상(연도·금액·시각)은 단어로 적는 일이 거의 없으므로
         # hard fail을 유지한다.
-        multi_digit = any(len(n) > 1 for n in missing)
+        multi_digit = any(len(v) > 1 for v, _, _ in missing)
+
+        # **누락된 것만 칠한다.** 전부 칠하면 정상 번역된 숫자까지 위험
+        # 구간으로 보여 검수자가 헛짚는다. `finditer` 순서가 곧 위치 순이라
+        # 정렬이 필요 없다(설계 D9).
         return Signal(
             name=self.name,
             tier=0,
             score=1.0 if multi_digit else 0.5,
             hard_fail=multi_digit,
-            detail={"missing": missing},
+            spans=tuple(Span(start=s, end=e, side="source") for _, s, e in missing),
+            detail={"missing": [v for v, _, _ in missing]},
         )
 
 

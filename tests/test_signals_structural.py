@@ -223,6 +223,93 @@ def test_number_missing_still_hard_when_number_truly_absent(ctx_ja):
     assert sig.detail["missing"] == ["2023"]
 
 
+def test_number_missing_marks_the_number_position_in_the_source(ctx):
+    """누락된 숫자의 원문 위치를 span으로 낸다 (FR-7.3)."""
+    seg = _seg("2024년에 시작했다", "It started")
+    sig = NumberMissing().collect(seg, ctx)
+
+    assert sig is not None
+    assert len(sig.spans) == 1
+    span = sig.spans[0]
+    assert span.side == "source"
+    assert seg.source_text[span.start : span.end] == "2024"
+
+
+def test_number_missing_span_uses_pre_normalization_offsets(ctx_ja):
+    """**정규화 전 위치**를 낸다.
+
+    `_numbers`는 추출 후 NFKC 정규화하므로 `detail`의 값은 `"50"`이지만
+    원문은 전각 `５０`이다. 값으로 되찾으면 `find`가 -1을 내고 하이라이트가
+    조용히 빈다(§3.4). 오프셋은 원본 문자열 기준이어야 한다.
+    """
+    seg = _seg("５０개가 있다", "There are some")
+    sig = NumberMissing().collect(seg, ctx_ja)
+
+    assert sig is not None
+    assert sig.detail["missing"] == ["50"]
+    span = sig.spans[0]
+    assert seg.source_text[span.start : span.end] == "５０"
+
+
+def test_number_missing_span_covers_the_thousands_separator(ctx):
+    """천 단위 구분자를 포함한 원문 표기 전체를 덮는다.
+
+    `detail`의 값은 `"1000"`이지만 원문은 `1,000`이다. 구간은 원문 표기를
+    가리켜야 검수자가 그 자리를 본다.
+    """
+    seg = _seg("1,000명이 왔다", "People came")
+    sig = NumberMissing().collect(seg, ctx)
+
+    assert sig is not None
+    span = sig.spans[0]
+    assert seg.source_text[span.start : span.end] == "1,000"
+
+
+def test_number_missing_spans_only_cover_missing_numbers(ctx):
+    """살아남은 숫자는 칠하지 않는다. **누락된 것만** 칠한다.
+
+    원문 숫자 3개 중 2개는 번역문에 살아 있고 하나만 없다. 이때 span이
+    3개 나오면 정상 번역된 `3`·`15`까지 위험 구간으로 보여 검수자가
+    헛짚는다.
+
+    **이 단언이 `spans`를 실제로 세지 않으면 테스트가 아니다** — 구현의
+    `missing`을 `source_matches`로 바꾼 변이가 통과해 버린다(리뷰 실측).
+    `sig is None`만 보는 형태로 되돌리지 말 것.
+    """
+    seg = _seg("3시 15분 20초", "3 minutes 15")
+    sig = NumberMissing().collect(seg, ctx)
+
+    assert sig is not None
+    assert sig.detail["missing"] == ["20"]
+    assert len(sig.spans) == 1
+    assert seg.source_text[sig.spans[0].start : sig.spans[0].end] == "20"
+
+
+def test_number_missing_span_stops_at_a_trailing_comma(ctx):
+    """구간은 숫자에서 끝난다. 뒤따르는 쉼표는 숫자가 아니다.
+
+    `_NUMBER`는 천 단위 구분자를 살리려고 `[\\d,]*`를 쓰므로 `"3, 4"`에서
+    `"3,"`까지 매치한다. 값은 콤마를 지워 `"3"`이 되는데 구간만 2글자면
+    **`detail`이 말하는 것과 칠해지는 것이 어긋난다.** 문장 부호가 위험
+    구간에 섞이면 검수자는 무엇이 지적된 것인지 읽어내야 한다.
+    """
+    seg = _seg("3, 4가 남았다", "Some remain")
+    sig = NumberMissing().collect(seg, ctx)
+
+    assert sig is not None
+    assert sig.detail["missing"] == ["3", "4"]
+    assert seg.source_text[sig.spans[0].start : sig.spans[0].end] == "3"
+
+
+def test_number_missing_span_count_matches_detail(ctx):
+    """span 개수와 `missing` 개수가 일치한다."""
+    seg = _seg("2024년과 1999년", "Some years")
+    sig = NumberMissing().collect(seg, ctx)
+
+    assert sig is not None
+    assert len(sig.spans) == len(sig.detail["missing"]) == 2
+
+
 # --- FR-3.5 태그 손실 ---
 
 
