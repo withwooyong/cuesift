@@ -27,13 +27,13 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 ## 현재 위치
 
 ```text
-  v0.1 대상 FR 42개 중 34개 완료 (81%)
+  v0.1 대상 FR 42개 중 35개 완료 (83%)
 
   WP1 Tier 0 신호 엔진   ████████████████████  ✅  FR 16개 중 15개 완료 (6.3 참고)
   WP2 벤치마크 하네스     ████████████████████  ✅  (§9.1)
   WP3 융합·검출 정정      ████████████████████  ✅  FR-6.1·3.4 정정
   WP4 인제스트           ████████████████████  ✅  FR-1.1·1.3·1.5
-  WP5 출력              ████████████████░░░░  🟡  FR 5개 중 7.1·7.2·7.4·7.5 완료
+  WP5 출력              ████████████████████  ✅  FR 5개 전부 (7.1~7.5)
   WP6 CLI 배선           ████████░░░░░░░░░░░░  🟡  FR 5개 중 8.1·8.2 완료 (+6.3 CLI 담당)
   WP7 번역 계층          ████████████████████  ✅  FR 8개 전부 (7a·7b 완료)
   WP8a Tier 1 라이브러리 ████████████████████  ✅  FR 3개 중 4.1 완료(4.3은 WP8b가 닫았다)
@@ -41,7 +41,7 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
   WP9 STT               ░░░░░░░░░░░░░░░░░░░░  ⬜  FR 2개
 ```
 
-### 30 → 32 → 34 - 산수를 남긴다
+### 30 → 32 → 34 → 35 - 산수를 남긴다
 
 | 항 | 값 | 왜 |
 | --- | --- | --- |
@@ -51,9 +51,15 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 | **소계** | **32** | 2026-08-19 |
 | **FR-4.3** Tier 1 적용 상한 | **+1** | 🟡 → ✅ (2026-08-27, WP8b). `--tier1`·`--tier1-max-ratio`·`--tier1-samples`·`--tier1-temperature`가 붙어 "라이브러리에 있음"이 "**사용자가** 설정할 수 있음"이 됐다(축 1) |
 | **FR-7.4** 요약 통계 | **+1** | 🟡 → ✅. **여기서도 자기 코드가 아니라 통로가 닫았다** - Tier 1 토큰이 `cost`에 합산되며 `includes`가 `["translation", "tier1"]`이 되어 "소요 토큰"의 축 2가 채워졌다 |
-| **합** | **34** | |
+| **소계** | **34** | 2026-08-27 |
+| **FR-7.3** `report.html` | **+1** | ⬜ → ✅ (2026-08-28, WP5 나머지). `--review-format html`이 원문/번역 대조·위험 구간 하이라이트·필터를 낸다. **여기서는 통로가 아니라 값이 없었다** - `spans[].side`가 스키마에 실려 있어 "렌더러 하나"로 읽혔는데 `Span`을 만드는 코드가 프로덕션에 **0건**이었다 |
+| **합** | **35** | |
 
-**한 작업이 FR 둘을 닫은 것은 우연이 아니고, 두 번 다 그랬다.** FR-6.4는 착수 시점에
+**셋째 줄은 FR 하나만 닫았고 그것도 우연이 아니다.** FR-7.3은 ⬜(아무것도 없음)이라
+부족한 축이 없었고, 부족한 축이 없으면 §0.1이 지정해 둘 후속 작업도 없다 - **함께
+닫히는 FR은 🟡에서만 나온다.** 앞의 두 줄이 그 사례다.
+
+**한 작업이 FR 둘을 닫은 것은 우연이 아니고, 앞의 두 번이 그랬다.** FR-6.4는 착수 시점에
 "축 1 부족(층 미도달)"이었고 그 층이 곧 리포트였다 — 요구사항정의서 §0.1이 부족한 축마다
 **다른 후속 작업**(배선 / 기능 추가)을 지정해 둔 덕분에, FR-7.2를 구현하는 것이 FR-6.4의
 후속 작업과 같은 일이라는 사실이 착수 전에 보였다. WP8b도 같았다 - FR-4.3의 후속은
@@ -109,11 +115,11 @@ FR 상태의 단일 출처는 [요구사항정의서](요구사항정의서.md) 
 
 | 축 | 대상 | 완료 |
 | --- | --- | --- |
-| 상태 열 **있는** FR | 요구사항정의서 §5.4·§5.6·§5.7의 **13개** | **10** — FR-4.1·4.3·6.1·6.2·6.4·6.5·7.1·7.2·7.4·7.5 (남은 셋은 FR-4.2 ⬜ · FR-6.3 🟡 · FR-7.3 ⬜) |
+| 상태 열 **있는** FR | 요구사항정의서 §5.4·§5.6·§5.7의 **13개** | **11** — FR-4.1·4.3·6.1·6.2·6.4·6.5·7.1·7.2·**7.3**·7.4·7.5 (남은 둘은 FR-4.2 ⬜ · FR-6.3 🟡) |
 | 상태 열 **없는** FR | v0.1 대상 42개 중 나머지 **29개**(`42 - 13`) | **24** — 이번 작업으로 움직이지 않는다 |
-| **합** | **42** | **34** |
+| **합** | **42** | **35** |
 
-`24 + 10 = 34`가 WP 축의 합과 같은 값을 낸다. **두 값이 갈라지면 산수가 아니라 판정이
+`24 + 11 = 35`가 WP 축의 합과 같은 값을 낸다. **두 값이 갈라지면 산수가 아니라 판정이
 틀린 것이다** - 그때는 표기를 고치기 전에 요구사항정의서 §0.1의 두 축 규칙을 의심한다.
 
 **FR-7.5와 FR-8.2가 서로 다른 WP에 있는데 한 작업 패키지로 끝났다.** FR-7.5(CI 종료 코드)는
@@ -159,7 +165,7 @@ translate`의 옵션으로 노출하는 배선 작업이고, 라이브러리는 
 | **2** | 벤치마크 하네스 | §9.1 | ✅ | L | 1 | `bench/` · `scripts/fetch_ted2020.py` |
 | **3** | 융합·검출 정정 | 6.1 · 3.4 | ✅ | S | 1·2 | `risk/fuse.py` noisy-or · `signals/structural.py` NFKC · `bench/results/` 재측정 (`2314fc6`·`78921d4`·`57bbded`) |
 | **4** | 인제스트 | 1.1 · 1.3 · 1.5 | ✅ | S | — | `src/cuesift/ingest/{__init__,loader}.py` · `tests/fixtures/ingest/`(픽스처 12종) · `tests/test_ingest.py` · `tests/test_ingest_fixtures.py` · `tests/test_ingest_contamination.py` (`42a126f`·`bb105b7`·`be51706`·`52acf5b`·`d51cb3c`·`1cbc21a`·`26f7517`·`6ad9366`·`50e62cf`) |
-| **5** | 출력 | 7.1~7.5 | 🟡 | M | 4 | **FR-7.1·7.2·7.4·7.5 완료** — `check`의 CI 종료 코드 5종(0·1·2·66·70)이 실제로 갈린다(FR-7.5, `90c6a7d`·`4899fec`·`59c7b51`·`6b45f95`). `ingest/writer.py`가 번역된 자막을 실제 파일로 낸다(FR-7.1, `4dc5571`·`eeb4d33`). **`src/cuesift/report/`가 `review.json`을 낸다**(FR-7.2, `--review-out DIR` · 파일명 `{stem}.{target}.review.json`) — `_run_triage`가 `list[str]` 대신 `TriageOutcome`을 돌려주어 **화면 요약과 파일이 같은 객체에서 갈라져 나온다**(수치가 어긋날 자리가 구조적으로 없다). 이 작업이 **WP1의 FR-6.4도 함께 닫았다** — 검수자에게 가는 통로가 이것뿐이었다. [설계 스펙](superpowers/specs/2026-08-18-review-json-design.md). **FR-7.4는 WP8b가 닫았다** — 요약 통계의 마지막 빈칸이던 "소요 토큰"에 Tier 1분이 합산되며 `cost.includes`가 `["translation", "tier1"]`이 된다(이 WP의 코드는 `report/models.py`의 `resolve_cost_scope`만 늘었다). **남은 것은 FR-7.3 하나다** — `report.html`, 같은 `TriageOutcome`을 렌더하는 일이다 |
+| **5** | 출력 | 7.1~7.5 | ✅ | M | 4 | **FR-7.1·7.2·7.4·7.5 완료** — `check`의 CI 종료 코드 5종(0·1·2·66·70)이 실제로 갈린다(FR-7.5, `90c6a7d`·`4899fec`·`59c7b51`·`6b45f95`). `ingest/writer.py`가 번역된 자막을 실제 파일로 낸다(FR-7.1, `4dc5571`·`eeb4d33`). **`src/cuesift/report/`가 `review.json`을 낸다**(FR-7.2, `--review-out DIR` · 파일명 `{stem}.{target}.review.json`) — `_run_triage`가 `list[str]` 대신 `TriageOutcome`을 돌려주어 **화면 요약과 파일이 같은 객체에서 갈라져 나온다**(수치가 어긋날 자리가 구조적으로 없다). 이 작업이 **WP1의 FR-6.4도 함께 닫았다** — 검수자에게 가는 통로가 이것뿐이었다. [설계 스펙](superpowers/specs/2026-08-18-review-json-design.md). **FR-7.4는 WP8b가 닫았다** — 요약 통계의 마지막 빈칸이던 "소요 토큰"에 Tier 1분이 합산되며 `cost.includes`가 `["translation", "tier1"]`이 된다(이 WP의 코드는 `report/models.py`의 `resolve_cost_scope`만 늘었다). **FR-7.3이 2026-08-28에 닫히며 이 WP가 완료됐다** — `report.html`이 원문/번역 대조·위험 구간 하이라이트·필터를 낸다(`--review-out DIR --review-format html`). **"렌더러 하나"라던 이 칸의 옛 서술은 틀렸다** — 근거였던 "`spans[].side`가 이미 실려 있다"가 스키마에만 참이었고, `grep -rn "Span(" src/`는 프로덕션 **0건**을 냈다. 그래서 범위가 수집기 3종(`glossary.miss`·`struct.number_missing`·`struct.tag_lost`)과 렌더러 **둘**이 됐고, 부수 효과로 `review.json`의 `spans`도 채워졌다(`json_report.py` 변경 0줄). **필터 동작에는 자동 게이트가 없다** - pytest는 브라우저를 띄우지 않아 live 1회(Chrome)로 확인했다. [설계 스펙](superpowers/specs/2026-08-27-report-html-design.md) |
 | **6** | CLI 배선 | 8.1~8.5 · **6.3(CLI)** | 🟡 | M | 4·5 | **FR-8.1·8.2 완료** — `cuesift translate`와 `cuesift check <자막파일> --spec <프로파일>`이 둘 다 동작한다. `check`는 `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). `translate`는 캐시·재개·다국어 순차 번역·`--dry-run`이 붙었다 — 완료 개수는 이 행에서 세지만 구현 커밋은 WP7b 행에 있다. 남은 8.3(`transcribe` 배선)·8.4(`cuesift.yaml` 로더)·8.5(진행 표시·CI 감지)는 **모두 이 WP(WP6)에 남아 있다** — FR-8.3은 §5.8("CLI")에 있어 STT 로직이 아니라 CLI 소속이다. WP9는 STT 어댑터(FR-1.2·1.4)만 내고, `transcribe`가 그 어댑터를 실제로 부르게 배선하는 것은 WP6의 몫이다. **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 — FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`). **FR-6.3의 CLI 절반도 이 WP가 담당한다**(위 "FR-6.3은 어느 WP의 것인가") — `cuesift translate --review-budget 10%`·`--review-threshold 0.7`이 `collect_all`→`fuse`→`select_by_budget`/`select_by_threshold`를 실제로 돌고 요약을 낸다. 프로파일은 대상 언어 코드로 자동 유도하며 새 옵션이 없다. **라이브러리는 한 줄도 바뀌지 않았다** — 변경이 `cli.py` 하나에 갇혀 되돌리기 단위가 작다. [설계 스펙](superpowers/specs/2026-08-18-triage-cli-design.md). **FR-6.3은 여전히 🟡다** — "상위 K개"가 남는다 |
 | **7a** | 번역 엔진 | 2.1~2.6 · 2.8 | ✅ | L | 4 | **FR 7개 완료** — `src/cuesift/translate/`(`provider`·`batch`·`prompt`·`engine`·`openai_compat`)와 `Glossary.terms_in`. 배치 번역·개별 폴백·재시도·예외 분류가 동작한다. [설계 스펙](superpowers/specs/2026-08-16-translate-engine-design.md) (`10d3b31`) · [구현 계획](superpowers/plans/2026-08-16-translate-engine.md) (`8f0ea4a`) · 구현 (`f6e0ec6`..`1b4ea6e`, 테스트 499→**813**) · 공개 API·`live` 마커와 게이트 방어 3겹 (`9159791`~, 813→**859**). **네트워크를 치지 않는다** — `httpx.MockTransport`로 검증하고 실 API는 `-m live` opt-in |
 | **7b** | 번역 영속화·CLI | 2.7 | ✅ | M | 7a·5 | **FR-2.7 완료** — 캐시(NFR-3)·재개·`--dry-run`이 실제로 동작한다. `cuesift translate` 배선(FR-8.1, 완료 개수는 WP6에서 센다)과 번역된 자막 파일 쓰기(FR-7.1, 완료 개수는 WP5에서 센다)도 이 작업 패키지에서 나왔다. `python -m cuesift`를 서브프로세스로 두 번 실행해 재개를 실물로 확인했다 — Ollama `qwen2.5:3b`, 1회차 exit 0·실제 호출 1개(2.71초), 2회차 exit 0·캐시 히트 1개·**실제 호출 0개**(0.38초). [설계 스펙](superpowers/specs/2026-08-17-translate-cli-design.md) · [구현 계획](superpowers/plans/2026-08-17-translate-cli.md) (`2d17cc2`·`cb4e0c7`) · 구현 (`742ac52`..`4685be1`) |
@@ -187,7 +193,7 @@ flowchart TD
     WP2["WP2 벤치마크 하네스<br/>✅ 완료"]
     WP3["WP3 융합·검출 정정<br/>✅ 완료"]
     WP4["WP4 인제스트<br/>✅ 완료"]
-    WP5["WP5 출력<br/>🟡 FR-7.1·7.2·7.4·7.5 완료<br/>+ FR-6.4 통로"]
+    WP5["WP5 출력<br/>✅ FR-7.1~7.5 전부<br/>+ FR-6.4 통로"]
     WP6["WP6 CLI 배선<br/>🟡 FR-8.1·8.2 완료<br/>+ FR-6.3 CLI 배선"]
     WP7A["WP7a 번역 엔진<br/>✅ FR-2.1~2.6·2.8"]
     WP7B["WP7b 영속화·CLI<br/>✅ FR-2.7 · FR-8.1"]
@@ -303,9 +309,9 @@ v0.1 전체를 기다리지 않고 중간 산출물을 낼 수 있는 유일한 
 | ~~7~~ | ~~WP6 부분 (FR-6.3 CLI 배선)~~ | ✅ 완료 (2026-08-18). **이 항목은 착수 시점의 이 표에 없었다** — 아래 정정 참고. `cuesift translate --review-budget 10%`·`--review-threshold 0.7`이 트리아지를 실제로 돌려 검수 대상·**실제 검수 비율**·hard fail·신호별 적발을 낸다. 라이브러리 변경 0줄. [설계 스펙](superpowers/specs/2026-08-18-triage-cli-design.md) |
 | ~~8~~ | ~~WP5 부분 (FR-7.2 `review.json`)~~ | ✅ 완료 (2026-08-19). **이 항목은 2순위였고 1순위보다 먼저 실행했다** — 아래 "순서 근거가 소멸했다" 참고. `translate --review-out DIR`이 검수 큐를 파일로 낸다. **FR-6.4도 함께 닫혔다**(통로가 이것뿐이었다). [설계 스펙](superpowers/specs/2026-08-18-review-json-design.md) |
 | ~~9~~ | ~~WP8b (Tier 1 CLI 배선)~~ | ✅ 완료 (2026-08-27). `cuesift translate --tier1 --review-budget 10%`가 Tier 1을 실제로 돌리고, **FR-4.3과 FR-7.4가 함께 닫혔다.** live 확인(Ollama `qwen2.5:3b`): `cost.includes`가 `["translation", "tier1"]`으로 나갔다. 착수 시점 기록은 이렇다 — `--tier1-max-ratio`·`--tier1-samples`·`--tier1-temperature`를 `cuesift translate`에 붙인다 — FR-4.3이 "라이브러리에 있음"에서 "**사용자가** 설정할 수 있음"이 되려면 여기가 닫혀야 한다. **이제 정말로 "붙이는 일만" 남았다** — 위 7이 `budget_ratio`를 조달하기 전에는 그것이 사실이 아니었다. 착수 전 정리할 것 **4건**은 `HANDOFF.md`를 본다(세그먼트 단위 프로토콜의 호출 10배가 가장 중요). **부수 효과 하나가 FR-7.4를 닫는다** — Tier 1 토큰 통로가 뚫리면 `review.json`의 `cost.includes`에 `"tier1"`을 더할 수 있게 된다 |
-| 1 | WP5 나머지 (**FR-7.3**) | `report.html` 하나만 남았다 — 요약 통계의 Tier 1 토큰분(FR-7.4)은 WP8b가 닫았다. **FR-7.3은 렌더러 하나다** — FR-7.2가 만든 `TriageOutcome`을 HTML로 그리면 되고, 하이라이트의 입력인 `spans[].side`는 이미 실려 있다. FR-7.4는 위 1(WP8b)에 걸려 있다 |
-| 2 | WP6 나머지 (FR-8.3~8.5) | `transcribe` 배선과 `cuesift.yaml` 로더·진행 표시. FR-8.1은 WP7b가 닫았다 |
-| 3 | WP9 | STT는 FR-1.3이 "자막 우선"이라 마지막이어도 S1이 성립한다 |
+| ~~10~~ | ~~WP5 나머지 (**FR-7.3**)~~ | ✅ 완료 (2026-08-28). `translate --review-out DIR --review-format html`이 검수자용 `report.html`을 낸다 — 원문/번역 대조·위험 구간 하이라이트·필터. **착수 시점 기록은 "렌더러 하나"였고 그것이 틀렸다** — 착수 조사가 `Span`을 채우는 프로덕션 코드가 **0건**임을 실측해 범위가 수집기 3종 + 렌더러 둘이 됐다. 태스크 10개, 테스트 1270 → **1379**. [설계 스펙](superpowers/specs/2026-08-27-report-html-design.md) |
+| 1 | WP6 나머지 (FR-8.3~8.5) | `transcribe` 배선과 `cuesift.yaml` 로더·진행 표시. FR-8.1은 WP7b가 닫았다. **`cuesift.yaml`(FR-8.4)이 FR-6.1의 "설정 가능한 가중치"가 기다리는 자리다** |
+| 2 | WP9 | STT는 FR-1.3이 "자막 우선"이라 마지막이어도 S1이 성립한다 |
 
 **WP7b 완료로 WP7 전체가 닫혔다.** WP8a 착수의 필수 선행은 WP7a까지였고(위 도식의
 갈라진 화살표 참고) WP7b는 조건이 아니었지만, 둘 다 끝난 지금은 그 구분이 더 이상
