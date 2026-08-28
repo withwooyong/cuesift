@@ -19,6 +19,7 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 from importlib.metadata import entry_points
 from pathlib import Path
 
@@ -58,13 +59,20 @@ def _exit_code_with_a_closed_pipe(
     read_fd, write_fd = os.pipe()
     os.close(read_fd)  # 읽는 쪽이 사라졌다. 이제 write_fd에 쓰면 반드시 실패한다.
     try:
-        proc = subprocess.Popen(
-            [sys.executable, "-c", _BOOTSTRAP, *args],
-            env=env,
-            stdout=write_fd,
-            stderr=write_fd if merge_stderr else subprocess.DEVNULL,
-        )
-        return proc.wait(timeout=60)
+        # **자식에게 설정 없는 cwd를 준다** (FR-8.4 · 설계 D2).
+        # `conftest`의 자동 탐색 차단은 `monkeypatch`라 **이 프로세스 안에서만** 듣는다.
+        # `cwd=`가 없으면 자식이 pytest의 cwd를 상속해 거기 있는 `cuesift.yaml`을 읽고,
+        # 이 테스트가 재는 **종료 코드가 설정 파일에 좌우된다.**
+        # `args`의 경로는 전부 `FIXTURES` 절대경로라 cwd를 옮겨도 안전하다.
+        with tempfile.TemporaryDirectory() as cwd_without_config:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", _BOOTSTRAP, *args],
+                env=env,
+                cwd=cwd_without_config,
+                stdout=write_fd,
+                stderr=write_fd if merge_stderr else subprocess.DEVNULL,
+            )
+            return proc.wait(timeout=60)
     finally:
         os.close(write_fd)
 
@@ -172,13 +180,16 @@ def test_python_dash_m_cuesift_is_wired():
     버전 문자열은 `cuesift.__version__`과 대조한다 - 하드코딩하면 버전이
     올라갈 때마다 이 테스트가 거짓으로 낡는다.
     """
-    result = subprocess.run(
-        [sys.executable, "-m", "cuesift", "--version"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-    )
+    # 위 헬퍼와 같은 이유로 설정 없는 cwd를 준다 (FR-8.4 · 설계 D2).
+    with tempfile.TemporaryDirectory() as cwd_without_config:
+        result = subprocess.run(
+            [sys.executable, "-m", "cuesift", "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            cwd=cwd_without_config,
+        )
 
     assert result.returncode == 0
     assert __version__ in result.stdout

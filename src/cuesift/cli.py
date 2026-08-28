@@ -36,6 +36,7 @@ from typing import IO, Annotated
 import typer
 
 from cuesift import __version__
+from cuesift.config import Config, load_config
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
 from cuesift.report import (
@@ -105,6 +106,11 @@ EXIT_BAD_INPUT = 66
 # 70("미구현·내부 오류")과 나누는 이유는 CI가 "아직 안 만든 기능"과
 # "LLM 서버가 401을 냈다"에 같은 대응을 하면 안 되기 때문이다.
 EXIT_UNAVAILABLE = 69
+
+# 자동 탐색은 현재 디렉터리 한 칸뿐이다(설계 D2). 상위로 올라가면 사용자가
+# 존재를 모르는 파일이 검수 기준을 바꾸고, 가중치와 hard fail 임계가 실린
+# 파일에서 그것은 Recall@Budget 수치를 조용히 오염시킨다.
+_DEFAULT_CONFIG_NAME = "cuesift.yaml"
 
 # 기본 캐시 위치. 프로젝트 디렉터리 안에 두는 것은 `.gitignore`에 한 줄로
 # 넣을 수 있고 작업물과 함께 옮겨지기 때문이다.
@@ -419,6 +425,7 @@ def _echo(message: str = "", *, err: bool = False) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -436,37 +443,190 @@ def main(
             "-c",
             # `--help`로 출력되는 문자열이므로 em dash를 쓰지 않는다(전역 제약).
             #
-            # **현재형으로 약속하지 않는다.** 이전 판은 "기본: ./cuesift.yaml"과
-            # "CLI 인자가 설정 파일보다 우선합니다"를 현재형으로 적었는데 둘 다 거짓이다 —
-            # `./cuesift.yaml`은 읽히지 않고 우선순위 해결도 존재하지 않는다.
-            help="설정 파일 경로 (FR-8.4). 아직 구현되지 않아 지정해도 무시됩니다. "
-            "구현되면 CLI 인자가 설정 파일보다 우선하게 됩니다.",
+            # **이제는 현재형이 참이다.** 자동 탐색과 우선순위 해결이 아래
+            # `_apply_config`에 있다. 미구현 문구를 남겨 두면 이번에는
+            # 반대 방향의 거짓말이 된다(설계 §4.3 함정 ③).
+            help="설정 파일 경로 (FR-8.4). 기본은 현재 디렉터리의 ./cuesift.yaml입니다. "
+            "CLI 인자가 설정 파일보다 우선합니다.",
         ),
     ] = None,
 ) -> None:
     """공통 옵션."""
     _harden_output_streams()
-    if config is not None:
-        # 설계 D12 — **조용한 무시는 이 저장소의 규율에 어긋난다.**
-        # 경고가 없으면 사용자는 자기 규격으로 검사됐다고 믿는데 실제로는 내장
-        # 기본값으로 검사되고 **종료 코드 0**이 나간다. 그것이 이 저장소가 1급으로
-        # 금지한 "검사하지 않고 통과하는 게이트"다.
-        #
-        # **`_harden_output_streams()` 뒤여야 한다.** 이 줄에 사용자가 준 경로가
-        # 그대로 실리므로, 하드닝 전에 쓰면 cp949로 인코딩할 수 없는 경로에서
-        # `UnicodeEncodeError`가 나고 종료 코드 1("규격 위반 발견")로 오보된다.
-        _echo(
-            f"경고: --config는 아직 구현되지 않았습니다 (FR-8.4). "
-            f"지정한 '{config}'는 무시되고 CLI 인자만 반영됩니다.",
-            err=True,
+    _apply_config(ctx, config)
+
+
+def _discover_config() -> Path | None:
+    """`--config`가 없을 때 현재 디렉터리 한 칸을 본다 (FR-8.4 · 설계 D2).
+
+    **함수로 분리한 이유는 테스트가 이 한 지점만 무력화하기 위해서다.**
+    자동 탐색은 cwd에 의존하므로, 리포 루트에 `cuesift.yaml`을 한 줄 둔
+    개발자의 로컬에서 CLI 기본값이 통째로 바뀌어 **CI에는 없는 실패**가
+    난다(실측: `dry_run: true` 한 줄로 81 failed). 이 저장소는 로컬과 CI의
+    게이트가 갈려 CI 5회 연속 실패가 숨은 전례가 있어, 반대 방향이어도 같은
+    부채다. `tests/conftest.py`의 autouse fixture가 여기를 껐다가, 자동
+    탐색 자체를 재는 테스트에서만 opt-in fixture로 되살린다.
+
+    상위로 올라가지 않는다 - 사용자가 존재를 모르는 파일이 검수 기준을
+    바꾸면 Recall@Budget 수치가 조용히 오염된다.
+
+    `Path`가 상대라서 **매 호출의 cwd**를 본다. 모듈 임포트 시점이 아니다.
+    """
+    candidate = Path(_DEFAULT_CONFIG_NAME)
+    return candidate if candidate.is_file() else None
+
+
+def _apply_config(ctx: typer.Context, config: Path | None) -> None:
+    """설정 파일을 읽어 `ctx`에 싣는다 (FR-8.4 · 설계 §4.2).
+
+    **우선순위 해결 코드를 쓰지 않는다.** click이 파라미터 **단위로**
+    `COMMANDLINE > DEFAULT_MAP > DEFAULT`를 해결한다(설계 D1 · P2). 손으로
+    병합하면 22개 옵션의 기본값을 전부 `None` 센티널로 옮겨야 하고, 그러면
+    `--help`의 기본값 표시가 사라진다.
+
+    **`_harden_output_streams()` 뒤여야 한다.** 출처 줄에 사용자가 준 경로가
+    그대로 실리므로, 하드닝 전에 쓰면 cp949로 인코딩할 수 없는 경로에서
+    `UnicodeEncodeError`가 나고 종료 코드 1("규격 위반 발견")로 오보된다.
+
+    **`typer.BadParameter`로 던지는 이유**는 `--spec`의 선례를 따르기
+    때문이다(설계 D10) - 설정 파일은 명령줄의 연장이므로 종료 코드가 2다.
+    66으로 보내면 "자막 파일이 깨졌다"로 오독된다.
+    """
+    if config is None:
+        source_or_none = _discover_config()
+        if source_or_none is None:
+            # 없으면 조용히 넘어간다. **이것이 정상 경로다** - 여기서
+            # 경고를 내면 설정 파일을 쓰지 않는 사용자가 매 실행마다
+            # stderr 한 줄을 받는다.
+            return
+        source = source_or_none
+    elif config.is_dir():
+        # `is_file()` 하나로 묶으면 **존재하는 디렉터리에 "없다"고 답한다.**
+        # 사용자는 있는 경로를 노려보며 오타를 찾게 된다.
+        raise typer.BadParameter(
+            f"{config}: 디렉터리다. 설정 파일 경로를 준다", param_hint="--config"
         )
+    elif not config.is_file():
+        raise typer.BadParameter(f"{config}: 설정 파일이 없다", param_hint="--config")
+    else:
+        source = config
+
+    try:
+        cfg: Config = load_config(source)
+    except OSError as exc:
+        # `load_config`는 내용 오류를 전부 `ValueError`로 정규화하지만 읽기
+        # 자체의 실패(권한·잠금)는 `OSError`로 샌다. 여기서 받지 않으면
+        # 미처리 traceback이 종료 코드 1로 오보된다.
+        raise typer.BadParameter(f"{source}: {exc}", param_hint="--config") from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
+
+    try:
+        ctx.default_map = cfg.to_default_map()
+    except ValueError as exc:
+        # `targets`의 list->str 변환만이 여기서 실패할 수 있다(설계 §5 2행).
+        raise typer.BadParameter(str(exc), param_hint="--config") from exc
+
+    # `signals.weights`는 CLI 옵션이 아니라 `ctx.obj`로 간다(설계 D6).
+    # `_config_weights`가 여기서 꺼내 `fuse(weights=)`까지 내려보낸다.
+    ctx.obj = cfg
+
+    # **출처를 낸다**(설계 D7). click의 오류 메시지가 `Invalid value for
+    # '--review-format'`이라 그 옵션을 친 적 없는 사용자가 명령줄을
+    # 노려보게 된다. 자동 탐색(D2)이 있으면 특히 필요하다.
+    #
+    # **stderr다.** 산출물이 아니라 실행 조건 보고이므로
+    # `cuesift check ... > violations.txt`를 오염시키면 안 된다(설계 §7.1).
+    _echo(f"설정을 읽었다: {source}", err=True)
 
 
-def _resolve_llm(base_url: str | None, model: str | None) -> tuple[str, str, str | None]:
+def _config_weights(ctx: typer.Context | None) -> Mapping[str, float] | None:
+    """설정 파일의 신호 가중치를 꺼낸다 (FR-8.4 · FR-6.1 · 설계 D6).
+
+    `ctx.obj`는 `_apply_config`가 심는다. 설정이 없으면 `None`이고 그때
+    `fuse`가 `DEFAULT_WEIGHTS`를 쓴다 - **빈 딕셔너리를 내면 안 된다**.
+    `fuse`의 `total_weight <= 0` 경로로 흘러 전량이 같은 점수가 되고,
+    그러면 예산 선별이 id 순서로 뽑는다.
+
+    CLI 옵션을 두지 않는 이유는 D6이다 - 10개 실수를 명령줄에 쓰는 것은
+    쓸모가 없고, 두면 "설정 파일 전용 값"이라는 범주가 사라진다.
+    """
+    cfg = getattr(ctx, "obj", None)
+    return getattr(cfg, "weights", None)
+
+
+def _from_config(ctx: typer.Context | None, name: str) -> bool:
+    """이 파라미터의 값이 설정 파일에서 왔는가 (FR-8.4 · 설계 D3).
+
+    **`typer._click`을 임포트하지 않는다.** 벤더링된 private 경로라 typer
+    업그레이드가 위치를 바꾸고, 그러면 임포트가 죽는 것이 아니라 이 판정이
+    조용히 거짓이 되어 설정 파일이 환경변수를 다시 이긴다.
+    `ParameterSource`는 이름 문자열로 본다.
+    """
+    if ctx is None:
+        return False
+    try:
+        source = ctx.get_parameter_source(name)
+    except (AttributeError, KeyError):
+        return False
+    return getattr(source, "name", "") == "DEFAULT_MAP"
+
+
+def _resolve_exclusive(ctx: typer.Context | None, message: str, first: str, second: str) -> str:
+    """상호배타 두 파라미터 중 **버릴 쪽**의 이름을 낸다 (FR-8.4 · 설계 D3).
+
+    **값의 존재만 보는 상호배타 검사는 설정 파일을 이길 방법을 없앤다.**
+    `cuesift.yaml`에 `triage.review_threshold`가 있으면 `--review-budget`을 친
+    사람이 exit 2를 받는데, 그는 `--review-threshold`를 쓴 적이 없다. 그래서
+    이 쌍에서만 FR-8.4 본문의 후반절이 통째로 뒤집힌다.
+
+    **양보는 한쪽만 설정에서 왔을 때뿐이다.** 둘 다 설정에서 왔으면 설정
+    파일 자체가 모순이고, 어느 쪽을 버려도 사용자가 적은 정책 하나가 조용히
+    사라진다 - 그것이 D4가 막는 실패다. 둘 다 명령줄이면 원래의 사용법
+    오류다. 두 경우 모두 여기서 exit 2로 끝내므로 반환은 늘 이름 하나다.
+    """
+    from_first = _from_config(ctx, first)
+    from_second = _from_config(ctx, second)
+    if from_first != from_second:
+        return first if from_first else second
+    if from_first:
+        # 출처를 밝힌다(설계 D7). 사용자는 이 옵션들을 친 적이 없다.
+        message = f"{message} (설정 파일에 둘 다 있다)"
+    _echo(message, err=True)
+    raise typer.Exit(2)
+
+
+def _prefer_env(
+    ctx: typer.Context | None, name: str, value: str | None, env_name: str
+) -> str | None:
+    """우선순위를 적용한다 - CLI > 환경변수 > 설정 파일 (설계 D3).
+
+    **`value or os.environ.get(...)`만 쓰면 설정 파일이 환경변수를 이긴다.**
+    `default_map`이 채운 값도 `or`의 왼쪽에서 참이기 때문이다. `value`가
+    어디서 왔는지는 `ctx`만 안다 - 값만 봐서는 구별할 수 없다.
+
+    **두 파라미터가 같은 헬퍼를 쓰는 것이 중요하다.** `base_url`만 고치면
+    `model`이 반대 순서로 남고, 그 어긋남은 값이 양쪽 다 나오므로
+    종료 코드로 드러나지 않는다.
+    """
+    env = os.environ.get(env_name)
+    if env and _from_config(ctx, name):
+        return env
+    return value or env
+
+
+def _resolve_llm(
+    ctx: typer.Context | None, base_url: str | None, model: str | None
+) -> tuple[str, str, str | None]:
     """LLM 접속 설정을 해결한다 (설계 §6.3).
 
-    우선순위는 **CLI 옵션 > 환경변수**다. FR-8.4(`cuesift.yaml`)가 오면
-    환경변수 아래에 한 칸이 더 낀다.
+    우선순위는 **CLI 옵션 > 환경변수 > 설정 파일**이다(FR-8.4 · 설계 D3).
+    마지막 한 칸은 `ctx.default_map`이 채우고, 그것을 환경변수 아래로
+    내리는 것이 `_prefer_env`다.
+
+    **`ctx`가 `None`이면 설정에서 온 값이 아니라고 본다.** 라이브러리
+    사용자가 직접 부르는 경로에서 `CLI > 환경변수`의 옛 계약이 그대로
+    유지된다.
 
     **기본값을 넣지 않는다.** `localhost:11434`를 기본으로 두면 Ollama가
     없는 사람이 연결 실패를 받는데, 그것은 "설정을 안 했다"보다 진단이
@@ -479,8 +639,8 @@ def _resolve_llm(base_url: str | None, model: str | None) -> tuple[str, str, str
     그것은 테스트 전용으로 예약돼 있고 `tests/test_translate_api.py`의
     게이트가 그 문자열로 live 마커 누락을 판정한다.
     """
-    resolved_base = base_url or os.environ.get("CUESIFT_BASE_URL")
-    resolved_model = model or os.environ.get("CUESIFT_MODEL")
+    resolved_base = _prefer_env(ctx, "base_url", base_url, "CUESIFT_BASE_URL")
+    resolved_model = _prefer_env(ctx, "model", model, "CUESIFT_MODEL")
     missing = [
         name
         for name, value in (("--base-url", resolved_base), ("--model", resolved_model))
@@ -609,6 +769,10 @@ def _review_artifact_paths(
 
 @app.command()
 def translate(
+    # **파라미터가 아니다.** typer가 `Context`를 알아보고 click 옵션 목록에서
+    # 빼므로 `--help`도 매핑표 상등 게이트도 그대로다. `_resolve_llm`이
+    # 값의 출처를 물어보려면 이것이 있어야 한다(FR-8.4 · 설계 D3).
+    ctx: typer.Context,
     input: Annotated[
         Path,
         # `readable=False`는 `check`와 같은 이유다 — 읽기 가능 판정을
@@ -785,13 +949,31 @@ def translate(
 ) -> None:
     """FR-8.1: 자막을 번역해 언어별 파일로 냅니다."""
     if no_cache and cache_dir is not None:
-        _echo("--no-cache와 --cache-dir을 함께 줄 수 없다", err=True)
-        raise typer.Exit(2)
+        # **명령줄이 이긴다**(FR-8.4 후반절). `_resolve_exclusive`가 설정에서
+        # 온 쪽을 골라 주고, 둘 다 같은 출처면 거기서 exit 2로 끝난다.
+        exclusive_loser = _resolve_exclusive(
+            ctx, "--no-cache와 --cache-dir을 함께 줄 수 없다", "no_cache", "cache_dir"
+        )
+        if exclusive_loser == "no_cache":
+            no_cache = False
+        else:
+            cache_dir = None
     if review_budget is not None and review_threshold is not None:
         # FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
         # 합성하면 어느 쪽이 이겼는지가 출력에서 사라진다(설계 D4).
-        _echo("--review-budget과 --review-threshold는 함께 쓸 수 없다", err=True)
-        raise typer.Exit(2)
+        # 버리는 쪽은 위와 같은 규칙으로 고른다.
+        if (
+            _resolve_exclusive(
+                ctx,
+                "--review-budget과 --review-threshold는 함께 쓸 수 없다",
+                "review_budget",
+                "review_threshold",
+            )
+            == "review_budget"
+        ):
+            review_budget = None
+        else:
+            review_threshold = None
     if review_threshold is not None and math.isnan(review_threshold):
         # **`min`/`max`는 NaN을 통과시킨다.** click의 범위 검사가
         # `lt(nan, 0.0)`·`gt(nan, 1.0)`으로 판정하는데 **둘 다 False**라
@@ -977,7 +1159,7 @@ def translate(
             f"예산 {review_budget}" if review_budget is not None else f"임계값 {review_threshold}"
         )
 
-    resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
+    resolved_base, resolved_model, api_key = _resolve_llm(ctx, base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
     if not targets:
         _echo("--to에 대상 언어가 없다", err=True)
@@ -1220,6 +1402,7 @@ def translate(
             review_out=review_out,
             review_format=review_format,
             tier1=tier1_settings,
+            weights=_config_weights(ctx),
         )
         worst = max(worst, code)
         if code == EXIT_UNAVAILABLE:
@@ -1509,6 +1692,7 @@ def _translate_one(
     review_out: Path | None,
     review_format: ReviewFormat,
     tier1: _Tier1Settings | None,
+    weights: Mapping[str, float] | None = None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
 
@@ -1721,6 +1905,7 @@ def _translate_one(
                 threshold=threshold,
                 policy_label=policy_label,
                 tier1=tier1,
+                weights=weights,
             )
         except FatalProviderError as exc:
             # **Tier 1이 이 함수에서 LLM을 부르는 유일한 자리다**(설계 D14 · §3.4).
@@ -2129,6 +2314,7 @@ def _run_triage(
     threshold: float | None,
     policy_label: str,
     tier1: _Tier1Settings | None = None,
+    weights: Mapping[str, float] | None = None,
 ) -> TriageOutcome:
     """번역 결과를 트리아지해 결과 객체를 낸다 (FR-6.1~6.3 · 설계 §4).
 
@@ -2153,6 +2339,11 @@ def _run_triage(
     수집·융합·예산 적용을 그쪽이 다시 하므로 여기서 `collect_all`을 부르지
     않는다 - 부르면 전량 Tier 0 수집이 두 번 돈다. `tier1`이 `None`이면 기존
     경로는 한 줄도 바뀌지 않는다(설계 D2 - 기본 꺼짐).
+
+    **`weights`는 설정 파일에서만 온다**(FR-8.4 · FR-6.1 · 설계 D6). `None`이면
+    `fuse`가 `DEFAULT_WEIGHTS`를 쓴다. **세 `fuse` 호출에 모두 가야 한다** -
+    여기 하나와 `triage_with_tier1` 안의 둘이며, 하나라도 빠지면 `--tier1`
+    유무로 순위가 갈린다(설계 §4.3 ②).
     """
     failed_ids = {f.segment_id for f in translated.failures}
     kept = [seg for seg in translated.segments if seg.id not in failed_ids]
@@ -2292,6 +2483,7 @@ def _run_triage(
             cache_dir=tier1.cache_dir,
             identity=tier1.identity,
             excluded_ids=failed_ids,
+            weights=weights,
         )
         return _outcome(
             tuple(scored),
@@ -2316,7 +2508,7 @@ def _run_triage(
     signals = collect_all(translated.segments, ctx)
     # `collect_all`은 신호가 없는 세그먼트도 빈 리스트로 키를 갖는다
     # (`signals/base.py`) - KeyError 없이 전량을 돌 수 있다는 보장이다.
-    risks = [fuse(seg.id, signals[seg.id]) for seg in kept]
+    risks = [fuse(seg.id, signals[seg.id], weights) for seg in kept]
 
     # **위에서 정한 `policy_kind`로 분기한다 - `budget_ratio`를 다시 보지
     # 않는다.** 두 번 판정하면 `review.json`이 "budget으로 돌렸다"고 적어 둔

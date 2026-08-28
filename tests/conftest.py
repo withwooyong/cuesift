@@ -214,6 +214,45 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError("게이트 설정이 어긋났다: " + " / ".join(problems) + _GATE_HINT)
 
 
+# `cuesift.yaml` 자동 탐색 차단 (FR-8.4 · 설계 D2).
+#
+# **자동 탐색은 cwd에 의존하므로 테스트 실행 환경이 CLI 기본값을 바꾼다.**
+# 리포 루트에 `cuesift.yaml`을 한 줄 두면(설계 문서가 그렇게 하라고 읽히는
+# 주석이 `.gitignore`에 있었다) CI에는 없는 파일이 로컬에서만 22개 옵션의
+# 기본값을 갈아치운다 - 실측으로 `dry_run: true` 한 줄이 **81 failed**를
+# 냈다. 이 저장소는 로컬과 CI의 게이트가 갈려 CI 5회 연속 실패가 숨은
+# 전례가 있어, 반대 방향(로컬만 빨강)이어도 같은 부채다.
+#
+# **cwd를 바꾸지 않는다.** 전역 `monkeypatch.chdir(tmp_path)`는 1456건
+# 전체의 cwd를 흔들어 상대 경로를 쓰는 기존 테스트를 깬다. 환경변수 탈출구도
+# 두지 않는다 - 설계 §1.3이 "환경변수 층 추가"를 범위 밖에 뒀고, 그것은
+# 프로덕션 코드에 테스트 전용 통로를 내는 일이다. **탐색 지점 하나만** 끈다.
+_AUTO_DISCOVERY_FIXTURE = "설정_자동_탐색"
+
+
+@pytest.fixture
+def 설정_자동_탐색() -> None:
+    """자동 탐색을 **진짜로** 켠다 (opt-in).
+
+    이 fixture를 요청한 테스트에서만 아래 autouse가 손을 뗀다. 자동 탐색
+    자체를 재는 테스트(`test_cli_config.py`의 3건)가 여기 해당한다 - 그것들이
+    없으면 이 차단이 기능을 통째로 덮어 **아무도 D2를 검사하지 않는다.**
+    """
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _설정_자동_탐색_차단(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`cuesift.cli._discover_config`를 "없음"으로 고정한다.
+
+    `request.fixturenames`는 opt-in fixture가 실제로 만들어지기 전에도
+    이름을 갖고 있어, 순서에 기대지 않고 판정할 수 있다.
+    """
+    if _AUTO_DISCOVERY_FIXTURE in request.fixturenames:
+        return
+    monkeypatch.setattr("cuesift.cli._discover_config", lambda: None)
+
+
 # 유니코드 Box Drawing 블록. `rich`의 패널 테두리가 전부 여기 있다.
 _BOX_DRAWING = re.compile(r"[─-╿]")
 

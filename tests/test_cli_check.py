@@ -933,55 +933,62 @@ def test_violations_go_to_stdout_and_diagnostics_go_to_stderr():
 
 
 def test_config_is_not_silently_ignored(tmp_path):
-    """설계 D12 — **조용한 무시는 이 저장소의 규율에 어긋난다.**
+    """설계 D12 -> FR-8.4 — **조용한 무시는 이 저장소의 규율에 어긋난다.**
 
-    FR-8.4 로더는 아직 없다. 경고가 없으면 사용자는 `--config`로 자기 규격을 지정했다고
-    믿는데 실제로는 내장 기본값으로 검사되고 **종료 코드 0**이 나간다. 그것이 이 저장소가
-    1급으로 금지한 "검사하지 않고 통과하는 게이트"이며, D12가 적은 근거와 같은 문장이다.
+    로더가 없던 동안에는 경고 한 줄로 이 규율을 지켰다. 이제 설정이 실제로
+    적용되므로 같은 규율이 요구하는 것이 바뀌었다.
 
-    **경고는 stderr다** — 산출물이 아니라 실행 조건 보고이기 때문이다(설계 §7.1 표).
-    stdout 산출물과 종료 코드는 `--config`가 있든 없든 **바이트 단위로 같아야** 한다.
-    경고를 stdout에 내면 `cuesift check ... > violations.txt`가 오염된다.
+    | 상황 | 경고 판(옛 계약) | 지금 |
+    | --- | --- | --- |
+    | `--config`가 없는 파일 | 경고 + 종료 코드 0 | **종료 코드 2** |
+    | `--config`가 있는 파일 | 경고 + 무시 | **적용 + 출처 한 줄** |
+
+    없는 파일에 0을 내면 사용자는 자기 설정으로 검사됐다고 믿는데 실제로는
+    내장 기본값으로 검사된다. 그것이 이 저장소가 1급으로 금지한
+    "검사하지 않고 통과하는 게이트"다.
+
+    **진단도 출처도 stderr다** — 산출물이 아니라 실행 조건 보고이기 때문이다
+    (설계 §7.1). stdout에 내면 `cuesift check ... > violations.txt`가 오염된다.
     """
     missing = tmp_path / "no-such-config.yaml"
     target = str(FIXTURES / "minimal.srt")
 
     without = runner.invoke(app, ["check", target, "--spec", "ko"])
-    with_config = runner.invoke(app, ["--config", str(missing), "check", target, "--spec", "ko"])
+    with_missing = runner.invoke(app, ["--config", str(missing), "check", target, "--spec", "ko"])
 
-    assert "--config" in with_config.stderr, "경고가 없으면 조용한 무시다"
-    assert "FR-8.4" in with_config.stderr, "왜 무시되는지가 없으면 사용자가 대응할 수 없다"
+    assert with_missing.exit_code == 2, "없는 설정 파일에 0을 내면 조용한 무시다"
     # 존재하지 않는 경로를 그대로 되돌려 준다 — 오타를 사용자가 알아볼 수 있어야 한다.
-    assert str(missing) in with_config.stderr
+    assert normalize_rich_message(str(missing)) in normalize_rich_message(with_missing.stderr)
+    assert with_missing.stdout.strip() == "", "진단이 산출물에 섞이면 안 된다"
 
-    # 경고가 산출물이나 종료 코드를 건드리지 않는다.
-    assert with_config.stdout == without.stdout
+    # 있는 파일은 적용되고 출처 한 줄이 stderr로 나간다(설계 D7).
+    # `--spec`을 명령줄에서 빼는 것이 설계 P3(설정이 필수 옵션을 만족시킨다)의
+    # `check` 쪽 확인을 겸한다.
+    good = tmp_path / "cuesift.yaml"
+    good.write_text("spec:\n  profile: ko\n", encoding="utf-8")
+    with_config = runner.invoke(app, ["--config", str(good), "check", target])
+
     assert with_config.exit_code == without.exit_code == 0
-    assert without.stderr.strip() == "", "--config 없이는 경고가 나오면 안 된다"
+    assert with_config.stdout == without.stdout, "출처 줄이 산출물을 바꾸면 안 된다"
+    assert str(good) in with_config.stderr, "출처가 없으면 D7이 막으려던 오진이 남는다"
+    assert without.stderr.strip() == "", "설정이 없으면 아무 줄도 나오면 안 된다"
 
 
-def test_config_warning_does_not_leak_into_stdout_on_violations(tmp_path):
-    """위반이 있을 때도 경고가 stdout을 오염시키지 않는다.
+def test_config_source_line_does_not_leak_into_stdout_on_violations(tmp_path):
+    """위반이 있을 때도 출처 줄이 stdout을 오염시키지 않는다.
 
     위 테스트는 깨끗한 파일만 본다. 위반 경로는 출력 줄 수가 달라 `>` 리다이렉트로
-    갈무리한 파일에 경고가 섞이면 **위반 목록을 기계로 파싱하는 CI가 깨진다.**
+    갈무리한 파일에 출처가 섞이면 **위반 목록을 기계로 파싱하는 CI가 깨진다.**
     """
-    result = runner.invoke(
-        app,
-        [
-            "--config",
-            str(tmp_path / "x.yaml"),
-            "check",
-            str(FIXTURES / "overlap.vtt"),
-            "--spec",
-            "ko",
-        ],
-    )
+    cfg = tmp_path / "cuesift.yaml"
+    cfg.write_text("spec:\n  profile: ko\n", encoding="utf-8")
 
-    assert result.exit_code == 1, "경고가 종료 코드를 바꾸면 안 된다"
-    assert "--config" in result.stderr
-    assert "--config" not in result.stdout
-    assert "경고" not in result.stdout
+    result = runner.invoke(app, ["--config", str(cfg), "check", str(FIXTURES / "overlap.vtt")])
+
+    assert result.exit_code == 1, "출처 줄이 종료 코드를 바꾸면 안 된다"
+    assert str(cfg) in result.stderr
+    assert str(cfg) not in result.stdout
+    assert "설정을 읽었다" not in result.stdout
 
 
 def test_a_non_utf8_profile_gets_the_same_diagnostic_as_a_non_utf8_subtitle(tmp_path):
