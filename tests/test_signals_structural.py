@@ -348,6 +348,91 @@ def test_tag_lost_silent_on_serialization_differences(ctx, source, target):
     assert TagLost().collect(_seg(source, target), ctx) is None
 
 
+def test_tag_lost_marks_the_missing_tag_in_the_source(ctx):
+    """번역문에서 사라진 태그의 **원문** 위치를 칠한다 (FR-7.3)."""
+    seg = _seg("This is <i>important</i>", "이것은 중요하다")
+    sig = TagLost().collect(seg, ctx)
+
+    assert sig is not None
+    source_spans = [s for s in sig.spans if s.side == "source"]
+    assert len(source_spans) == 2  # <i> 와 </i>
+    assert seg.source_text[source_spans[0].start : source_spans[0].end] == "<i>"
+
+
+def test_tag_lost_marks_the_invented_tag_in_the_target(ctx):
+    """번역문에만 생긴 태그는 **번역문** 위치를 칠한다.
+
+    LLM이 서식을 지어내는 사고가 있다(`TagLost` 주석). 그때 원문에는 칠할
+    것이 없으므로 side가 target이어야 한다.
+    """
+    seg = _seg("This is important", "이것은 <b>중요하다</b>")
+    sig = TagLost().collect(seg, ctx)
+
+    assert sig is not None
+    target_spans = [s for s in sig.spans if s.side == "target"]
+    assert len(target_spans) == 2
+    assert seg.target_text[target_spans[0].start : target_spans[0].end] == "<b>"
+
+
+def test_tag_lost_span_side_splits_in_both_directions(ctx):
+    """양쪽이 동시에 어긋나면 span도 양쪽에 생긴다.
+
+    **이 신호만 side가 갈린다.** 다른 두 신호(용어·숫자 누락)는 언제나
+    source라, 여기서 상수 고정 변이가 죽지 않으면 `Span.side`가 존재할
+    이유 자체가 검증되지 않는다.
+    """
+    seg = _seg("<i>A</i>", "<b>B</b>")
+    sig = TagLost().collect(seg, ctx)
+
+    assert sig is not None
+    assert {s.side for s in sig.spans} == {"source", "target"}
+
+
+def test_tag_lost_ignores_attributes_when_locating(ctx):
+    """속성이 있어도 태그 전체를 덮는다.
+
+    `_TAG`가 `[^>]*?/?>`로 속성을 삼키므로 구간은 `<font color="red">`
+    전체다. 이름만 덮으면 검수자가 어디까지가 그 태그인지 못 본다.
+    """
+    seg = _seg('<font color="red">A</font>', "A")
+    sig = TagLost().collect(seg, ctx)
+
+    assert sig is not None
+    first = [s for s in sig.spans if s.side == "source"][0]
+    assert seg.source_text[first.start : first.end] == '<font color="red">'
+
+
+def test_tag_lost_spans_skip_the_tags_that_survived(ctx):
+    """살아남은 태그는 칠하지 않는다.
+
+    **이 테스트가 `lost`/`invented` 필터의 유일한 게이트다.** 다른 입력은
+    전부 "모든 태그가 손실"이라 필터를 지우고 전부 칠해도 통과한다 —
+    판정은 맞고 하이라이트만 틀린 상태로, Task 2에서 실제로 생존한 변이와
+    같은 형태다.
+    """
+    seg = _seg("<i>A</i> and <b>B</b>", "<i>가</i> 그리고 B")
+    sig = TagLost().collect(seg, ctx)
+
+    assert sig is not None
+    painted = [seg.source_text[s.start : s.end] for s in sig.spans if s.side == "source"]
+    assert painted == ["<b>", "</b>"]
+
+
+def test_tag_lost_paints_every_tag_of_a_name_when_one_of_many_is_lost(ctx):
+    """같은 이름이 여러 개면 그 이름의 태그를 **모두** 칠한다.
+
+    개수만 줄어든 경우 어느 것이 사라졌는지 알 방법이 없다. 하나만 골라
+    칠하면 검수자가 엉뚱한 곳을 본다 — 후보를 모두 보여 세게 한다
+    (`TagLost.collect` 주석).
+    """
+    seg = _seg("<i>A</i><i>B</i>", "<i>가</i>")
+    sig = TagLost().collect(seg, ctx)
+
+    assert sig is not None
+    painted = [seg.source_text[s.start : s.end] for s in sig.spans if s.side == "source"]
+    assert painted == ["<i>", "</i>", "<i>", "</i>"]
+
+
 # --- FR-3.1 미번역 잔존 (짧은 세그먼트) ---
 
 

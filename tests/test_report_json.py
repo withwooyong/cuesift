@@ -9,6 +9,9 @@ import pytest
 
 from cuesift.report import TriageOutcome, build_review, write_review
 from cuesift.segment import Segment, SegmentRisk, Signal, Span
+from cuesift.signals import SignalContext
+from cuesift.signals.structural import TagLost
+from cuesift.spec import load_builtin
 from cuesift.translate.provider import TokenUsage
 
 
@@ -360,6 +363,36 @@ def test_spans가_side와_함께_실린다() -> None:
     assert doc["segments"][0]["signals"][0]["spans"] == [
         {"start": 0, "end": 12, "side": "target"},
         {"start": 3, "end": 7, "side": "source"},
+    ]
+
+
+def test_수집기가_낸_spans가_리포트에_그대로_실린다() -> None:
+    """`json_report.py`를 고치지 않아도 spans가 채워진다 (설계 §4).
+
+    손대야 한다면 "두 산출물이 한 원천에서 나온다"는 전제가 틀렸다는 신호다.
+    **손으로 만든 `Span`이 아니라 수집기가 낸 것을 쓴다** — 다른 spans
+    테스트는 전부 픽스처라, 신호가 spans를 아예 채우지 않아도 통과한다.
+    """
+    seg = Segment(
+        id="00000",
+        index=0,
+        start_ms=0,
+        end_ms=1000,
+        source_text="This is <i>A</i>",
+        target_text="이것은 A",
+    )
+    sig = TagLost().collect(
+        seg,
+        SignalContext(
+            profile=load_builtin("en"), glossary=None, source_lang="ko", target_lang="en"
+        ),
+    )
+    assert sig is not None and sig.spans
+
+    doc = build_review(_outcome(risks=(_risk("00000", selected=True, signals=[sig]),)))
+
+    assert doc["segments"][0]["signals"][0]["spans"] == [
+        {"start": s.start, "end": s.end, "side": s.side} for s in sig.spans
     ]
 
 

@@ -141,12 +141,30 @@ def _numbers(text: str) -> list[str]:
     return [value for value, _, _ in _number_matches(text)]
 
 
+def _tag_matches(text: str) -> list[tuple[str, int, int]]:
+    """텍스트의 태그를 (정규화된 이름, 시작, 끝)으로 뽑는다.
+
+    이름 정규화는 `_tag_names`와 **같다** — 닫는 태그는 `/` 접두어, 소문자.
+    두 곳에 규칙을 따로 두면 손실로 **센** 태그와 **칠하는** 태그가 어긋나
+    판정과 하이라이트가 다른 말을 한다. 그래서 `_tag_names`를 이 함수 위에
+    얹는다(FR-7.3).
+
+    구간은 **태그 전체**다(`<font color="red">`). 이름만 덮으면 검수자가
+    어디까지가 그 태그인지 못 본다.
+    """
+    return [
+        (
+            ("/" if m.group(0).startswith("</") else "") + m.group(1).lower(),
+            m.start(),
+            m.end(),
+        )
+        for m in _TAG.finditer(text)
+    ]
+
+
 def _tag_names(text: str) -> Counter[str]:
     """텍스트의 태그를 이름 기준으로 센다. 닫는 태그는 `/` 접두어로 구분한다."""
-    return Counter(
-        ("/" if m.group(0).startswith("</") else "") + m.group(1).lower()
-        for m in _TAG.finditer(text)
-    )
+    return Counter(name for name, _, _ in _tag_matches(text))
 
 
 class Untranslated:
@@ -268,17 +286,43 @@ class TagLost:
     tier = 0
 
     def collect(self, seg: Segment, ctx: SignalContext) -> Signal | None:
-        source_tags = _tag_names(seg.source_text)
-        target_tags = _tag_names(seg.target_text or "")
+        source_matches = _tag_matches(seg.source_text)
+        target_matches = _tag_matches(seg.target_text or "")
+        source_tags = Counter(name for name, _, _ in source_matches)
+        target_tags = Counter(name for name, _, _ in target_matches)
         if source_tags == target_tags:
             return None
 
         # 없던 태그가 생긴 것도 불일치다. LLM이 서식을 지어내는 사고가 있다.
+        #
+        # **양방향을 각각 칠한다** — 원문에서 사라진 것은 원문을, 번역문에만
+        # 생긴 것은 번역문을 가리킨다. 이 신호가 `Span.side`가 존재하는
+        # 이유의 실물이다(FR-7.3 · `Span` 독스트링). 다른 Tier 0 누락 신호는
+        # 언제나 source다.
+        #
+        # `Counter` 뺄셈은 음수를 버리므로 "부족한 만큼"만 남는다. 개수가
+        # 아니라 **이름 집합**으로 칠하는 이유는, 같은 이름이 3개 중 1개만
+        # 사라졌을 때 어느 것이 사라졌는지 알 방법이 없기 때문이다 —
+        # 그 이름의 태그를 모두 칠해 검수자가 세게 한다.
+        #
+        # 살아남은 태그는 칠하지 않는다. 전부 칠하면 멀쩡한 마크업까지
+        # 위험 구간으로 보여 검수자가 헛짚는다.
+        lost = set(source_tags - target_tags)
+        invented = set(target_tags - source_tags)
+
+        spans = [
+            Span(start=s, end=e, side="source") for name, s, e in source_matches if name in lost
+        ]
+        spans += [
+            Span(start=s, end=e, side="target") for name, s, e in target_matches if name in invented
+        ]
+
         return Signal(
             name=self.name,
             tier=0,
             score=1.0,
             hard_fail=True,
+            spans=tuple(spans),
             detail={"source": dict(source_tags), "target": dict(target_tags)},
         )
 
