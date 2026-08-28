@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
 from cuesift.risk.fuse import fuse
@@ -32,6 +32,7 @@ def triage_with_tier1(
     cache_dir: Path | None = None,
     identity: str | None = None,
     excluded_ids: Collection[str] = (),
+    weights: Mapping[str, float] | None = None,
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -44,6 +45,11 @@ def triage_with_tier1(
     기본값이라 **출처가 있기 때문이다**(§11 R8 - 출처 없는 수치를 기본값으로
     넣지 않는다). 0.0이면 재번역이 전부 같아 신호가 죽는데, 그 방어는
     `Tier1Context`가 한다.
+
+    **`weights`는 두 `fuse` 호출에 모두 간다**(FR-8.4 · 설계 §4.3 ②).
+    ②만 넘기고 ⑥을 두면 사용자 가중치로 고른 후보를 기본 가중치로 다시
+    세우게 되어, 가중치를 설정한 사용자에게만 순위가 어긋난다. `None`이면
+    `fuse`가 `DEFAULT_WEIGHTS`를 쓴다.
 
     ## `excluded_ids` - 수집과 융합의 입력이 다르다
 
@@ -238,7 +244,7 @@ def triage_with_tier1(
 
     # ② 1차 융합 - **`kept`만** 본다(설계 D5). `segments`를 그대로 두면
     # 번역 실패분이 hard fail로 예산 quota를 먹어 진짜 오류가 큐에서 밀린다.
-    risks = [fuse(seg.id, tier0[seg.id]) for seg in kept]
+    risks = [fuse(seg.id, tier0[seg.id], weights) for seg in kept]
 
     # ③ 예산 적용 - ④가 "이미 큐에 든 것"을 알아야 한다
     scored = select_by_budget(risks, budget_ratio)
@@ -300,7 +306,7 @@ def triage_with_tier1(
     # **여기도 `kept`다.** ②만 고치고 여기를 두면 Tier 1이 실제로 도는
     # 경로에서만 실패분이 되살아난다 - 후보 0건일 때는 조기 반환이라
     # 드러나지 않아, Tier 1을 켰을 때와 안 켰을 때의 분모가 갈라진다.
-    rescored = [fuse(seg.id, tier0[seg.id] + tier1.get(seg.id, [])) for seg in kept]
+    rescored = [fuse(seg.id, tier0[seg.id] + tier1.get(seg.id, []), weights) for seg in kept]
 
     # ⑦ 예산 재적용
     return select_by_budget(rescored, budget_ratio)

@@ -2417,6 +2417,7 @@ def _run_triage(
             cache_dir=tier1.cache_dir,
             identity=tier1.identity,
             excluded_ids=failed_ids,
+            weights=weights,
         )
         return _outcome(
             tuple(scored),

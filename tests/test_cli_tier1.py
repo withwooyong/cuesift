@@ -1309,3 +1309,66 @@ def test_설정이_없으면_기본_가중치를_쓴다(tmp_path: Path, monkeypa
     assert result.exit_code == 0, result.output
     assert 본것, "fuse가 한 번도 불리지 않았다 - 이 테스트는 아무것도 검사하지 않는다"
     assert all(w is None for w in 본것), 본것
+
+
+def test_Tier1_경로의_융합_두_곳도_설정_가중치를_쓴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설계 §4.3 ② - `tier1.py`의 `fuse` 호출 2곳.
+
+    **`--tier1` 없이 통과하는 테스트만 쓰면 이 두 줄을 빼먹어도 전부
+    초록이다.** 그중 재점수 지점(⑥)이 특히 위험하다 - 사용자 가중치로 고른
+    후보를 기본 가중치로 다시 세우게 되어, 가중치를 설정한 사용자에게만
+    순위가 어긋난다.
+
+    **호출이 2회 이상인 것을 함께 단언한다.** 1회면 ②만 돌고 ⑥에 닿지 않은
+    것이며(후보 0건의 조기 반환), 그 상태로는 ⑥의 누락을 잡지 못한다.
+    """
+    from cuesift import tier1 as tier1_module
+
+    cfg = _write_weights_config(tmp_path)
+    fake = _clean_echo()
+    본것 = _spy_fuse(monkeypatch, tier1_module)
+    _patch_provider(monkeypatch, fake)
+
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), *_full_args(tmp_path, "--tier1", *_TIER1_RUNS)],
+    )
+
+    assert result.exit_code == 0, result.output
+    _assert_tier1_ran(fake)
+    assert len(본것) >= 2, f"융합이 {len(본것)}회만 돌았다 - 재점수(⑥)에 닿지 않았다"
+    assert all(w is not None and w["spec.violation"] == 0.3 for w in 본것), 본것
+
+
+def test_Tier1_재점수가_1차_융합과_같은_가중치를_쓴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설계 §4.3 ② - ②와 ⑥이 **같은 표**를 봐야 한다.
+
+    위 테스트는 "둘 다 None이 아니다"를 재는데, 그것만으로는 ⑥이 **다른**
+    표를 보게 되는 변이를 잡지 못한다(예: ⑥에만 `DEFAULT_WEIGHTS`를
+    넘기는 구현). 여기서는 마지막 호출(⑥)이 첫 호출(②)과 **같은 객체**임을
+    본다 - 후보를 고른 표와 다시 세운 표가 갈리면 그것이 곧 §4.3 ②가
+    말하는 실패다.
+    """
+    from cuesift import tier1 as tier1_module
+
+    cfg = _write_weights_config(tmp_path)
+    fake = _clean_echo()
+    본것 = _spy_fuse(monkeypatch, tier1_module)
+    _patch_provider(monkeypatch, fake)
+
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), *_full_args(tmp_path, "--tier1", *_TIER1_RUNS)],
+    )
+
+    assert result.exit_code == 0, result.output
+    _assert_tier1_ran(fake)
+    assert len(본것) >= 2, f"융합이 {len(본것)}회만 돌았다 - 재점수(⑥)에 닿지 않았다"
+    # **`is`만 두면 둘 다 `None`일 때 통과한다** - 통로가 통째로 없는 상태가
+    # "같은 표를 본다"로 읽힌다. 비어 있지 않음을 먼저 못 박는다.
+    assert 본것[0] is not None, 본것
+    assert 본것[-1] is 본것[0], (본것[0], 본것[-1])
