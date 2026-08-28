@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from cuesift.config.schema import ALLOWED_PATHS, BRANCH_PATHS, LEAF_PATHS
+from cuesift.config.schema import ALLOWED_PATHS, BINDINGS, BRANCH_PATHS, LEAF_PATHS
 from cuesift.risk.fuse import DEFAULT_WEIGHTS
 
 # v0.1이 지원하는 값. 요구사항정의서 §12 Q3 - 로컬 LLM은 OpenAI 호환
@@ -36,6 +36,27 @@ class Config:
     source: Path
     values: dict[tuple[str, ...], object]
     weights: dict[str, float] | None
+
+    def to_default_map(self) -> dict[str, dict[str, object]]:
+        """click이 읽을 커맨드 중첩으로 접는다 (설계 D8 · §5).
+
+        **없는 키를 채우지 않는다.** `None`으로 채우면 click이 그것을
+        "설정이 준 값"으로 보고 옵션의 실제 기본값을 덮는다.
+        """
+        out: dict[str, dict[str, object]] = {}
+        for binding in BINDINGS:
+            if binding.path not in self.values:
+                continue
+            value = self.values[binding.path]
+            if binding.transform is not None:
+                try:
+                    value = binding.transform(value)
+                except ValueError as exc:
+                    # 변환 함수는 파일 경로를 모른다. 여기서 실어 준다.
+                    raise ValueError(f"{self.source}: {exc}") from exc
+            for command, param in binding.targets:
+                out.setdefault(command, {})[param] = value
+        return out
 
 
 def load_config(path: Path) -> Config:
