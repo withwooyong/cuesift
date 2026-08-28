@@ -36,6 +36,33 @@ def _check(cfg: Path, *after: str):
     return runner.invoke(app, ["--config", str(cfg), "check", str(_VIOLATIONS), *after])
 
 
+def _srt(tmp_path: Path) -> Path:
+    path = tmp_path / "a.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕\n", encoding="utf-8")
+    return path
+
+
+def _translate(cfg: Path, target: Path, *after: str):
+    """`--dry-run`으로 도는 `translate`. LLM 접속은 CLI로 채워 exit 2 원인을 하나로 줄인다."""
+    return runner.invoke(
+        app,
+        [
+            "--config",
+            str(cfg),
+            "translate",
+            str(target),
+            "--to",
+            "en",
+            "--dry-run",
+            "--base-url",
+            "http://x/v1",
+            "--model",
+            "m",
+            *after,
+        ],
+    )
+
+
 # 우선순위 진리표 (설계 D3 · §8).
 #
 # **프로바이더가 필요 없는 `check`로 잰다.** `--limit`은 출력 줄 수를,
@@ -70,6 +97,66 @@ def test_진리표_둘_다_있으면_CLI가_이긴다(tmp_path: Path) -> None:
     result = _check(cfg, "--limit", "1", "--fail-on", "none")
     assert _violation_lines(result.stdout) == 1
     assert result.exit_code == 0
+
+
+# 상호배타 쌍과 우선순위 (FR-8.4 후반절 · 설계 D3).
+#
+# **값의 존재만 보는 상호배타 검사는 설정 파일을 이길 방법을 없앤다.**
+# `cuesift.yaml`에 `triage.review_threshold`를 적어 두면 `--review-budget`을
+# 친 사람이 exit 2를 받는데, 그 사람은 명령줄에 `--review-threshold`를 쓴 적이
+# 없다. FR-8.4 본문의 "CLI 인자가 설정 파일보다 우선한다"가 이 두 쌍에서만
+# 통째로 뒤집힌다.
+
+
+def test_CLI_예산이_설정의_임계값을_이긴다(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "triage:\n  review_threshold: 0.5\n")
+    result = _translate(cfg, _srt(tmp_path), "--review-budget", "10%")
+    assert result.exit_code == 0, result.output
+
+
+def test_CLI_임계값이_설정의_예산을_이긴다(tmp_path: Path) -> None:
+    # 반대 방향도 본다. 한쪽만 고치면 다른 쪽이 그대로 남는다.
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "10%"\n')
+    result = _translate(cfg, _srt(tmp_path), "--review-threshold", "0.5")
+    assert result.exit_code == 0, result.output
+
+
+def test_CLI_캐시_끄기가_설정의_캐시_경로를_이긴다(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "cache:\n  dir: .c\n")
+    result = _translate(cfg, _srt(tmp_path), "--no-cache")
+    assert result.exit_code == 0, result.output
+
+
+def test_CLI_캐시_경로가_설정의_캐시_끄기를_이긴다(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "cache:\n  enabled: false\n")
+    result = _translate(cfg, _srt(tmp_path), "--cache-dir", str(tmp_path / "c"))
+    assert result.exit_code == 0, result.output
+
+
+def test_설정끼리의_상호배타는_여전히_오류다(tmp_path: Path) -> None:
+    # **양보를 넓히지 않는다.** 둘 다 설정에서 왔으면 설정 파일 자체가
+    # 모순이고, 어느 쪽을 버려도 사용자가 적은 정책 하나가 조용히 사라진다.
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "10%"\n  review_threshold: 0.5\n')
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2
+    assert normalize_rich_message("설정 파일") in normalize_rich_message(result.stderr)
+
+
+def test_설정끼리의_캐시_상호배타도_여전히_오류다(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, "cache:\n  dir: .c\n  enabled: false\n")
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2
+    assert normalize_rich_message("설정 파일") in normalize_rich_message(result.stderr)
+
+
+def test_명령줄끼리의_상호배타는_여전히_오류다(tmp_path: Path) -> None:
+    # 양보가 출처를 보지 않고 늘 한쪽을 버리면 이 두 건이 조용히 통과한다.
+    cfg = _config(tmp_path, "source_lang: ko\n")
+    budget = _translate(cfg, _srt(tmp_path), "--review-budget", "10%", "--review-threshold", "0.5")
+    assert budget.exit_code == 2
+    assert normalize_rich_message("설정 파일") not in normalize_rich_message(budget.stderr)
+    cache = _translate(cfg, _srt(tmp_path), "--no-cache", "--cache-dir", str(tmp_path / "c"))
+    assert cache.exit_code == 2
 
 
 def test_설정이_필수_옵션을_만족시킨다(tmp_path: Path) -> None:
@@ -114,16 +201,34 @@ def test_모르는_키는_종료_코드_2다(tmp_path: Path) -> None:
 
 
 def test_틀린_값은_click이_종료_코드_2로_낸다(tmp_path: Path) -> None:
-    # 설계 D5·P4 - 로더가 아니라 click이 판정한다.
-    target = tmp_path / "a.srt"
-    target.write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕\n", encoding="utf-8")
+    """설계 D5·P4 - 로더가 아니라 click이 `default_map` 값을 변환·검증한다.
+
+    **종료 코드만 보면 이 테스트는 아무것도 재지 않는다.** 초판은
+    `--base-url`·`--model`을 주지 않아 **같은 명령이 그 결핍만으로도 exit 2**
+    였다 - `schema.py`의 `review.format` 행을 통째로 지워도 초록이었다(변이
+    실측). D5·P4를 재는 유일한 게이트가 그런 상태였다.
+
+    그래서 다른 exit 2 원인을 지우고(`--dry-run` + 접속 정보) click이 낸
+    **값 오류 메시지**까지 함께 단언한다.
+    """
     cfg = _config(tmp_path, "review:\n  format: xml\n")
-    result = runner.invoke(app, ["--config", str(cfg), "translate", str(target), "--to", "en"])
+    result = _translate(cfg, _srt(tmp_path))
     assert result.exit_code == 2
+    message = normalize_rich_message(result.output)
+    assert normalize_rich_message("Invalid value for '--review-format'") in message
+    assert normalize_rich_message("xml") in message
+
+
+# 자동 탐색 3건 (설계 D2).
+#
+# **`설정_자동_탐색` fixture를 요청해야 진짜 탐색이 돈다.** `conftest.py`의
+# autouse가 나머지 전체에서 탐색을 끄기 때문이다(리포 루트의 `cuesift.yaml`
+# 한 줄이 로컬에서만 81건을 깨뜨린 실측). 그 차단이 이 3건까지 덮으면
+# D2를 재는 게이트가 통째로 사라진다.
 
 
 def test_현재_디렉터리의_cuesift_yaml을_자동으로_읽는다(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 설정_자동_탐색: None
 ) -> None:
     _config(tmp_path, "source_lang: ja\n")
     monkeypatch.chdir(tmp_path)
@@ -131,7 +236,9 @@ def test_현재_디렉터리의_cuesift_yaml을_자동으로_읽는다(
     assert "cuesift.yaml" in result.stderr
 
 
-def test_상위_디렉터리는_읽지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_상위_디렉터리는_읽지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 설정_자동_탐색: None
+) -> None:
     # 설계 D2 - 사용자가 존재를 모르는 파일이 검수 기준을 바꾸는 것을 막는다.
     # **반대 방향 회귀 테스트다.** 위 테스트만 두면 상위 탐색을 넣어도 초록이다.
     _config(tmp_path, "source_lang: ja\n")
@@ -143,7 +250,9 @@ def test_상위_디렉터리는_읽지_않는다(tmp_path: Path, monkeypatch: py
     assert result.exit_code == 0
 
 
-def test_설정이_없으면_조용히_넘어간다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_설정이_없으면_조용히_넘어간다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 설정_자동_탐색: None
+) -> None:
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["check", str(_VIOLATIONS), "--spec", "ko", "--fail-on", "none"])
     assert result.exit_code == 0

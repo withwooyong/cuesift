@@ -64,8 +64,17 @@ report.html
 # 한다. 없으면 리포 루트에서 한 번 실행할 때마다 `?? .cuesift/`가 뜬다.
 .cuesift/
 
-# 로컬 설정 오버라이드 (cuesift.yaml 자체는 예시로 커밋할 수 있음)
-cuesift.local.yaml
+# 설정 파일 (FR-8.4). 로더는 `./cuesift.yaml` **한 칸**만 본다(설계 D2).
+#
+# 이전 판은 `cuesift.local.yaml`을 적어 두었는데, 그 이름은 아무도 읽지
+# 않는다 - 힌트를 따른 사용자의 설정이 조용히 무시되고 exit 0이 된다.
+# 설계 D4가 금지한 바로 그 실패다.
+#
+# **리포 루트에 커밋하지 않는다.** 루트에 두면 이 리포에서 CLI·pytest를
+# 돌리는 모두의 옵션 기본값이 갈아치워지는데 CI에는 그 파일이 없어
+# **로컬만 깨진다** (실측: `dry_run: true` 한 줄로 81 failed).
+# 예시가 필요하면 `docs/` 아래에 둔다.
+/cuesift.yaml
 
 # 모델 가중치·캐시 (WhisperX·COMET)
 models/

@@ -456,6 +456,26 @@ def main(
     _apply_config(ctx, config)
 
 
+def _discover_config() -> Path | None:
+    """`--config`가 없을 때 현재 디렉터리 한 칸을 본다 (FR-8.4 · 설계 D2).
+
+    **함수로 분리한 이유는 테스트가 이 한 지점만 무력화하기 위해서다.**
+    자동 탐색은 cwd에 의존하므로, 리포 루트에 `cuesift.yaml`을 한 줄 둔
+    개발자의 로컬에서 CLI 기본값이 통째로 바뀌어 **CI에는 없는 실패**가
+    난다(실측: `dry_run: true` 한 줄로 81 failed). 이 저장소는 로컬과 CI의
+    게이트가 갈려 CI 5회 연속 실패가 숨은 전례가 있어, 반대 방향이어도 같은
+    부채다. `tests/conftest.py`의 autouse fixture가 여기를 껐다가, 자동
+    탐색 자체를 재는 테스트에서만 opt-in fixture로 되살린다.
+
+    상위로 올라가지 않는다 - 사용자가 존재를 모르는 파일이 검수 기준을
+    바꾸면 Recall@Budget 수치가 조용히 오염된다.
+
+    `Path`가 상대라서 **매 호출의 cwd**를 본다. 모듈 임포트 시점이 아니다.
+    """
+    candidate = Path(_DEFAULT_CONFIG_NAME)
+    return candidate if candidate.is_file() else None
+
+
 def _apply_config(ctx: typer.Context, config: Path | None) -> None:
     """설정 파일을 읽어 `ctx`에 싣는다 (FR-8.4 · 설계 §4.2).
 
@@ -473,15 +493,19 @@ def _apply_config(ctx: typer.Context, config: Path | None) -> None:
     66으로 보내면 "자막 파일이 깨졌다"로 오독된다.
     """
     if config is None:
-        # 자동 탐색은 현재 디렉터리 한 칸이다(설계 D2). `Path`가 상대라서
-        # 매 호출의 cwd를 본다 - 모듈 임포트 시점이 아니다.
-        candidate = Path(_DEFAULT_CONFIG_NAME)
-        if not candidate.is_file():
+        source_or_none = _discover_config()
+        if source_or_none is None:
             # 없으면 조용히 넘어간다. **이것이 정상 경로다** - 여기서
             # 경고를 내면 설정 파일을 쓰지 않는 사용자가 매 실행마다
             # stderr 한 줄을 받는다.
             return
-        source = candidate
+        source = source_or_none
+    elif config.is_dir():
+        # `is_file()` 하나로 묶으면 **존재하는 디렉터리에 "없다"고 답한다.**
+        # 사용자는 있는 경로를 노려보며 오타를 찾게 된다.
+        raise typer.BadParameter(
+            f"{config}: 디렉터리다. 설정 파일 경로를 준다", param_hint="--config"
+        )
     elif not config.is_file():
         raise typer.BadParameter(f"{config}: 설정 파일이 없다", param_hint="--config")
     else:
@@ -546,6 +570,30 @@ def _from_config(ctx: typer.Context | None, name: str) -> bool:
     except (AttributeError, KeyError):
         return False
     return getattr(source, "name", "") == "DEFAULT_MAP"
+
+
+def _resolve_exclusive(ctx: typer.Context | None, message: str, first: str, second: str) -> str:
+    """상호배타 두 파라미터 중 **버릴 쪽**의 이름을 낸다 (FR-8.4 · 설계 D3).
+
+    **값의 존재만 보는 상호배타 검사는 설정 파일을 이길 방법을 없앤다.**
+    `cuesift.yaml`에 `triage.review_threshold`가 있으면 `--review-budget`을 친
+    사람이 exit 2를 받는데, 그는 `--review-threshold`를 쓴 적이 없다. 그래서
+    이 쌍에서만 FR-8.4 본문의 후반절이 통째로 뒤집힌다.
+
+    **양보는 한쪽만 설정에서 왔을 때뿐이다.** 둘 다 설정에서 왔으면 설정
+    파일 자체가 모순이고, 어느 쪽을 버려도 사용자가 적은 정책 하나가 조용히
+    사라진다 - 그것이 D4가 막는 실패다. 둘 다 명령줄이면 원래의 사용법
+    오류다. 두 경우 모두 여기서 exit 2로 끝내므로 반환은 늘 이름 하나다.
+    """
+    from_first = _from_config(ctx, first)
+    from_second = _from_config(ctx, second)
+    if from_first != from_second:
+        return first if from_first else second
+    if from_first:
+        # 출처를 밝힌다(설계 D7). 사용자는 이 옵션들을 친 적이 없다.
+        message = f"{message} (설정 파일에 둘 다 있다)"
+    _echo(message, err=True)
+    raise typer.Exit(2)
 
 
 def _prefer_env(
@@ -901,13 +949,31 @@ def translate(
 ) -> None:
     """FR-8.1: 자막을 번역해 언어별 파일로 냅니다."""
     if no_cache and cache_dir is not None:
-        _echo("--no-cache와 --cache-dir을 함께 줄 수 없다", err=True)
-        raise typer.Exit(2)
+        # **명령줄이 이긴다**(FR-8.4 후반절). `_resolve_exclusive`가 설정에서
+        # 온 쪽을 골라 주고, 둘 다 같은 출처면 거기서 exit 2로 끝난다.
+        exclusive_loser = _resolve_exclusive(
+            ctx, "--no-cache와 --cache-dir을 함께 줄 수 없다", "no_cache", "cache_dir"
+        )
+        if exclusive_loser == "no_cache":
+            no_cache = False
+        else:
+            cache_dir = None
     if review_budget is not None and review_threshold is not None:
         # FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
         # 합성하면 어느 쪽이 이겼는지가 출력에서 사라진다(설계 D4).
-        _echo("--review-budget과 --review-threshold는 함께 쓸 수 없다", err=True)
-        raise typer.Exit(2)
+        # 버리는 쪽은 위와 같은 규칙으로 고른다.
+        if (
+            _resolve_exclusive(
+                ctx,
+                "--review-budget과 --review-threshold는 함께 쓸 수 없다",
+                "review_budget",
+                "review_threshold",
+            )
+            == "review_budget"
+        ):
+            review_budget = None
+        else:
+            review_threshold = None
     if review_threshold is not None and math.isnan(review_threshold):
         # **`min`/`max`는 NaN을 통과시킨다.** click의 범위 검사가
         # `lt(nan, 0.0)`·`gt(nan, 1.0)`으로 판정하는데 **둘 다 False**라

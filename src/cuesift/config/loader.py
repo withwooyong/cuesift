@@ -23,6 +23,8 @@ _SUPPORTED_PROVIDERS = ("openai-compatible",)
 
 _WEIGHTS_PATH = ("signals", "weights")
 
+_CACHE_ENABLED_PATH = ("cache", "enabled")
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
@@ -84,6 +86,7 @@ def load_config(path: Path) -> Config:
 
     values = _flatten(path, raw)
     _check_provider(path, values)
+    _check_cache_enabled(path, values)
     weights = _read_weights(path, values.pop(_WEIGHTS_PATH, None))
     return Config(source=path, values=values, weights=weights)
 
@@ -133,6 +136,33 @@ def _check_provider(path: Path, values: dict[tuple[str, ...], object]) -> None:
     if provider not in _SUPPORTED_PROVIDERS:
         allowed = ", ".join(_SUPPORTED_PROVIDERS)
         raise ValueError(f"{path}: llm.provider가 '{provider}'다. 허용값: {allowed}")
+
+
+def _check_cache_enabled(path: Path, values: dict[tuple[str, ...], object]) -> None:
+    """`cache.enabled`도 로더가 판정한다 (설계 D5의 두 번째 예외).
+
+    **`negate()`가 무엇이든 `bool`로 만들어 click이 볼 값이 남지 않는다.**
+    나머지 21개는 click이 파라미터 타입으로 변환하며 검증하지만, 여기서는
+    변환 결과가 언제나 유효한 `bool`이라 로더도 click도 값을 보지 못한다 -
+    `signals.weights`와 같은 종류의 구멍이 하나 더 있었던 것이다. 실측:
+    `"false"`는 참이라 `--no-cache`가 **꺼지고**(사용자 의도의 정반대) exit 0으로
+    조용히 나갔다.
+
+    **`null`은 부재로 본다.** 다른 키의 `null`은 click이 `default_map`의
+    `None`을 "값 없음"으로 읽어 옵션 기본값으로 흐르는데, 여기만
+    `negate(None) is True`라 **캐시가 꺼진다.** 같은 문법이 키마다 다른 뜻이
+    되면 사용자가 문서를 믿을 수 없으므로, 값을 지워 다른 키와 같은 길로
+    보낸다. 오류로 두지 않는 이유도 같다 - `llm: {model: null}`은 통과하는데
+    `cache: {enabled: null}`만 exit 2를 내면 그 차이를 설명할 근거가 없다.
+    """
+    if _CACHE_ENABLED_PATH not in values:
+        return
+    value = values[_CACHE_ENABLED_PATH]
+    if value is None:
+        del values[_CACHE_ENABLED_PATH]
+        return
+    if not isinstance(value, bool):
+        raise ValueError(f"{path}: cache.enabled가 참·거짓이 아니다 ({value!r})")
 
 
 def _read_weights(path: Path, raw: object) -> dict[str, float] | None:

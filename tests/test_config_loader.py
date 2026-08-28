@@ -150,6 +150,30 @@ def test_cache_enabled가_no_cache로_뒤집힌다(tmp_path: Path) -> None:
     assert dm["translate"]["no_cache"] is False
 
 
+@pytest.mark.parametrize("literal", ['"false"', "[1]", "1", "{}"])
+def test_참거짓이_아닌_cache_enabled를_거부한다(tmp_path: Path, literal: str) -> None:
+    """`negate()`가 **무엇이든 bool로 만들어 click이 볼 값이 남지 않는다.**
+
+    `signals.weights`와 같은 종류의 구멍이 하나 더 있었던 것이다(설계 D5).
+    실측: `"false"`는 참이라 `--no-cache`가 **꺼지고**(사용자 의도의 정반대),
+    `[1]`도 마찬가지로 exit 0으로 조용히 통과했다.
+    """
+    with pytest.raises(ValueError, match="cache.enabled가 참·거짓이 아니다"):
+        load_config(_write(tmp_path, f"cache:\n  enabled: {literal}\n"))
+
+
+def test_cache_enabled의_null은_부재로_본다(tmp_path: Path) -> None:
+    """`null`의 뜻을 다른 21개 키와 **일치시킨다.**
+
+    click은 `default_map`의 `None`을 "값 없음"으로 읽어 옵션 기본값으로
+    흘려보낸다. 여기만 `negate(None) is True`라 **캐시가 꺼졌다** - 같은
+    문법이 키마다 다른 뜻이 되면 사용자가 문서를 못 믿는다.
+    """
+    cfg = load_config(_write(tmp_path, "cache:\n  enabled: null\n"))
+    assert ("cache", "enabled") not in cfg.values
+    assert "no_cache" not in cfg.to_default_map().get("translate", {})
+
+
 def test_weights는_default_map에_들어가지_않는다(tmp_path: Path) -> None:
     # CLI 옵션이 아니다(설계 D6). 여기 들어가면 click이 모르는 파라미터로
     # 죽는다.

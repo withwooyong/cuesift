@@ -25,6 +25,11 @@ def negate(value: object) -> bool:
 
     YAML은 긍정형이다. `no_cache: false`는 이중부정이라 손으로 쓰고 오래
     남는 문서에서 매번 되짚게 된다.
+
+    **입력이 `bool`인 것은 로더가 보장한다**(`_check_cache_enabled`).
+    여기서 아무 값이나 받으면 `"false"`가 참이 되어 캐시가 켜지고, 그 값은
+    이미 `bool`이라 click도 걸러 내지 못한다 - 로더도 click도 보지 않는
+    유일한 값이 되는 것이다(설계 D5).
     """
     return not value
 
