@@ -1,19 +1,20 @@
 # Session Handoff
 
-> Last updated: 2026-08-27 (KST)
-> **브랜치 `feat/report-html`이 열려 있고 커밋 2개가 있다** — 설계 스펙 `3cdac38`,
-> 구현 계획 `df9a67b`. **코드는 한 줄도 안 바뀌었다.**
-> 다음 작업은 계획서의 **Task 1**(`glossary.miss`가 원문 구간을 낸다)이다.
+> Last updated: 2026-08-28 (KST)
+> **브랜치 `feat/report-html`에 커밋 3개가 있다** — 설계 스펙 `3cdac38`,
+> 구현 계획 `df9a67b`, **Task 1 구현**. 계획서 10개 중 **1개가 끝났다.**
+> 다음 작업은 계획서의 **Task 2**(`struct.number_missing`이 원문 구간을 낸다)다.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
 ## Current Status
 
-**FR-7.3의 스펙과 계획서를 썼고 구현은 시작하지 않았다.**
+**FR-7.3의 스펙·계획서를 쓰고 Task 1까지 구현했다. 태스크 10개 중 1개 완료.**
 
 | 무엇 | 커밋 | 분량 |
 | --- | --- | --- |
 | [설계 스펙](docs/superpowers/specs/2026-08-27-report-html-design.md) | `3cdac38` | 499줄 · 결정 10건 · 근거 조사 6건 |
 | [구현 계획](docs/superpowers/plans/2026-08-27-report-html.md) | `df9a67b` | 2663줄 · 태스크 10개 |
+| Task 1 — `glossary.miss`가 원문 구간을 낸다 | 이 커밋 | 6파일 · 테스트 +10 |
 
 직전 작업 패키지 WP8b(Tier 1 CLI 배선)는 PR [#10](https://github.com/withwooyong/cuesift/pull/10)으로
 `main`에 들어갔다(merge commit `5970143`). 그 내용은 CHANGELOG와 git에 있다.
@@ -34,10 +35,18 @@ FR-7.3은 "렌더러 하나"로 알려져 있었다. 세 문서가 그렇게 적
 grep -rn "Span(" --include=*.py src/ tests/
 ```
 
-프로덕션 코드에서 **0건**이다. 테스트 파일 두 개에만 있다. 즉 `Signal.spans`는
-언제나 `()`이고 **하이라이트의 입력이 비어 있다.**
+착수 시점에 프로덕션 코드에서 **0건**이었다. 테스트 파일 두 개에만 있었다. 즉
+`Signal.spans`는 언제나 `()`였고 **하이라이트의 입력이 비어 있었다.**
 
-그런데 주변 코드는 전부 값이 채워질 것을 전제한다 — `Span` 클래스가 있고,
+> **지금은 다르다 (Task 1 완료 후).** 같은 `grep`이 프로덕션 **1건**
+> (`src/cuesift/signals/derived.py`) · 테스트 **5건**(`test_report_json.py`·
+> `test_segment_models.py`)을 낸다. `glossary.miss`는 더 이상 `()`가 아니다.
+> **그러나 10종 중 1종뿐이다** — `struct.number_missing`·`struct.tag_lost`는
+> 여전히 0건이고(계획서 Task 2·3), 나머지 7종은 구간 개념이 없어 성질상 0건이다.
+> **아래 교훈 ⓐ는 그대로 유효하다**: "채우는 코드가 1건 생겼다"와 "하이라이트의
+> 입력이 갖춰졌다"는 여전히 다른 말이다. 문서 정정은 Task 10 범위다.
+
+그런데 착수 시점의 주변 코드는 전부 값이 채워질 것을 전제하고 있었다 — `Span` 클래스가 있고,
 `__post_init__`이 `side`를 런타임 검증하고, `_signal_doc`이 직렬화하며,
 "`side`를 뺄 수 없다"는 주석까지 달려 있다. **스키마·검증·직렬화·주석이
 갖춰지면 "구현됐다"는 착각이 만들어진다.**
@@ -90,28 +99,34 @@ WP8b의 결과는 아래와 같고 **전부 닫혔다.**
 `main` 직접 푸시가 금지된 이유가 그것이다. 직접 푸시하면 **머지된 뒤에야** CI가 돌아
 게이트가 아니라 사후 통보가 된다.
 
-### 다음 작업은 계획서의 Task 1이다
+### 다음 작업은 계획서의 Task 2다
 
 ```bash
 git checkout feat/report-html          # 이미 이 브랜치에 있다
-# docs/superpowers/plans/2026-08-27-report-html.md 를 열고 Task 1부터
+# docs/superpowers/plans/2026-08-27-report-html.md 를 열고 Task 2부터
 ```
+
+**Task 2·3은 Task 1과 독립이라 순서를 바꿔도 된다.** Task 4(`split_spans`)부터
+선행이 걸린다. Task 2의 요점은 **`detail`의 값으로는 위치를 되찾을 수 없다**는
+것이다 — `_numbers()`가 NFKC 정규화와 천 단위 구분자 제거를 하므로 `５０`이
+`"50"`이 되고 `source_text.find("50")`이 **-1**을 낸다. 매치 객체가 이미
+오프셋을 갖고 있으니 그 자리에서 함께 낸다(설계 D8).
 
 **계획서가 "확인해야 할 전제 4건"을 표로 남겼다.** 계획을 쓴 사람이 코드를
 열어보지 않고 쓴 부분이다 — 구현자가 그 자리에서 확인해야 한다.
 
-| 전제 | 어디서 | 틀리면 |
-| --- | --- | --- |
-| `cuesift.segment`가 `Span`·`SegmentRisk`·`Signal`을 내보내나 | Task 1 Step 7 | `cuesift.segment.models`에서 직접 import |
-| `TriageOutcome`의 프로퍼티 이름 | Task 5 Step 3 | `report/models.py`의 실제 이름 |
-| 종료 코드 2를 내는 기존 방식 | Task 8 Step 4 | `cli.py`의 기존 코드를 따른다 |
-| `write_review`가 상위 디렉터리를 만드나 | Task 5 Step 1 | 형제 함수의 계약에 맞춘다 |
+| 전제 | 어디서 | 틀리면 | 상태 |
+| --- | --- | --- | --- |
+| `cuesift.segment`가 `Span`·`SegmentRisk`·`Signal`을 내보내나 | Task 1 Step 7 | `cuesift.segment.models`에서 직접 import | ✅ 확인됨 — 셋 다 내보낸다 |
+| `TriageOutcome`의 프로퍼티 이름 | Task 5 Step 3 | `report/models.py`의 실제 이름 | 미확인 |
+| 종료 코드 2를 내는 기존 방식 | Task 8 Step 4 | `cli.py`의 기존 코드를 따른다 | 미확인 |
+| `write_review`가 상위 디렉터리를 만드나 | Task 5 Step 1 | 형제 함수의 계약에 맞춘다 | 미확인 |
 
 ### 남은 작업 순위
 
 | WP | 상태 | 근거 |
 | --- | --- | --- |
-| **WP5 나머지 (FR-7.3)** | **진행 중** | 스펙·계획서 완료, 구현 미착수. 브랜치 `feat/report-html` |
+| **WP5 나머지 (FR-7.3)** | **진행 중** | 스펙·계획서 완료, 태스크 10개 중 1개 구현. 브랜치 `feat/report-html` |
 | WP6 나머지 (FR-8.3~8.5) | 다음 | `transcribe` 배선·`cuesift.yaml` 로더·진행 표시 |
 | WP9 STT | 그다음 | FR-1.3이 "자막 우선"이라 마지막이어도 S1이 성립 |
 

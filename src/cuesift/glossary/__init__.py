@@ -30,6 +30,25 @@ def _contains_term(text: str, term: str) -> bool:
     return re.search(_BOUNDARY.format(re.escape(term)), text) is not None
 
 
+def term_offsets(text: str, term: str) -> list[tuple[int, int]]:
+    """`text`에서 `term`이 등장하는 모든 구간. FR-7.3 하이라이트의 입력이다.
+
+    **`_contains_term`과 같은 `_BOUNDARY`를 쓴다.** 규칙이 갈리면 위반으로
+    잡은 용어의 위치를 못 찾아 하이라이트가 조용히 빈다 — 검수자는 칠해지지
+    않은 것을 "문제 없음"으로 읽는다.
+
+    **`lower()`한 문자열이 아니라 원본에 `IGNORECASE`를 건다.** `str.lower()`는
+    길이를 보존하지 않는 경우가 있고(실측: `len('İ')==1`, `len('İ'.lower())==2`)
+    그 뒤 모든 오프셋이 밀린다. 판정(`violations`)은 `lower()`를 써도 되지만
+    **오프셋은 원본 기준이어야 한다**(설계 D7).
+
+    반환은 **위치 오름차순**이다 — `review.json`에 배열로 직렬화되므로 순서가
+    비결정적이면 같은 입력이 다른 파일을 낸다(NFR-3 · 설계 D9).
+    """
+    pattern = _BOUNDARY.format(re.escape(term))
+    return [(m.start(), m.end()) for m in re.finditer(pattern, text, re.IGNORECASE)]
+
+
 @dataclass(frozen=True, slots=True)
 class GlossaryEntry:
     """용어 하나와 그 대응어들."""

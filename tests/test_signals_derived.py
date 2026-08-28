@@ -16,6 +16,17 @@ def ctx():
     )
 
 
+@pytest.fixture
+def ctx_with_glossary():
+    """`오픈소스` -> `open source` 하나만 담은 용어집."""
+    return SignalContext(
+        profile=load_builtin("en"),
+        glossary=Glossary(entries=(GlossaryEntry(source="오픈소스", targets=("open source",)),)),
+        source_lang="ko",
+        target_lang="en",
+    )
+
+
 def _seg(sid: str, source: str, target: str, start: int = 0, end: int = 2000) -> Segment:
     return Segment(
         id=sid, index=0, start_ms=start, end_ms=end, source_text=source, target_text=target
@@ -75,6 +86,85 @@ def test_glossary_signal_silent_when_equivalent_present():
     g = Glossary(entries=(GlossaryEntry("기후변화", ("climate change",)),))
     ctx = SignalContext(load_builtin("en"), g, "ko", "en")
     assert GlossaryMiss().collect(_seg("s1", "기후변화", "Climate change"), ctx) is None
+
+
+def test_glossary_miss_marks_the_term_position_in_the_source(ctx_with_glossary):
+    """위반 용어의 원문 위치를 span으로 낸다 (FR-7.3)."""
+    seg = _seg("s1", "오픈소스 프로젝트다", "It is a project")
+    sig = GlossaryMiss().collect(seg, ctx_with_glossary)
+
+    assert sig is not None
+    assert len(sig.spans) == 1
+    span = sig.spans[0]
+    assert span.side == "source"
+    assert seg.source_text[span.start : span.end] == "오픈소스"
+
+
+def test_glossary_miss_span_side_is_source_because_the_term_is_absent_in_target(
+    ctx_with_glossary,
+):
+    """번역문에 **없으므로** 원문을 가리킨다 (`segment/models.py`의 Span 독스트링).
+
+    `all()`은 빈 이터러블에서도 참이라 `spans`가 비어 있으면 이 단언이 공허하게
+    통과한다 - 그래서 개수도 함께 고정한다(RED에서 실제로 걸러지는지가 이 태스크의
+    핵심이므로, CLAUDE.md의 "검사하지 않고 통과하는 게이트" 규율).
+    """
+    sig = GlossaryMiss().collect(_seg("s1", "오픈소스다", "It is"), ctx_with_glossary)
+    assert sig is not None
+    assert len(sig.spans) > 0
+    assert all(s.side == "source" for s in sig.spans)
+
+
+def test_glossary_miss_spans_cover_every_occurrence(ctx_with_glossary):
+    """같은 용어가 두 번 나오면 span도 두 개다."""
+    seg = _seg("s1", "오픈소스와 오픈소스", "It and it")
+    sig = GlossaryMiss().collect(seg, ctx_with_glossary)
+    assert sig is not None
+    assert len(sig.spans) == 2
+
+
+def test_glossary_miss_span_count_matches_the_judgement(ctx_with_glossary):
+    """**위반으로 잡힌 용어는 반드시 위치를 갖는다.**
+
+    판정(`violations`)과 위치(`term_offsets`)가 서로 다른 규칙을 쓰면 이
+    단언이 깨진다. 그 어긋남은 하이라이트가 조용히 비는 것으로만 드러나므로
+    여기서 고정한다.
+    """
+    seg = _seg("s1", "오픈소스 프로젝트다", "It is a project")
+    sig = GlossaryMiss().collect(seg, ctx_with_glossary)
+    assert sig is not None
+    assert len(sig.detail["terms"]) >= 1
+    assert len(sig.spans) >= len(sig.detail["terms"])
+
+
+def test_glossary_miss_spans_are_sorted_by_position_not_by_glossary_order():
+    """**span은 용어집 등재 순이 아니라 원문 위치 순이다** (NFR-3 · 설계 D9).
+
+    `violations()`는 등재 순을 유지하므로, 등재 순과 등장 순이 어긋나면
+    정렬이 없을 때 span이 위치 역순으로 실린다. `review.json`에 배열로
+    직렬화되므로 순서가 어긋나면 하이라이트 구간이 뒤엉킨다.
+
+    여기서는 `오픈소스`를 먼저 등재하고 원문은 `기후변화`가 앞선다 -
+    `sorted()`를 벗기면 `(6, 10)`이 먼저 나와 이 단언이 깨진다.
+    """
+    ctx_reversed = SignalContext(
+        profile=load_builtin("en"),
+        glossary=Glossary(
+            entries=(
+                GlossaryEntry(source="오픈소스", targets=("open source",)),
+                GlossaryEntry(source="기후변화", targets=("climate change",)),
+            )
+        ),
+        source_lang="ko",
+        target_lang="en",
+    )
+    seg = _seg("s1", "기후변화와 오픈소스", "It is a thing")
+    sig = GlossaryMiss().collect(seg, ctx_reversed)
+
+    assert sig is not None
+    assert sig.detail["terms"] == ["오픈소스", "기후변화"]  # 등재 순
+    assert [(s.start, s.end) for s in sig.spans] == [(0, 4), (6, 10)]  # 위치 순
+    assert [s.start for s in sig.spans] == sorted(s.start for s in sig.spans)
 
 
 # --- FR-3.6 길이비 이상치 ---

@@ -10,7 +10,8 @@ from __future__ import annotations
 import statistics
 from collections.abc import Sequence
 
-from cuesift.segment import Segment, Signal
+from cuesift.glossary import term_offsets
+from cuesift.segment import Segment, Signal, Span
 from cuesift.signals.base import SignalContext, register
 from cuesift.spec import check_overlaps, check_text, text_width
 
@@ -118,11 +119,25 @@ class GlossaryMiss:
         if not hits:
             return None
 
+        # 위반 용어가 원문에서 차지하는 구간. FR-7.3 리포트가 여기를 칠한다.
+        #
+        # **번역문이 아니라 원문을 가리킨다** — 이 신호는 "번역문에 대응어가
+        # 없다"는 판정이라 번역문에는 칠할 것이 없다(`Span` 독스트링).
+        #
+        # **위치 순으로 정렬한다.** `hits`는 용어집 등재 순이고(`violations`가
+        # 그 순서를 유지한다) 용어 여럿의 구간이 섞이면 순서가 뒤엉킨다.
+        # `review.json`에 배열로 직렬화되므로 순서가 비결정적이면 같은 입력이
+        # 다른 파일을 낸다(NFR-3 · 설계 D9).
+        offsets = sorted(
+            offset for entry in hits for offset in term_offsets(seg.source_text, entry.source)
+        )
+
         return Signal(
             name=self.name,
             tier=0,
             score=_violation_score(len(hits)),
             hard_fail=False,
+            spans=tuple(Span(start=s, end=e, side="source") for s, e in offsets),
             detail={"terms": [e.source for e in hits]},
         )
 
