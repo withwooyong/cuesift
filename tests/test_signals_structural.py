@@ -418,6 +418,21 @@ def test_tag_lost_spans_skip_the_tags_that_survived(ctx):
     assert painted == ["<b>", "</b>"]
 
 
+def test_tag_lost_target_spans_skip_the_tags_that_were_kept(ctx):
+    """번역문 쪽도 **새로 생긴** 태그만 칠한다.
+
+    앞 테스트의 대칭이다. `invented` 필터를 지우면 원문에서 그대로 옮겨온
+    멀쩡한 태그까지 번역문에서 위험 구간이 되는데, 원문 쪽 테스트만으로는
+    그 변이가 **생존한다**(변이 실측: M2). 두 방향을 각각 걸어야 게이트다.
+    """
+    seg = _seg("<i>A</i>", "<i>가</i><b>강조</b>")
+    sig = TagLost().collect(seg, ctx)
+
+    assert sig is not None
+    painted = [seg.target_text[s.start : s.end] for s in sig.spans if s.side == "target"]
+    assert painted == ["<b>", "</b>"]
+
+
 def test_tag_lost_paints_every_tag_of_a_name_when_one_of_many_is_lost(ctx):
     """같은 이름이 여러 개면 그 이름의 태그를 **모두** 칠한다.
 
