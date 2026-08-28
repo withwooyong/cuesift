@@ -516,11 +516,54 @@ def _apply_config(ctx: typer.Context, config: Path | None) -> None:
     _echo(f"설정을 읽었다: {source}", err=True)
 
 
-def _resolve_llm(base_url: str | None, model: str | None) -> tuple[str, str, str | None]:
+def _from_config(ctx: typer.Context | None, name: str) -> bool:
+    """이 파라미터의 값이 설정 파일에서 왔는가 (FR-8.4 · 설계 D3).
+
+    **`typer._click`을 임포트하지 않는다.** 벤더링된 private 경로라 typer
+    업그레이드가 위치를 바꾸고, 그러면 임포트가 죽는 것이 아니라 이 판정이
+    조용히 거짓이 되어 설정 파일이 환경변수를 다시 이긴다.
+    `ParameterSource`는 이름 문자열로 본다.
+    """
+    if ctx is None:
+        return False
+    try:
+        source = ctx.get_parameter_source(name)
+    except (AttributeError, KeyError):
+        return False
+    return getattr(source, "name", "") == "DEFAULT_MAP"
+
+
+def _prefer_env(
+    ctx: typer.Context | None, name: str, value: str | None, env_name: str
+) -> str | None:
+    """우선순위를 적용한다 - CLI > 환경변수 > 설정 파일 (설계 D3).
+
+    **`value or os.environ.get(...)`만 쓰면 설정 파일이 환경변수를 이긴다.**
+    `default_map`이 채운 값도 `or`의 왼쪽에서 참이기 때문이다. `value`가
+    어디서 왔는지는 `ctx`만 안다 - 값만 봐서는 구별할 수 없다.
+
+    **두 파라미터가 같은 헬퍼를 쓰는 것이 중요하다.** `base_url`만 고치면
+    `model`이 반대 순서로 남고, 그 어긋남은 값이 양쪽 다 나오므로
+    종료 코드로 드러나지 않는다.
+    """
+    env = os.environ.get(env_name)
+    if env and _from_config(ctx, name):
+        return env
+    return value or env
+
+
+def _resolve_llm(
+    ctx: typer.Context | None, base_url: str | None, model: str | None
+) -> tuple[str, str, str | None]:
     """LLM 접속 설정을 해결한다 (설계 §6.3).
 
-    우선순위는 **CLI 옵션 > 환경변수**다. FR-8.4(`cuesift.yaml`)가 오면
-    환경변수 아래에 한 칸이 더 낀다.
+    우선순위는 **CLI 옵션 > 환경변수 > 설정 파일**이다(FR-8.4 · 설계 D3).
+    마지막 한 칸은 `ctx.default_map`이 채우고, 그것을 환경변수 아래로
+    내리는 것이 `_prefer_env`다.
+
+    **`ctx`가 `None`이면 설정에서 온 값이 아니라고 본다.** 라이브러리
+    사용자가 직접 부르는 경로에서 `CLI > 환경변수`의 옛 계약이 그대로
+    유지된다.
 
     **기본값을 넣지 않는다.** `localhost:11434`를 기본으로 두면 Ollama가
     없는 사람이 연결 실패를 받는데, 그것은 "설정을 안 했다"보다 진단이
@@ -533,8 +576,8 @@ def _resolve_llm(base_url: str | None, model: str | None) -> tuple[str, str, str
     그것은 테스트 전용으로 예약돼 있고 `tests/test_translate_api.py`의
     게이트가 그 문자열로 live 마커 누락을 판정한다.
     """
-    resolved_base = base_url or os.environ.get("CUESIFT_BASE_URL")
-    resolved_model = model or os.environ.get("CUESIFT_MODEL")
+    resolved_base = _prefer_env(ctx, "base_url", base_url, "CUESIFT_BASE_URL")
+    resolved_model = _prefer_env(ctx, "model", model, "CUESIFT_MODEL")
     missing = [
         name
         for name, value in (("--base-url", resolved_base), ("--model", resolved_model))
@@ -663,6 +706,10 @@ def _review_artifact_paths(
 
 @app.command()
 def translate(
+    # **파라미터가 아니다.** typer가 `Context`를 알아보고 click 옵션 목록에서
+    # 빼므로 `--help`도 매핑표 상등 게이트도 그대로다. `_resolve_llm`이
+    # 값의 출처를 물어보려면 이것이 있어야 한다(FR-8.4 · 설계 D3).
+    ctx: typer.Context,
     input: Annotated[
         Path,
         # `readable=False`는 `check`와 같은 이유다 — 읽기 가능 판정을
@@ -1031,7 +1078,7 @@ def translate(
             f"예산 {review_budget}" if review_budget is not None else f"임계값 {review_threshold}"
         )
 
-    resolved_base, resolved_model, api_key = _resolve_llm(base_url, model)
+    resolved_base, resolved_model, api_key = _resolve_llm(ctx, base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
     if not targets:
         _echo("--to에 대상 언어가 없다", err=True)

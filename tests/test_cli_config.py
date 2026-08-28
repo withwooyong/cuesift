@@ -161,3 +161,129 @@ def test_help에서_미구현_문구가_사라졌다() -> None:
     result = runner.invoke(app, ["--help"], color=True, env={"FORCE_COLOR": "1"})
     # 색이 켜진 CI에서만 rich가 옵션 이름을 쪼갠 실측이 있다. 정규화로 막는다.
     assert normalize_rich_message("아직 구현되지") not in normalize_rich_message(result.output)
+
+
+# 환경변수 3층 (설계 D3 · §4.3 함정 ①).
+#
+# `_resolve_llm`의 `base_url or os.environ.get(...)`을 그대로 두면
+# `default_map`이 채운 값이 `or`의 왼쪽에서 참이 되어 **설정 파일이
+# 환경변수를 이긴다.** 값은 어느 쪽이 이기든 나오고 종료 코드는 0이라
+# 이 테스트들이 없으면 결함이 절대 드러나지 않는다.
+
+
+class _FakeCtx:
+    """`get_parameter_source`만 흉내 낸다. 값의 출처를 고정해 준다.
+
+    `typer._click`을 임포트하지 않는다 - 벤더링된 private 경로라
+    typer 업그레이드가 위치를 바꾼다. 판정은 이름 문자열로 한다.
+    """
+
+    def __init__(self, source_name: str) -> None:
+        self._source_name = source_name
+
+    def get_parameter_source(self, name: str) -> object:
+        return type("Src", (), {"name": self._source_name})()
+
+
+def test_설정보다_환경변수가_우선한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuesift.cli import _resolve_llm
+
+    monkeypatch.setenv("CUESIFT_BASE_URL", "http://env")
+    monkeypatch.setenv("CUESIFT_MODEL", "m")
+    base, _model, _key = _resolve_llm(_FakeCtx("DEFAULT_MAP"), "http://config", None)
+    assert base == "http://env"
+
+
+def test_CLI가_환경변수를_이긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuesift.cli import _resolve_llm
+
+    monkeypatch.setenv("CUESIFT_BASE_URL", "http://env")
+    monkeypatch.setenv("CUESIFT_MODEL", "m")
+    base, _model, _key = _resolve_llm(_FakeCtx("COMMANDLINE"), "http://cli", None)
+    assert base == "http://cli"
+
+
+def test_환경변수가_없으면_설정을_쓴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuesift.cli import _resolve_llm
+
+    monkeypatch.delenv("CUESIFT_BASE_URL", raising=False)
+    monkeypatch.setenv("CUESIFT_MODEL", "m")
+    base, _model, _key = _resolve_llm(_FakeCtx("DEFAULT_MAP"), "http://config", None)
+    assert base == "http://config"
+
+
+def test_ctx가_없어도_동작한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 기존 호출부와의 호환. ctx를 모르면 설정에서 온 값이 아니라고 본다.
+    from cuesift.cli import _resolve_llm
+
+    monkeypatch.setenv("CUESIFT_BASE_URL", "http://env")
+    monkeypatch.setenv("CUESIFT_MODEL", "m")
+    base, _model, _key = _resolve_llm(None, "http://cli", None)
+    assert base == "http://cli"
+
+
+def test_model도_같은_양보를_한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `base_url`만 고치면 `model`이 반대 순서로 남는다. 두 줄이 같은
+    # 헬퍼를 쓰는지를 여기서 본다.
+    from cuesift.cli import _resolve_llm
+
+    monkeypatch.setenv("CUESIFT_BASE_URL", "http://env")
+    monkeypatch.setenv("CUESIFT_MODEL", "env-model")
+    _base, model, _key = _resolve_llm(_FakeCtx("DEFAULT_MAP"), "http://config", "config-model")
+    assert model == "env-model"
+
+
+def test_실제_translate에서도_환경변수가_설정을_이긴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**단위 테스트만으로는 배선이 지켜지지 않는다.**
+
+    `_resolve_llm`이 옳아도 `translate`가 `ctx`를 넘기지 않으면 `None`이
+    들어가 설정이 다시 환경변수를 이긴다. 그 경우 위 다섯은 전부 초록이다.
+    `--dry-run` 요약이 실제로 쓰이는 base_url을 찍으므로 여기서 관측한다.
+    """
+    target = tmp_path / "a.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕\n", encoding="utf-8")
+    cfg = _config(tmp_path, "llm:\n  base_url: http://from-config\n  model: config-model\n")
+    monkeypatch.setenv("CUESIFT_BASE_URL", "http://from-env")
+    monkeypatch.setenv("CUESIFT_MODEL", "env-model")
+
+    result = runner.invoke(
+        app,
+        ["--config", str(cfg), "translate", str(target), "--to", "en", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "http://from-env" in result.stdout
+    assert "http://from-config" not in result.stdout
+    assert "env-model" in result.stdout
+
+
+def test_실제_translate에서_CLI가_환경변수를_이긴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 양보를 너무 넓게 잡으면(출처를 안 보고 늘 환경변수를 쓰면) 이 건이 깨진다.
+    target = tmp_path / "a.srt"
+    target.write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕\n", encoding="utf-8")
+    cfg = _config(tmp_path, "llm:\n  base_url: http://from-config\n  model: config-model\n")
+    monkeypatch.setenv("CUESIFT_BASE_URL", "http://from-env")
+    monkeypatch.setenv("CUESIFT_MODEL", "env-model")
+
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(cfg),
+            "translate",
+            str(target),
+            "--to",
+            "en",
+            "--dry-run",
+            "--base-url",
+            "http://from-cli",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "http://from-cli" in result.stdout
+    assert "http://from-env" not in result.stdout
