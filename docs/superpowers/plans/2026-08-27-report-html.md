@@ -853,6 +853,36 @@ git commit -m "기능: struct.tag_lost가 양쪽 태그 구간을 낸다 (FR-7.3
 
 ---
 
+### 구현 중 바뀐 결정 — **위 코드 블록보다 이 절이 최신이다**
+
+구현 코드(Step 3·4)는 계획 그대로다. **바뀐 것은 전부 테스트 쪽이다.**
+
+| # | 계획 | 실제 | 왜 |
+| --- | --- | --- | --- |
+| ① | 테스트 5개 | **7개** — `spans_skip_the_tags_that_survived`(source)와 `target_spans_skip_the_tags_that_were_kept`(target)를 더했다 | **계획판 5개는 `lost`/`invented` 필터를 한 번도 재지 않는다.** 제안된 입력이 전부 "모든 태그가 손실" 또는 "모든 태그가 신규"라, 필터를 지우고 **전부 칠하는** 변이가 5개를 모두 통과한다. Task 2의 ①과 같은 형태다 — 판정은 맞고 하이라이트만 틀린 상태 |
+| ② | `test_tag_lost_silent_when_tags_match` 추가 | **넣지 않았다** | `tests/test_signals_structural.py`의 `test_tag_lost_silent_when_markup_is_preserved`와 입력만 다른 동일 테스트다 |
+| ③ | `_signal_doc(sig)`를 직접 호출 | `build_review` 경유 | `_signal_doc`은 사설 심볼이고 `test_report_json.py`가 임포트하지 않는다. 기존 `test_spans가_side와_함께_실린다`와 같은 경로를 쓴다 |
+| ④ | 게이트 1290 | **1294** | 베이스라인이 1284가 아니라 **1286**이었다(Task 2가 +2를 더 남겼다). 1286 + 7 + 1 |
+
+**`Span.side`의 대칭은 테스트도 대칭이어야 산다.** ①의 두 테스트가 그렇다 —
+source 쪽만 걸었을 때 `invented` 필터 변이가 **실제로 생존했다**(아래 M2).
+
+#### 변이 실측 — 게이트가 무엇을 잡는가
+
+`git worktree` + `PYTHONPATH` 강제로 4종을 겨눴다(절차는 메모리
+`mutation-testing-needs-pythonpath-override`).
+
+| 변이 | 결과 | 살해자 |
+| --- | --- | --- |
+| M1 `lost` 필터 제거 (원문 전부 칠하기) | **단독 격추** | `spans_skip_the_tags_that_survived` |
+| M2 `invented` 필터 제거 (번역문 전부 칠하기) | **단독 격추** | `target_spans_skip_the_tags_that_were_kept` |
+| M3 `side="source"` → `"target"` 고정 | 격추 (5) | `marks_the_missing_tag_in_the_source` 외 |
+| M4 구간을 태그 **이름만** 덮게 축소 | 격추 (5) | `ignores_attributes_when_locating` 외 |
+
+M1·M2가 **단독** 격추라는 것이 ①의 근거다. 두 테스트를 빼면 그 자리에 게이트가 없다.
+
+---
+
 ## Task 4: `split_spans` - 겹치는 구간을 평평하게 쪼갠다
 
 **Files:**
