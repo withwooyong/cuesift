@@ -232,6 +232,11 @@ def test_현재_디렉터리의_cuesift_yaml을_자동으로_읽는다(
 ) -> None:
     _config(tmp_path, "source_lang: ja\n")
     monkeypatch.chdir(tmp_path)
+    # **전제를 먼저 단언한다.** 이 테스트는 프로세스 전역 cwd와 방금 쓴 파일의
+    # `is_file()`에 동시에 걸려 있어 산발 실패가 가능하다(7회 중 1회 관측).
+    # 이 줄이 없으면 그때 실패 메시지가 "설정을 안 읽었다"로 나와 자동 탐색 회귀와
+    # 구분되지 않는다 - 무엇이 없었는지를 실패가 직접 말하게 한다.
+    assert Path("cuesift.yaml").is_file()
     result = runner.invoke(app, ["check", "--help"])
     assert "cuesift.yaml" in result.stderr
 
