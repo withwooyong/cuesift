@@ -17,7 +17,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from cuesift.cli import app
 from cuesift.config import load_config
 from cuesift.risk.fuse import DEFAULT_WEIGHTS
 
@@ -98,3 +100,27 @@ def test_82에_잘못된_키를_더하면_거부된다(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="모르는 키"):
         load_config(path)
+
+
+def test_82의_예시로_CLI가_돌면_종료_코드_2가_아니다(tmp_path: Path) -> None:
+    """로드되는 것과 실행되는 것은 다르다.
+
+    실측으로 드러난 결함이다 - §8.2가 오래 `max_ratio: 0.25`를 적고 있었는데,
+    그 값은 로더를 통과하고 `--tier1-max-ratio`까지 도달한 뒤 곱 게이트
+    (`samples x max_ratio < 0.3`, FR-4.3)에서 **종료 코드 2로 거부된다.**
+    설정 파일이 배선되기 전에는 그 값이 아무 데도 가지 않아 틀린 것이
+    드러나지 않았다.
+
+    `--dry-run`이라 네트워크를 타지 않는다. 보는 것은 "값이 옳은가"가
+    아니라 **"명령줄로서 성립하는가"** 하나다.
+    """
+    cfg = tmp_path / "cuesift.yaml"
+    cfg.write_text(_section_yaml_blocks()[0], encoding="utf-8")
+    subtitle = tmp_path / "a.ko.srt"
+    subtitle.write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app, ["--config", str(cfg), "translate", str(subtitle), "--dry-run"]
+    )
+
+    assert result.exit_code != 2, result.output
