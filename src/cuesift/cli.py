@@ -42,6 +42,7 @@ from cuesift.report import (
     TriageOutcome,
     layer_tokens_reported,
     resolve_cost_scope,
+    write_html,
     write_review,
 )
 from cuesift.risk import fuse
@@ -207,6 +208,28 @@ class FailOn(StrEnum):
     hard = "hard"
     any = "any"
     none = "none"
+
+
+class ReviewFormat(StrEnum):
+    """FR-7.3 - `--review-out`이 무엇을 내는지 (설계 D1).
+
+    **기본이 `JSON`이 아니면 기존 실행의 산출물이 조용히 늘어난다.**
+    `HTML`이나 `BOTH`가 기본이면 `--review-format`을 준 적 없는 CI 파이프라인의
+    리포트 디렉터리에 `.report.html`이 새로 쌓이는데, 종료 코드는 그대로 0이라
+    아무 신호도 나지 않는다. 산출물 집합이 바뀌는 것은 **옵션을 새로 준
+    실행에서만** 일어나야 한다.
+
+    `HTML`은 JSON을 **대체한다 - 곁들이지 않는다.** 곁들이면 `BOTH`가 가리킬
+    것이 없어져 세 값이 두 동작으로 무너진다.
+
+    `StrEnum`인 것은 `FailOn`과 같은 이유다 - typer가 `--review-format` 값을
+    Enum 멤버로 검증해 세 값 밖의 문자열이 우리 코드에 닿기 전에 exit 2로
+    끝난다. 우리가 문자열을 파싱하면 그 검증이 사라진다.
+    """
+
+    JSON = "json"
+    HTML = "html"
+    BOTH = "both"
 
 
 def _not_implemented(command: str) -> None:
@@ -532,6 +555,58 @@ def _review_path(input_path: Path, review_dir: Path, source_lang: str, target_la
     return review_dir / f"{stem}.{target_lang}.review.json"
 
 
+def _report_path(input_path: Path, review_dir: Path, source_lang: str, target_lang: str) -> Path:
+    """HTML 검수 리포트 경로를 정한다 (FR-7.3 · 설계 D1).
+
+    **stem 규칙이 바로 위 `_review_path`와 같아야 한다.** 갈라지면 같은 입력이
+    `ep01.en.review.json`과 `ep01.ko.en.report.html`을 내고, 소비자는 두 파일이
+    한 실행의 산출물임을 눈으로 맞추지 못한다. `--review-format both`가 정확히
+    그 두 파일을 나란히 내는 형식이라 이 규칙은 장식이 아니다.
+
+    **`casefold()`가 양쪽에 걸려야 한다.** 파일명 쪽만 접으면 `--source-lang KO`
+    (`--source-lang`은 CLI 어디에서도 접히지 않고 여기까지 온다)가 치환에
+    실패해 `ep01.KO.en.report.html`이라는 이중 태그를 낸다 - `_output_path`와
+    `_review_path`가 겪은 사고의 거울상이다.
+
+    고정 이름을 쓰지 않는 이유도 `_review_path`와 같다 - `ep01`과 `ep02`를 같은
+    `--review-out`으로 돌리면 뒤엣것이 앞엣것을 조용히 지우고 종료 코드는 0이다.
+    """
+    stem = input_path.stem
+    suffix = f".{source_lang}"
+    if stem.casefold().endswith(suffix.casefold()):
+        stem = stem[: -len(suffix)]
+    return review_dir / f"{stem}.{target_lang}.report.html"
+
+
+def _review_artifact_paths(
+    input_path: Path,
+    review_dir: Path,
+    source_lang: str,
+    target_lang: str,
+    review_format: ReviewFormat,
+) -> list[Path]:
+    """형식이 실제로 낼 산출물 경로를 **나갈 순서대로** 낸다 (FR-7.3 · 설계 D1·D7).
+
+    **분기 조건이 두 곳에 있으면 dry-run이 거짓말을 한다.** `--review-format`이
+    들어오기 전에는 산출물이 `review.json` 하나뿐이라 dry-run이 `_review_path`를
+    직접 불러도 본 실행과 어긋날 수 없었다. 형식이 생긴 지금은 **어느 파일이
+    나가는가**가 판단이고, 그 판단을 dry-run과 본 실행이 각자 하면 갈라진다 -
+    실제로 `--dry-run --review-format html`이 나오지도 않을 `.review.json`을
+    예고했다(리뷰 라운드 1 실측, 두 리뷰어가 독립으로 지목).
+
+    그래서 **경로 조립이 아니라 판단 자체를 여기 모은다.** `_translate_one`은
+    산출물마다 쓰는 함수와 실패 코드가 달라 이 목록을 그대로 돌지 못하지만,
+    같은 순서·같은 조건을 쓰는지 `test_dry_run이_예고한_파일과_본_실행이_내는_파일이_같다`
+    가 두 출력을 맞대어 잰다 - 갈라지면 그 테스트가 죽는다.
+    """
+    paths: list[Path] = []
+    if review_format in (ReviewFormat.JSON, ReviewFormat.BOTH):
+        paths.append(_review_path(input_path, review_dir, source_lang, target_lang))
+    if review_format in (ReviewFormat.HTML, ReviewFormat.BOTH):
+        paths.append(_report_path(input_path, review_dir, source_lang, target_lang))
+    return paths
+
+
 @app.command()
 def translate(
     input: Annotated[
@@ -609,10 +684,24 @@ def translate(
             # 1은 이 CLI에서 "규격 위반 발견"이라 설정 실수가 자막 결함이 된다.
             file_okay=False,
             # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
-            help="검수 리포트(review.json) 출력 디렉터리. --review-budget 또는 "
+            #
+            # **형식을 문구에 못박지 않는다.** `--review-format`이 생긴 뒤로 이
+            # 디렉터리에는 `.report.html`도 나가므로, `review.json`이라고 쓰면
+            # 바로 아래 줄에 붙어 렌더되는 `--review-format`과 모순된 화면이
+            # 된다(리뷰 라운드 1 실측, `--help` 41~45행).
+            help="검수 리포트 출력 디렉터리. --review-budget 또는 "
             "--review-threshold와 함께 써야 한다",
         ),
     ] = None,
+    review_format: Annotated[
+        ReviewFormat,
+        typer.Option(
+            "--review-format",
+            # 문구를 늘이지 않는다. 색이 켜진 CI에서 rich 하이라이터가 긴 help의
+            # 옵션 이름을 줄바꿈으로 쪼개 `--help` 출력 테스트가 깨진 전례가 있다.
+            help="검수 리포트 형식. --review-out과 함께 써야 한다",
+        ),
+    ] = ReviewFormat.JSON,
     tier1: Annotated[
         bool,
         typer.Option(
@@ -739,6 +828,22 @@ def translate(
             "--review-out은 --review-budget 또는 --review-threshold와 함께 써야 한다",
             err=True,
         )
+        raise typer.Exit(2)
+    if review_format is not ReviewFormat.JSON and review_out is None:
+        # **`review_format is not None`으로 쓸 수 없다.** 이 옵션은 Enum에
+        # 기본값(`ReviewFormat.JSON`)이 있어 사용자가 주지 않아도 언제나 값이
+        # 들어온다 - `None` 검사로는 "주지 않은 실행"을 영원히 잡지 못해
+        # 가드가 항상 참이 되고 `--review-out` 없는 정상 실행까지 exit 2로
+        # 막는다. 그래서 "기본에서 벗어났는가"를 본다.
+        #
+        # **조용히 무시하면 안 된다.** 낼 곳이 없는 형식 지정을 넘기면 사용자는
+        # 나오지 않는 파일을 찾아 헤매고, 종료 코드가 0이라 스크립트는 성공으로
+        # 읽는다 - 바로 위 `--review-out` 가드가 막는 것과 같은 사고다(D10).
+        #
+        # 위 가드와 같은 자리에 두는 것은 순서 때문이다(D11) - 조합 오류는
+        # 파싱·프로파일 조달보다 앞에서 끝나야 dry-run으로 확인한 명령이 본
+        # 실행에서 처음 실패하는 일이 없다.
+        _echo("--review-format은 --review-out과 함께 써야 한다", err=True)
         raise typer.Exit(2)
 
     tier1_options_given = (
@@ -1037,13 +1142,17 @@ def translate(
             # 조건(`profiles.get(target)`)이다. 프로파일이 없는 언어를 넣으면
             # **dry-run이 나오지도 않을 파일을 예고한다**(D7).
             #
-            # 경로 자체는 `_review_path` - 본 실행이 부르는 **같은 함수**다.
-            # 손으로 조립하면 stem 규칙이 갈라져도 드러나지 않는다.
+            # 경로도 형식 판단도 `_review_artifact_paths` - 본 실행이 부르는
+            # **같은 함수**다. 손으로 조립하면 stem 규칙이 갈라져도, 형식 분기가
+            # 갈라져도 드러나지 않는다(후자는 실제로 한 번 갈라졌다 - 리뷰
+            # 라운드 1).
             review_paths=(
                 {}
                 if review_out is None
                 else {
-                    target: _review_path(input, review_out, source_lang, target)
+                    target: _review_artifact_paths(
+                        input, review_out, source_lang, target, review_format
+                    )
                     for target in targets
                     if target in profiles
                 }
@@ -1109,6 +1218,7 @@ def translate(
             threshold=review_threshold,
             policy_label=policy_label,
             review_out=review_out,
+            review_format=review_format,
             tier1=tier1_settings,
         )
         worst = max(worst, code)
@@ -1146,7 +1256,10 @@ def _dry_run_report(
     work_context: str | None,
     context_window: int,
     cache_dir: Path | None,
-    review_paths: Mapping[str, Path],
+    # **대상 하나가 파일 여러 개를 낸다**(`--review-format both`). `Path` 하나로
+    # 두면 형식이 늘 때마다 이 시그니처가 "무엇을 담는 자리인가"를 다시 정해야
+    # 하고, 그 사이에 dry-run이 절반만 예고한다.
+    review_paths: Mapping[str, Sequence[Path]],
     # `--tier1`이 꺼져 있으면 `None`이라 상한 줄을 한 줄도 내지 않는다.
     #
     # **기본값을 주지 않는다.** 주면 호출자가 빠뜨렸을 때 Tier 1이 화면에서
@@ -1359,8 +1472,7 @@ def _dry_run_report(
                 f"  {_TIER1_BOUND_PREFIX}{bound}회 (재시도·폴백 제외"
                 f" · 후보 상한 비율 {max_ratio} · 샘플 {samples})"
             )
-        review_path = review_paths.get(target)
-        if review_path is not None:
+        for review_path in review_paths.get(target, ()):
             # **실제 실행의 문구와 같은 형태로 낸다**(`_translate_one`의
             # `f"  리포트 {review_path}"`). 다르게 쓰면 두 출력을 눈으로
             # 맞추려는 사용자가 서로 다른 것으로 읽는다.
@@ -1368,6 +1480,10 @@ def _dry_run_report(
             # **"낸다"가 아니라 "낼 것이다"로 적는다.** dry-run은 파일을 쓰지
             # 않고 디렉터리도 만들지 않는다(README의 조합 표) - 현재형으로
             # 적으면 이미 있는 줄 알고 다음 단계가 빈손으로 진행한다.
+            #
+            # **한 줄이 아니라 전부 돈다.** `both`는 두 파일을 내는데 첫 줄만
+            # 내면 절반을 예고하는 셈이고, 빠지는 쪽이 화면에 없으므로 사용자는
+            # 안 나온다고 읽는다.
             lines.append(f"  리포트 {review_path} (아직 쓰지 않음)")
     lines.append("")
     lines.append("(토큰·비용은 내지 않는다 - 문자에서 토큰으로 가는 계수의 출처가 없다)")
@@ -1391,6 +1507,7 @@ def _translate_one(
     threshold: float | None,
     policy_label: str | None,
     review_out: Path | None,
+    review_format: ReviewFormat,
     tier1: _Tier1Settings | None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
@@ -1720,53 +1837,94 @@ def _translate_one(
             # 언어는 바깥 `if triage_profile is not None`에서 이미 걸러졌다 -
             # 그 언어에 빈 리포트를 내면 소비자가 "검수했고 걸린 것이 없다"로
             # 읽는데 실제로는 판정 자체를 못 한 것이다(D7).
-            review_path = _review_path(input_path, review_out, source_lang, target_lang)
-            try:
-                write_review(outcome, review_path)
-            except OSError as exc:
-                # 디스크 상태의 문제다. 번역 파일은 이미 나갔다(설계 §3.4) -
-                # 그 사실을 말하지 않으면 사용자는 번역까지 실패한 줄 알고
-                # LLM 호출을 통째로 다시 쓴다.
-                _echo(f"{review_path}: 검수 리포트를 쓰지 못했다 - {exc}", err=True)
-                return EXIT_BAD_INPUT
-            except Exception as exc:
-                # **`Exception`까지 넓힌다 - `TypeError` 하나로는 그물이 샌다.**
-                # `json.dumps`의 실패는 열린 집합이다(실측, Task 6 리뷰 계약 축 I1):
-                # 순환 참조는 **`ValueError`**("Circular reference detected")이고
-                # 깊은 중첩은 `RecursionError`, `write_text`의 서로게이트는
-                # `UnicodeEncodeError`(= `ValueError` 하위)다. `TypeError`만 잡으면
-                # 셋 다 미처리 traceback이 되어 **exit 1**로 나간다.
-                #
-                # **exit 1이 최악인 이유가 바로 여기 있다.** 이 CLI에서 1은 "규격
-                # 위반 발견 또는 번역 일부 실패"라, 번역 실패가 함께 있는 흔한
-                # 실행에서는 **정상 종료와 종료 코드가 완전히 같아진다**(실측:
-                # 대조군도 exit 1). CI는 번역을 재시도하고 리포트는 영영 안 나온다.
-                # 66도 안 된다 - 66은 "사용자가 준 파일이 틀렸다"이고 이것은 우리
-                # 코드가 틀린 것이다.
-                #
-                # **"모든 직렬화 실패가 70이 된다"는 열린 집합에 대한 단언이라
-                # 테스트로 완결할 수 없다** - 넓은 catch가 유일하게 구성상
-                # (by construction) 참인 선택이다. 이 파일의 `load_glossary` 그물
-                # (위쪽 `except Exception`)이 같은 판정을 이미 내려 두었고 여기는
-                # 그 형제다.
-                #
-                # **삼킬 위험 둘을 확인했다.** `KeyboardInterrupt`·`SystemExit`은
-                # `BaseException`이라 이 catch가 잡지 않는다 - Ctrl+C는 정상
-                # 동작한다. `typer.Exit`은 `Exception` 하위라 삼킬 수 있지만
-                # `try` 안의 호출이 `write_review` 하나뿐이고 `json_report.py`는
-                # typer를 import하지 않는다(`json`·`pathlib`·`typing`·`cuesift.*`뿐).
-                # **여기 줄을 보태면 그 전제가 깨진다.**
-                #
-                # **예외 타입명을 병기한다.** `{exc}`만 찍으면 `ValueError`(리포트
-                # 구조에 순환이 생겼다)와 `NameError`(버그를 신고해야 한다)가
-                # 사용자에게 같은 모양으로 보인다. 넓은 catch를 택한 대가를 이 한
-                # 줄이 줄인다 - `load_glossary` 그물이 같은 이유로 같은 형식을 쓴다.
-                _echo(
-                    f"{review_path}: 검수 리포트를 직렬화하지 못했다 - {type(exc).__name__}: {exc}",
-                    err=True,
-                )
-                return EXIT_NOT_IMPLEMENTED
-            _echo(f"  리포트 {review_path}")
+            # **형식으로 가른다 - `json`과 `both`만 JSON을 낸다** (FR-7.3 · 설계 D1).
+            # 위 주석들(요약 뒤 순서 · 전량 실패에도 파일을 낸다는 D8 · 그 증명
+            # 사슬)은 형식과 무관하게 두 산출물 모두에 걸린다. 그래서 이 분기는
+            # 그것들보다 **안쪽**에 있다 - 밖으로 끌어내면 HTML 쪽이 같은 근거를
+            # 잃고, 잃은 줄 모른 채 '비면 내지 말자'로 되돌아간다.
+            if review_format in (ReviewFormat.JSON, ReviewFormat.BOTH):
+                review_path = _review_path(input_path, review_out, source_lang, target_lang)
+                try:
+                    write_review(outcome, review_path)
+                except OSError as exc:
+                    # 디스크 상태의 문제다. 번역 파일은 이미 나갔다(설계 §3.4) -
+                    # 그 사실을 말하지 않으면 사용자는 번역까지 실패한 줄 알고
+                    # LLM 호출을 통째로 다시 쓴다.
+                    _echo(f"{review_path}: 검수 리포트를 쓰지 못했다 - {exc}", err=True)
+                    return EXIT_BAD_INPUT
+                except Exception as exc:
+                    # **`Exception`까지 넓힌다 - `TypeError` 하나로는 그물이 샌다.**
+                    # `json.dumps`의 실패는 열린 집합이다(실측, Task 6 리뷰 계약 축 I1):
+                    # 순환 참조는 **`ValueError`**("Circular reference detected")이고
+                    # 깊은 중첩은 `RecursionError`, `write_text`의 서로게이트는
+                    # `UnicodeEncodeError`(= `ValueError` 하위)다. `TypeError`만 잡으면
+                    # 셋 다 미처리 traceback이 되어 **exit 1**로 나간다.
+                    #
+                    # **exit 1이 최악인 이유가 바로 여기 있다.** 이 CLI에서 1은 "규격
+                    # 위반 발견 또는 번역 일부 실패"라, 번역 실패가 함께 있는 흔한
+                    # 실행에서는 **정상 종료와 종료 코드가 완전히 같아진다**(실측:
+                    # 대조군도 exit 1). CI는 번역을 재시도하고 리포트는 영영 안 나온다.
+                    # 66도 안 된다 - 66은 "사용자가 준 파일이 틀렸다"이고 이것은 우리
+                    # 코드가 틀린 것이다.
+                    #
+                    # **"모든 직렬화 실패가 70이 된다"는 열린 집합에 대한 단언이라
+                    # 테스트로 완결할 수 없다** - 넓은 catch가 유일하게 구성상
+                    # (by construction) 참인 선택이다. 이 파일의 `load_glossary` 그물
+                    # (위쪽 `except Exception`)이 같은 판정을 이미 내려 두었고 여기는
+                    # 그 형제다.
+                    #
+                    # **삼킬 위험 둘을 확인했다.** `KeyboardInterrupt`·`SystemExit`은
+                    # `BaseException`이라 이 catch가 잡지 않는다 - Ctrl+C는 정상
+                    # 동작한다. `typer.Exit`은 `Exception` 하위라 삼킬 수 있지만
+                    # `try` 안의 호출이 `write_review` 하나뿐이고 `json_report.py`는
+                    # typer를 import하지 않는다(`json`·`pathlib`·`typing`·`cuesift.*`뿐).
+                    # **여기 줄을 보태면 그 전제가 깨진다.**
+                    #
+                    # **예외 타입명을 병기한다.** `{exc}`만 찍으면 `ValueError`(리포트
+                    # 구조에 순환이 생겼다)와 `NameError`(버그를 신고해야 한다)가
+                    # 사용자에게 같은 모양으로 보인다. 넓은 catch를 택한 대가를 이 한
+                    # 줄이 줄인다 - `load_glossary` 그물이 같은 이유로 같은 형식을 쓴다.
+                    _echo(
+                        f"{review_path}: 검수 리포트를 직렬화하지 못했다 - "
+                        f"{type(exc).__name__}: {exc}",
+                        err=True,
+                    )
+                    return EXIT_NOT_IMPLEMENTED
+                _echo(f"  리포트 {review_path}")
+
+            if review_format in (ReviewFormat.HTML, ReviewFormat.BOTH):
+                # **JSON 뒤에 온다.** `both`에서 하나가 실패하면 거기서 멈추고
+                # 이미 나간 JSON은 지우지 않는다 - 부분 산출물이 남는 편이
+                # 낫다. 되돌리려면 성공한 파일을 지워야 하는데, 그 삭제가
+                # 실패하면 무엇이 남았는지 아무도 모르는 상태가 된다.
+                html_path = _report_path(input_path, review_out, source_lang, target_lang)
+                try:
+                    write_html(outcome, html_path)
+                except OSError as exc:
+                    # 디스크 상태의 문제다. 번역 파일은 이미 나갔고 `both`라면
+                    # JSON도 나갔다 - 그 사실을 말하지 않으면 사용자는 번역까지
+                    # 실패한 줄 알고 LLM 호출을 통째로 다시 쓴다.
+                    _echo(f"{html_path}: HTML 리포트를 쓰지 못했다 - {exc}", err=True)
+                    return EXIT_BAD_INPUT
+                except Exception as exc:
+                    # **`Exception`까지 넓힌다 - 실패 집합이 열려 있다.**
+                    # `Template.substitute`는 자리표시자가 빠지면 `KeyError`를,
+                    # `write_text`는 서로게이트가 섞이면 `UnicodeEncodeError`를
+                    # 낸다. 좁히면 나머지가 미처리 traceback이 되어 **exit 1**로
+                    # 나가는데, 1은 이 CLI에서 "규격 위반 발견 또는 번역 일부
+                    # 실패"라 번역 실패가 함께 있는 흔한 실행에서는 **정상 종료와
+                    # 종료 코드가 완전히 같아진다**. 바로 위 `write_review` 그물이
+                    # 같은 판정을 이미 내려 두었고 여기는 그 형제다.
+                    #
+                    # **예외 타입명을 병기한다.** `{exc}`만 찍으면 `KeyError`
+                    # (템플릿이 틀렸다 - 우리가 고친다)와 `NameError`(버그를
+                    # 신고해야 한다)가 사용자에게 같은 모양으로 보인다.
+                    _echo(
+                        f"{html_path}: HTML 리포트를 만들지 못했다 - {type(exc).__name__}: {exc}",
+                        err=True,
+                    )
+                    return EXIT_NOT_IMPLEMENTED
+                _echo(f"  리포트 {html_path}")
 
     return 1 if translated.failures else 0
 
