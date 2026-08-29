@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from conftest import normalize_rich_message, strip_rich_decoration
 from cuesift.cli import app
+from cuesift.progress import ProgressUpdate
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
 runner = CliRunner()
@@ -146,3 +147,35 @@ def test_옵션_이름이_폭_88에서_잘리지_않는다() -> None:
     lines = strip_rich_decoration(output).splitlines()
     truncated = [name for name in names if not any(name in line for line in lines)]
     assert truncated == [], f"폭 88에서 잘린 옵션: {truncated}"
+
+
+def test_중단돼도_진행_줄이_화면에_박제되지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Ctrl+C`는 `_echo`를 지나지 않아 `clear_active()`가 불리지 않는다.
+
+    실측(리뷰 라운드 2 F3): 45세그먼트 번역 중 `KeyboardInterrupt` → exit 130,
+    stderr가 `'\r[en] 번역 ... 20/45 (44%)'`로 **개행 없이** 끝나 셸 프롬프트가
+    같은 줄에 얹혔다. `finally`가 `install(None)`만 하고 `clear()`를 빼먹은
+    것이 원인이다.
+
+    **`interactive`로 강제한다** - `plain`에서는 `clear()`가 무해한 no-op이라
+    무엇을 고쳤는지 재지 못한다.
+    """
+    monkeypatch.setattr("cuesift.cli.resolve_style", lambda *_a, **_k: "interactive")
+
+    def _paint_then_interrupt(**kwargs: object) -> int:
+        reporter = kwargs["reporter"]
+        reporter.phase("[en] 번역")  # type: ignore[attr-defined]
+        reporter.update(ProgressUpdate(20, 45))  # type: ignore[attr-defined]
+        raise KeyboardInterrupt
+
+    _patch_provider(monkeypatch, EchoProvider())
+    monkeypatch.setattr("cuesift.cli._translate_one", _paint_then_interrupt)
+    result = runner.invoke(app, _args(tmp_path, "--progress"))
+
+    # click이 `KeyboardInterrupt`를 exit 130으로 바꾼다 - 리뷰어가 실측한 값이다.
+    assert result.exit_code == 130, result.exception
+    # 떠 있던 줄을 공백으로 밀고 커서를 되돌린 흔적으로 끝나야 한다.
+    assert result.stderr.endswith("\r"), repr(result.stderr)
+    assert not result.stderr.rstrip("\r").endswith("(44%)"), repr(result.stderr)

@@ -1473,6 +1473,12 @@ def translate(
                     )
                 break
     finally:
+        # **해제보다 먼저 지운다.** `Ctrl+C`나 예상 못 한 예외는 `_echo`를
+        # 지나지 않아 `clear_active()`가 불리지 않는다 - 그러면 떠 있던
+        # `\r` 줄이 개행 없이 남아 셸 프롬프트가 `20/45 (44%)` 위에 겹쳐
+        # 찍힌다(실측: KeyboardInterrupt, exit 130). 정상 종료 경로에서는
+        # `done()`이 이미 `_line_len`을 0으로 만들어 두므로 무해하다.
+        reporter.clear()
         # **`finally`여야 한다.** 예외로 빠져나가면 다음 커맨드가 남의
         # 리포터를 쓴다 - 전역 상태의 수명이 커맨드 경계를 넘는다.
         install(None)

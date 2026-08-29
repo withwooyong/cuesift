@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import IO, Literal
@@ -24,10 +25,13 @@ ProgressStyle = Literal["interactive", "plain", "off"]
 # 언어당 400줄이 된다 (설계 D12).
 _PLAIN_STEP_PCT = 10
 
-# 단계 이름 뒤 점선이 끝나는 열. **CJK 폭 보정은 하지 않는다** - 한글은
-# 터미널에서 두 칸을 먹어 점선 길이가 어긋나지만, 어긋나도 잃는 정보가 없다.
-# 보정하려면 `unicodedata.east_asian_width`를 매 문자에 돌려야 하고 그것은
-# 표시 하나를 위해 치를 값이 아니다.
+# 단계 이름 뒤 점선이 끝나는 열. **여기서는 CJK 폭 보정을 하지 않는다** -
+# 한글은 터미널에서 두 칸을 먹어 점선 길이가 어긋나지만, 어긋나도 잃는
+# 정보가 없다. 점선은 눈으로 열을 맞추기 위한 장식이다.
+#
+# **`_display_width`를 쓰는 자리(`_paint`·`clear`)와 판단이 다른 이유가
+# 바로 이것이다.** 거기서 폭을 적게 세면 지우거나 밀어 낼 칸이 모자라
+# **이전 줄의 글자가 화면에 남는다** - 그것은 장식이 아니라 정보 손실이다.
 _LABEL_WIDTH = 22
 
 # 거짓으로 읽는 값들. 나머지는 전부 참이다.
@@ -102,6 +106,16 @@ def resolve_style(enabled: bool | None, stream: IO[str] | None = None) -> Progre
     return detect_style(stream)
 
 
+def _display_width(text: str) -> int:
+    """터미널이 실제로 먹는 칸 수. 광폭(`W`)·전각(`F`)은 두 칸이다.
+
+    **문자 수가 아니어야 한다.** 라벨이 `[en] 번역`·`[en] 리포트`라
+    `len()`으로 세면 한글 한 글자마다 한 칸씩 모자라고, `clear()`가
+    그만큼 덜 지워 `%)` 같은 꼬리가 화면에 남는다 (리뷰 라운드 2 F4).
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
 def _decorate(label: str) -> str:
     """`[en] 번역 ............ ` - 점선으로 열을 맞춘다 (설계 §6)."""
     pad = max(1, _LABEL_WIDTH - len(label))
@@ -123,7 +137,9 @@ class ProgressReporter:
         self._style = style
         self._stream = sys.stderr if stream is None else stream
         self._label = ""
-        # 지금 떠 있는 `\r` 줄의 길이. 0이면 떠 있는 줄이 없다.
+        # 지금 떠 있는 `\r` 줄의 **표시 폭**. 0이면 떠 있는 줄이 없다.
+        # **문자 수가 아니다** - 한글 라벨에서 둘이 갈리고, 적게 세면
+        # `clear()`가 덜 지워 이전 줄의 꼬리가 화면에 남는다.
         self._line_len = 0
         # 마지막으로 plain 이정표를 낸 퍼센트. **시작값은 0이어야 한다.**
         # -1이면 첫 이정표가 `_PLAIN_STEP_PCT - 1`(9%)에서 나고 이후 전부
@@ -192,9 +208,14 @@ class ProgressReporter:
     def _paint(self, text: str) -> None:
         # 이전 줄보다 짧아지면 꼬리가 남는다 - `1000/4120` 뒤 `340/412`가
         # `340/412 (82%)0`으로 보인다. 공백으로 밀어 낸다.
-        pad = max(0, self._line_len - len(text))
+        #
+        # **`_display_width`여야 한다.** `len(text)`로 세면 한글 라벨에서
+        # 패딩이 글자 수만큼 모자라 3연속 갱신(긴 줄 → 짧은 줄 → 중간 줄)에서
+        # 꼬리가 남는다.
+        width = _display_width(text)
+        pad = max(0, self._line_len - width)
         self._raw("\r" + text + " " * pad)
-        self._line_len = len(text) + pad
+        self._line_len = width + pad
 
     def _emit(self, text: str) -> None:
         self._raw(text + "\n")
@@ -203,11 +224,25 @@ class ProgressReporter:
         try:
             self._stream.write(text)
             self._stream.flush()
-        except OSError:
+        except (OSError, ValueError):
             # **영구 비활성화한다** (설계 D10). 진행 표시는 부수적이고,
             # 닫힌 파이프에서 예외가 새면 `_TolerantOutput`과 `_echo`가
             # 지켜 온 종료 코드 계약이 깨진다 - `2>&1 | head -1`로 잘라
             # 읽는 사용자에게 종료 코드가 흐려진다.
+            #
+            # **`ValueError`도 여기 있어야 한다.** 닫힌 스트림에 쓰면
+            # `OSError`가 아니라 `ValueError: I/O operation on closed file`이
+            # 난다. 같은 모듈의 `detect_style`이 `isatty()`의 `ValueError`를
+            # 이미 명시적으로 방어하므로, 여기서만 빼면 한 모듈 안에서
+            # 닫힌 스트림의 취급이 갈린다 (리뷰 라운드 2 F5).
+            #
+            # **`cli.run()`의 "ENOSPC는 어느 층도 삼키지 않는다"와 어긋나는
+            # 층이 여기다.** 리포터는 `sys.stderr`(= `_TolerantOutput` 프록시)에
+            # 쓰므로 EPIPE는 프록시가 먼저 삼키고, 프록시가 일부러 재전파하는
+            # ENOSPC(errno 28)는 이 `except`가 삼킨다. **그래도 삼키는 쪽을
+            # 고른다** - 진행 줄은 부수적이고 실제 출력은 `_echo`가 내므로
+            # 잘린 진행 줄이 종료 코드를 바꾸지 않는다. 디스크가 찼다면
+            # `_echo`의 쓰기가 같은 ENOSPC를 만나 그쪽에서 보고된다.
             self._disabled = True
             self._line_len = 0
 

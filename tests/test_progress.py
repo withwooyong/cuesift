@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import unicodedata
 
 import pytest
 
@@ -207,16 +208,67 @@ def test_off는_아무것도_쓰지_않는다() -> None:
     assert stream.getvalue() == ""
 
 
-def test_clear는_떠_있는_줄을_지운다() -> None:
+def _display_width(text: str) -> int:
+    """단언용 표시 폭. **구현을 임포트하지 않고 다시 쓴다.**
+
+    `progress._display_width`를 그대로 부르면 그 함수가 통째로 틀려도
+    양쪽이 같이 틀려 게이트가 조용히 통과한다.
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+@pytest.mark.parametrize(
+    ("label", "why"),
+    [
+        ("[en] 번역", "한글 라벨은 문자 수보다 표시 폭이 크다"),
+        ("[en] tier1", "ASCII 라벨은 둘이 같다 - 보정이 ASCII를 망가뜨리면 안 된다"),
+    ],
+)
+def test_clear는_표시_폭만큼_지운다(label: str, why: str) -> None:
+    # **문자 수로 지우면 한글 한 글자마다 한 칸씩 모자란다** - `[en] 번역`은
+    # 두 칸이 덜 지워져 `%)`가 화면에 남는다 (리뷰 라운드 2 F4). 안 지워진
+    # 글자는 정렬 어긋남과 달리 정보 손실이다.
+    stream = io.StringIO()
+    reporter = ProgressReporter("interactive", stream)
+    reporter.phase(label)
+    reporter.update(ProgressUpdate(20, 45))
+    painted = stream.getvalue().rsplit("\r", 1)[-1]
+    reporter.clear()
+    tail = stream.getvalue().split("\r")[-2:]
+    assert tail[0] == " " * _display_width(painted), why
+    assert tail[1] == ""
+
+
+def test_세_번_갱신해도_꼬리가_남지_않는다() -> None:
+    # **2회로는 못 잡는다.** `_line_len = len(text)` 변이는 paint 2회짜리
+    # 게이트를 통과한다 - 차이가 3회째에 갈리기 때문이다(리뷰 라운드 2 F6).
+    # 긴 줄 → 짧은 줄 → 중간 줄에서, 3번째 줄은 2번째가 아니라 **화면에
+    # 아직 떠 있는 1번째의 폭**만큼 밀어 내야 한다.
     stream = io.StringIO()
     reporter = ProgressReporter("interactive", stream)
     reporter.phase("[en] 번역")
-    reporter.update(ProgressUpdate(1, 2))
-    painted = len(stream.getvalue().rsplit("\r", 1)[-1])
-    reporter.clear()
-    tail = stream.getvalue().split("\r")[-2:]
-    assert tail[0] == " " * painted
-    assert tail[1] == ""
+    reporter.update(ProgressUpdate(1000, 4120))  # 긴 줄
+    reporter.update(ProgressUpdate(9, 45))  # 짧은 줄
+    reporter.update(ProgressUpdate(20, 45))  # 중간 줄
+    painted = [chunk for chunk in stream.getvalue().split("\r") if chunk]
+    assert len(painted) == 3
+    widths = [_display_width(chunk) for chunk in painted]
+    # 세 줄의 표시 폭이 전부 같아야 화면에 잔상이 없다.
+    assert widths == [widths[0]] * 3, painted
+    assert painted[-1].rstrip().endswith("(44%)")
+
+
+def test_닫힌_스트림에_쓰면_전파하지_않고_비활성화한다() -> None:
+    # 닫힌 스트림은 `OSError`가 아니라 `ValueError: I/O operation on closed
+    # file`을 낸다. 같은 모듈의 `detect_style`이 이미 그 `ValueError`를
+    # 방어하므로, `_raw`에서만 빼면 한 모듈 안에서 취급이 갈린다
+    # (리뷰 라운드 2 F5).
+    stream = io.StringIO()
+    stream.close()
+    reporter = ProgressReporter("plain", stream)
+    reporter.phase("[en] 번역")
+    reporter.update(ProgressUpdate(1, 1))  # 예외가 새면 안 된다
+    assert reporter.disabled is True
 
 
 def test_clear는_두_번_불러도_한_번만_지운다() -> None:
@@ -274,7 +326,7 @@ def test_echo가_쓰기_전에_진행_줄을_지운다() -> None:
     reporter = ProgressReporter("interactive", stream)
     reporter.phase("[en] 번역")
     reporter.update(ProgressUpdate(340, 412))
-    painted = len(stream.getvalue().rsplit("\r", 1)[-1])
+    painted = _display_width(stream.getvalue().rsplit("\r", 1)[-1])
 
     progress.install(reporter)
     try:
