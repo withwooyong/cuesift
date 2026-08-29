@@ -106,9 +106,12 @@ _CONTRACT = [
     # 복사할 수 없었다.** `translate`가 여기 처음 들어오므로 LLM 없이 끝나는
     # `--dry-run`을 쓴다 - `provider.complete()`를 부르지 않는다.
     #
-    # `conftest`의 `CUESIFT_PROGRESS=0`은 `os.environ`을 고쳐 자식에게도
-    # 상속되지만, **CLI가 환경변수를 이긴다**(설계 D5). 그래서 아래 두 번째
-    # 줄은 진행이 실제로 켜진 채 stdout이 닫힌 파이프를 만난다.
+    # **여기서 진행 줄이 실제로 나가지는 않는다.** `--dry-run`은 리포터를
+    # 설치하기 **전에** return하므로 이 시나리오의 stderr는 0바이트다(실측:
+    # 리뷰 라운드 2 F1). 이 짝이 재는 것은 "`--progress`를 붙여도 닫힌
+    # 파이프에서 종료 코드가 흐려지지 않는가"이지 진행 표시의 출력이 아니다.
+    # **진행이 실제로 나가는 것은 `tests/test_cli_progress.py`가 잰다** -
+    # 거기는 가짜 프로바이더를 꽂아 번역 경로를 끝까지 태운다.
     *[
         (
             f"0 translate --dry-run{label}",
