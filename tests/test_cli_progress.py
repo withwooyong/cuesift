@@ -9,7 +9,7 @@ import typer
 from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
-from conftest import normalize_rich_message
+from conftest import normalize_rich_message, strip_rich_decoration
 from cuesift.cli import app
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "ingest"
@@ -104,3 +104,45 @@ def test_no_progress를_주면_stderr에_진행이_없다(
     assert result.exit_code == 0, result.stderr
     assert "(100%)" not in result.stderr
     assert "완료 (실패" not in result.stderr
+
+
+def test_옵션_이름이_폭_88에서_잘리지_않는다() -> None:
+    """도움말 폭 예산의 게이트. **렌더링을 고치는 것이 아니라 선을 긋는다.**
+
+    `--progress/--no-progress`가 이름 열을 넓혀 좁은 폭에서 잘리는 옵션이
+    늘었다. 리뷰어 실측(구트리 `4cfdc28` vs HEAD, 같은 probe, 잘린 개수):
+
+    | COLUMNS | 60 | 70 | 76 | 80 | 84 | 88 |
+    | --- | --- | --- | --- | --- | --- | --- |
+    | 이전 | 5 | 2 | 0 | 0 | 0 | 0 |
+    | 지금 | 7 | 6 | 4 | 3 | 1 | 0 |
+
+    **색과 무관하다** - `NO_COLOR=1`에서도 같은 수치다. rich의 표 렌더링
+    문제이고 FR-8.5의 범위 밖이라 여기서 고치지 않는다. 안전한 폭이 88이고,
+    **이 테스트가 깨지면 옵션을 더 붙인 사람이 폭 예산을 넘긴 것이다.**
+
+    **`normalize_rich_message`를 쓰지 않는다.** 그 함수는 공백까지 지워
+    줄바꿈으로 쪼개진 이름(`--tier1-` + `temperature`)을 도로 붙이므로
+    **잘린 것도 통과시킨다.** 한 줄 안에 통째로 있는지를 봐야 한다.
+
+    ANSI만 지운다. 앞선 테스트가 `FORCE_COLOR=1`로 `--help`를 한 번 그리면
+    `typer.rich_utils`의 `FORCE_TERMINAL`이 **임포트 시점에 고정돼** 세션
+    내내 색이 켜진 채로 남고(실측), 그러면 rich 하이라이터가 옵션 이름
+    가운데에 ANSI를 넣어 전부 "잘린 것"으로 읽힌다.
+    """
+    group = typer.main.get_command(app)
+    names = sorted(
+        {
+            opt
+            for param in group.commands["translate"].params
+            for opt in (getattr(param, "opts", []) or [])
+            if opt.startswith("--")
+        }
+    )
+    assert len(names) >= 20, "옵션을 못 모았으면 0건 통과가 된다"
+    output = runner.invoke(
+        app, ["translate", "--help"], env={"COLUMNS": "88", "NO_COLOR": "1"}
+    ).output
+    lines = strip_rich_decoration(output).splitlines()
+    truncated = [name for name in names if not any(name in line for line in lines)]
+    assert truncated == [], f"폭 88에서 잘린 옵션: {truncated}"
