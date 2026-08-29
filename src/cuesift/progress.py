@@ -210,3 +210,35 @@ class ProgressReporter:
             # 읽는 사용자에게 종료 코드가 흐려진다.
             self._disabled = True
             self._line_len = 0
+
+
+# 활성 리포터. **전역 상태다** (설계 §9 R1). 이것을 두는 이유는 `_echo`
+# 호출부가 49곳이라 리포터를 인자로 흘리려면 전부를 고쳐야 하기 때문이다.
+# 설치·해제 자리를 `translate` 커맨드 하나로 한정하고, `conftest.py`가
+# 테스트마다 초기화한다.
+_active: ProgressReporter | None = None
+
+
+def install(reporter: ProgressReporter | None) -> None:
+    """활성 리포터를 세운다. `None`이면 해제한다.
+
+    **`translate` 커맨드에서만 부른다.** 다른 곳에서 부르면 전역 상태의
+    수명이 커맨드 경계를 넘어 테스트가 서로 오염된다.
+    """
+    global _active
+    _active = reporter
+
+
+def active() -> ProgressReporter | None:
+    """활성 리포터. 테스트가 상태를 확인할 수 있게 노출한다."""
+    return _active
+
+
+def clear_active() -> None:
+    """활성 리포터가 있으면 떠 있는 줄을 지운다 (설계 D11).
+
+    **`_echo`가 쓰기 전에 부른다.** 리포터가 없거나 `plain`·`off`면
+    아무 일도 하지 않으므로 호출 비용이 사실상 0이다.
+    """
+    if _active is not None:
+        _active.clear()

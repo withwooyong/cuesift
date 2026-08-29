@@ -256,3 +256,59 @@ def test_총량이_0이면_나누지_않는다() -> None:
     reporter.phase("[en] 번역")
     reporter.update(ProgressUpdate(0, 0))
     assert stream.getvalue() == ""
+
+
+def test_전역_리포터는_기본이_없다() -> None:
+    from cuesift import progress
+
+    assert progress.active() is None
+
+
+def test_echo가_쓰기_전에_진행_줄을_지운다() -> None:
+    # `\r` 진행 줄이 떠 있는 중에 경고가 나가면 두 문장이 한 줄에 겹친다
+    # (설계 D11). `_translate_one`은 용어집 실패·캐시 경고를 그 자리에서 낸다.
+    from cuesift import progress
+    from cuesift.cli import _echo
+
+    stream = io.StringIO()
+    reporter = ProgressReporter("interactive", stream)
+    reporter.phase("[en] 번역")
+    reporter.update(ProgressUpdate(340, 412))
+    painted = len(stream.getvalue().rsplit("\r", 1)[-1])
+
+    progress.install(reporter)
+    try:
+        _echo("[en] 용어집을 읽지 못했다", err=True)
+    finally:
+        progress.install(None)
+
+    # 진행 줄을 공백으로 밀어 낸 흔적이 있어야 한다.
+    assert "\r" + " " * painted + "\r" in stream.getvalue()
+
+
+def test_echo는_stdout_경로에서도_지운다() -> None:
+    # 대화형 터미널에서 stdout과 stderr는 같은 tty다. `_tier1_warn`은
+    # 의도적으로 stdout으로 나간다(cli.py `_tier1_warn` 독스트링).
+    from cuesift import progress
+    from cuesift.cli import _echo
+
+    stream = io.StringIO()
+    reporter = ProgressReporter("interactive", stream)
+    reporter.phase("[en] Tier 1")
+    reporter.update(ProgressUpdate(1, 20))
+    before = stream.getvalue()
+
+    progress.install(reporter)
+    try:
+        _echo("[en] Tier 1이 돌지 않았다: 후보 0건")
+    finally:
+        progress.install(None)
+
+    assert stream.getvalue() != before
+
+
+def test_리포터가_없으면_clear는_무해하다() -> None:
+    from cuesift import progress
+
+    progress.install(None)
+    progress.clear_active()  # 예외가 없어야 한다

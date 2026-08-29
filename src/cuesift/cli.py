@@ -39,6 +39,7 @@ from cuesift import __version__
 from cuesift.config import Config, load_config
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
+from cuesift.progress import clear_active
 from cuesift.report import (
     TriageOutcome,
     layer_tokens_reported,
@@ -413,7 +414,14 @@ def _echo(message: str = "", *, err: bool = False) -> None:
     `app()`을 직접 부르는 호출자(테스트·라이브러리 사용)가 프록시를 못 받기 때문이다.
     그때 예외가 본문을 빠져나가면 `check()`가 `typer.Exit(1)`에 도달하지 못해
     **위반을 찾고도 종료 코드가 1이 아니게 된다.**
+
+    **쓰기 전에 진행 줄을 지운다**(FR-8.5 · 설계 D11). `\\r`이 떠 있는 중에
+    메시지가 나가면 두 문장이 한 줄에 겹친다. `err` 여부와 무관하게 지우는
+    것은 대화형 터미널에서 stdout과 stderr가 **같은 tty**이기 때문이다 -
+    `_tier1_warn`은 의도적으로 stdout으로 나간다. stdout이 리다이렉트된
+    경우 `clear_active()`는 stderr만 건드리므로 손해가 없다.
     """
+    clear_active()
     stream = sys.stderr if err else sys.stdout
     try:
         typer.echo(message, err=err)
