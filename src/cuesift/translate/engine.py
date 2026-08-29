@@ -25,6 +25,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from cuesift.glossary import Glossary
+from cuesift.progress import ProgressCallback, ProgressUpdate
 from cuesift.segment.models import Segment
 from cuesift.translate.batch import (
     DEFAULT_BATCH_SIZE,
@@ -147,6 +148,7 @@ def translate_segments(
     temperature: float = 0.0,
     max_retries: int = DEFAULT_MAX_RETRIES,
     sleep: Callable[[float], None] = time.sleep,
+    on_progress: ProgressCallback | None = None,
 ) -> TranslationResult:
     """세그먼트를 대상 언어 하나로 번역한다.
 
@@ -158,6 +160,15 @@ def translate_segments(
     조립이 한 번 더 순회하므로, 제너레이터를 넘기면 두 자리에서 깨진다.
 
     `sleep`은 테스트가 실제로 기다리지 않게 하려고 주입 가능하다.
+
+    `on_progress`는 배치가 끝날 때마다 `ProgressUpdate(done, total)`를 받는다
+    (FR-8.5 · 설계 D1). **기본값이 `None`이면 한 번도 호출되지 않는다**(D3) -
+    기존 호출부가 0줄도 바뀌지 않는 것이 이 기본값의 산물이다.
+
+    대안이던 "CLI가 `iter_batches`를 직접 돌기"를 버린 이유는 재시도·맥락
+    윈도우·`TokenUsage` 합산 계약을 CLI가 복제하게 되기 때문이다 - 위
+    독스트링이 명시한 계약(실패분 `target_text=None`, `TokenUsage`에
+    `__radd__` 없음)이 두 곳에 생기고 반드시 갈라진다.
     """
     # `iter_batches`가 size·context_window를 호출 즉시 검사하는 것과 같은
     # 자리다. 음수를 통과시키면 재시도 루프가 한 번도 돌지 않은 채 끝나
@@ -169,6 +180,9 @@ def translate_segments(
     translated: dict[str, str] = {}
     failures: list[SegmentFailure] = []
     usage = TokenUsage()
+    # 총량은 **번역 대상 수**다. 맥락(before/after)은 대상이 아니다.
+    total = len(segments)
+    done = 0
 
     for window in iter_batches(segments, size=batch_size, context_window=context_window):
         batch_usage, batch_texts, batch_failures = _run_window(
@@ -188,6 +202,11 @@ def translate_segments(
         usage = usage + batch_usage
         translated.update(batch_texts)
         failures.extend(batch_failures)
+        # **`window.batch`만 센다.** `before`/`after`를 더하면 `done`이
+        # `total`을 넘고, 다음 배치에서 줄어든 것처럼 보인다.
+        done += len(window.batch)
+        if on_progress is not None:
+            on_progress(ProgressUpdate(done, total))
 
     return TranslationResult(
         target_lang=target_lang,
