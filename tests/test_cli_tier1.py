@@ -36,6 +36,7 @@ from cuesift.cli import (
     _TIER1_DEFAULT_SAMPLES,
     _TIER1_DEFAULT_TEMPERATURE,
     _TIER1_WARN_PREFIX,
+    EXIT_TRANSLATION_FAILURE,
     app,
 )
 from cuesift.tier1 import triage_with_tier1
@@ -884,9 +885,10 @@ def test_번역이_전량_실패하면_tier1이_범위에서_빠진다(
 
     result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=전량실패)
 
-    # **exit 1이다** - 전량 실패는 규격 위반으로 보고된다. 코드를 단언하지 않으면
+    # **exit 3이다** - 전량 실패도 "번역되지 않은 세그먼트가 남았다"에 걸린다
+    # (판정이 `if translated.failures`라 전량과 일부를 안 가린다). 코드를 단언하지 않으면
     # 실행이 엉뚱한 이유로 죽어도 아래 파일 읽기가 먼저 터져 원인이 가려진다.
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     summary = _read_review(tmp_path)["summary"]
     assert summary["excluded_failures"] == 10, "전량 실패가 아니면 아무것도 재지 못한다"
     assert summary["triaged_segments"] == 0
@@ -1153,6 +1155,70 @@ def test_상한이_명시된_값을_그대로_쓴다(
 
     assert result.exit_code == 0, result.output
     assert _bound_lines(result.output) == [expected]
+
+
+def test_상한이_0이면_사유를_말한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """0회에 파라미터만 보여 주면 원인을 말한 것이 아니다 (파킹 #3).
+
+    **단위 테스트로는 이 자리를 못 지킨다.** `tier1.explain_zero_bound`는
+    `tests/test_tier1.py`가 이미 덮지만, `cli.py`가 그것을 **부르는지**는
+    화면을 읽어야만 드러난다 - 실측으로 dry-run의 `if bound == 0:` 블록을
+    통째로 지워도 스위트 전체가 초록이었다(사망 0건). 이 저장소에서 같은
+    함정이 세 번째다(FR-7.3의 `Span` 생산자 0건 · FR-8.5의 배선 8곳).
+
+    **10큐인 이유**: `floor(10 x 0.05) = 0`이라 상한이 내림으로 0이 되는
+    갈래에 정확히 닿는다. 큐를 늘리면 `bound > 0`이 되어 이 분기를 지나친다.
+
+    `max_ratio=0.0` 갈래는 여기서 시험할 수 없다 - CLI가 "스위치와 모순"으로
+    exit 2에서 끊으므로 dry-run 분기에 닿지 못한다. 그쪽은 단위 테스트가 덮는다.
+    """
+    src = _srt_with_cues(tmp_path / "ten.srt", 10)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    result = runner.invoke(app, _dry_run_args(src, tmp_path, "--tier1"))
+
+    assert result.exit_code == 0, result.output
+    assert _bound_lines(result.output) == [
+        f"  {_TIER1_BOUND_PREFIX}0회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 3)"
+    ]
+    # **문구를 `tier1`에서 빌려오지 않고 리터럴로 적는다.** `_zero_by_floor`를
+    # 보간하면 문장을 바꾸는 변이에서 기대값이 함께 움직여 사망 0건이 된다
+    # (`_TIER1_BOUND_PREFIX` 쪽에서 실측된 함정, 리뷰 라운드 1 Important B).
+    # **명사가 "세그먼트 수"인 것까지 단언한다.** dry-run은 자막 전체를 넘기고
+    # 실행 경로는 번역 실패분이 빠진 수를 넘기므로 두 문장의 명사가 다르다 -
+    # 여기서 명사를 안 보면 양쪽을 같은 낱말로 되돌리는 변이가 살아남는다.
+    assert "    사유: 세그먼트 수(10)에 비해 max_ratio(0.05)가 작아 " in result.output
+    assert "Tier 1 상한이 내림(floor)으로 0이 됐다" in result.output
+
+
+def test_상한이_0이_아니면_사유를_말하지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**음성 대조군이다.** 이것이 없으면 "사유가 늘 나온다"와 "0일 때만
+    나온다"가 구별되지 않아, 조건 없이 줄을 붙이는 변이가 위 테스트를 통과한다.
+
+    설명할 것이 없는데 문장을 내면 화면이 늘 시끄러워져, 진짜 0회일 때의
+    사유가 다른 줄들 사이에 묻힌다.
+    """
+    src = _srt_with_cues(tmp_path / "ten.srt", 10)
+    _patch_provider(monkeypatch, _clean_echo())
+
+    # floor(10 x 0.1) x 2 = 2. 같은 자막에서 비율만 키워 상한을 0에서 뗀다.
+    #
+    # **`samples`를 2로 낮추는 것이 필수다.** `_TIER1_COST_LIMIT`이
+    # `samples x max_ratio <= 0.3`을 요구해 기본 샘플 3에 비율 0.1이면 정확히
+    # 한도에 걸리고, 그보다 키우면 exit 2로 끊겨 dry-run 분기에 닿지 못한다.
+    # 곱이 2라 같은 줄의 `샘플 2`와 겹치지 않는 것도 함께 얻는다.
+    result = runner.invoke(
+        app,
+        _dry_run_args(src, tmp_path, "--tier1", "--tier1-max-ratio", "0.1", "--tier1-samples", "2"),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _bound_lines(result.output) == [
+        f"  {_TIER1_BOUND_PREFIX}2회 (재시도·폴백 제외 · 후보 상한 비율 0.1 · 샘플 2)"
+    ]
+    assert "사유:" not in result.output
 
 
 def test_dry_run은_tier1_호출을_내지_않는다(

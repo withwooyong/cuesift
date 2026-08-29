@@ -11,7 +11,7 @@ import pytest
 from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
-from cuesift.cli import app
+from cuesift.cli import EXIT_TRANSLATION_FAILURE, app
 from cuesift.translate.provider import (
     Completion,
     FatalProviderError,
@@ -199,7 +199,7 @@ def test_자막이_아니면_exit_66이다(tmp_path: Path, monkeypatch: pytest.M
 def test_치명적_프로바이더_실패는_exit_69다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 안 잡으면 traceback이 되어 exit 1("부분 실패")로 오보된다 (설계 §8).
+    # 안 잡으면 traceback이 되어 exit 1(`check`의 "규격 위반 발견")로 오보된다 (설계 §8).
     class Dead:
         name = "dead"
 
@@ -214,7 +214,7 @@ def test_치명적_프로바이더_실패는_exit_69다(
     assert "401" in result.output
 
 
-def test_부분_실패는_exit_1이고_원문이_남는다(
+def test_일부_세그먼트_실패는_exit_3이고_원문이_남는다(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # garbage=True면 배치도 개별 폴백도 전부 파싱 실패한다.
@@ -222,7 +222,7 @@ def test_부분_실패는_exit_1이고_원문이_남는다(
 
     result = runner.invoke(app, _args(tmp_path))
 
-    assert result.exit_code == 1
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE
     out = tmp_path / "minimal.en.srt"
     assert out.exists()  # 실패해도 파일은 나온다
     assert "00000" in result.output  # 실패한 세그먼트 ID를 나열한다
@@ -1130,7 +1130,7 @@ def test_한_언어가_실패해도_나머지를_낸다(tmp_path: Path, monkeypa
         ],
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE
     assert (tmp_path / "minimal.en.srt").exists()
     assert (tmp_path / "minimal.ja.srt").exists()
 
@@ -1148,9 +1148,9 @@ class _FirstLanguageFails:
     en(minimal.srt 2세그먼트, 배치 크기 10)은 배치 호출 1회가 깨지면 개별
     폴백 2회로 강등되어(engine.py `_fallback_individually`) 총 3회가
     "en의 모든 호출"이다 - 그 3회를 깨뜨려 두 세그먼트를 전부
-    실패시킨다(부분 실패, exit 1). ja는 4번째 호출부터라 한 번도 깨지지
-    않고 완전히 성공한다(exit 0). max(1, 0) == 1이 정답이고,
-    `worst = code`(마지막 것)로 바꾸면 0이 나와 이 테스트가 죽는다.
+    실패시킨다(번역 실패, exit 3). ja는 4번째 호출부터라 한 번도 깨지지
+    않고 완전히 성공한다(exit 0). `_combine_exit_codes((3, 0)) == 3`이
+    정답이고, `worst = code`(마지막 것)로 바꾸면 0이 나와 이 테스트가 죽는다.
     """
 
     name = "first-fails"
@@ -1176,8 +1176,8 @@ def _summary_line(output: str, lang: str, offset: int = 1) -> str:
     라운드 1 Important 3+4 - dry-run의 예고와 실제 실행의 결과를 나란히
     비교하려면 이 줄이 필요하다).
 
-    리뷰 라운드 1 Important 1 - `exit_code == 1`만으로는 "en 실패·ja 성공"과
-    "en·ja 둘 다 실패"를 구별하지 못한다(둘 다 exit 1). 언어별 요약 줄을
+    리뷰 라운드 1 Important 1 - 종료 코드만으로는 "en 실패·ja 성공"과
+    "en·ja 둘 다 실패"를 구별하지 못한다(둘 다 75다). 언어별 요약 줄을
     직접 읽어야 시나리오가 실제로 의도한 형태(en만 실패)인지 확인된다.
 
     **함께 처리할 것 (B)**: `[lang]`로 시작하는 줄이 진짜 헤더만은 아니다 -
@@ -1241,10 +1241,10 @@ def test_종료_코드는_가장_나쁜_것이다(tmp_path: Path, monkeypatch: p
         ],
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     # **리뷰 라운드 1 Important 1**: 위 exit_code 단언만으로는 이 시나리오가
     # "en 실패·ja 성공"인지 "en·ja 둘 다 실패"인지 구별하지 못한다(실측:
-    # `break_calls`를 6으로 드리프트시키면 후자가 되는데도 exit 1은 그대로다).
+    # `break_calls`를 6으로 드리프트시키면 후자가 되는데도 exit 3은 그대로다).
     # en이 완전히 실패하고 ja가 완전히 성공했음을 직접 확인한다.
     assert "실패 2개" in _summary_line(result.output, "en")
     assert "실패 0개" in _summary_line(result.output, "ja")

@@ -12,7 +12,12 @@ from cuesift.progress import ProgressUpdate
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals.base import SignalContext
 from cuesift.spec import load_builtin
-from cuesift.tier1 import _diagnose_empty_candidates, triage_with_tier1
+from cuesift.tier1 import (
+    _ZERO_BY_SWITCH,
+    _diagnose_empty_candidates,
+    explain_zero_bound,
+    triage_with_tier1,
+)
 from cuesift.triage import review_ratio
 
 
@@ -491,7 +496,14 @@ def test_diagnose_empty_candidates가_여섯_사유를_구분한다():
 
     # ④ candidate_ids가 비었고 회색지대(비-hard_fail·비-selected)가 남아
     # 있다 -> 상한이 내림으로 0이 됐다.
-    assert "상한" in _diagnose_empty_candidates(
+    #
+    # **명사가 "번역 성공 세그먼트 수"인 것까지 본다.** 이 경로가 넘기는
+    # `len(scored)`는 `excluded_ids`(번역 실패분)가 빠진 수라, dry-run과 같은
+    # "세그먼트 수"로 부르면 20컷 중 16건이 실패한 실행에서 화면이 "세그먼트
+    # 수(4)"라고 말한다 - 사용자는 파일이 4컷이라 읽는다. 두 호출자의 명사를
+    # 같은 값으로 되돌리는 변이를 이 단언과 `test_cli_tier1.py`의 dry-run
+    # 단언이 **양쪽에서** 잡는다.
+    assert "번역 성공 세그먼트 수(2)에 비해" in _diagnose_empty_candidates(
         [hard, gray], set(), 0.01, total=2, excluded_count=0
     )
 
@@ -827,3 +839,22 @@ def test_진행_콜백이_Tier1_수집까지_흐른다(signal_ctx):
     # 후보 2건(10 × 0.2) × tier 1 수집기 1종 = 2. 같은 후보 수를
     # `test_tier1은_후보에만_불린다`가 호출 6회(2 × samples 3)로 이미 고정한다.
     assert events[-1] == ProgressUpdate(2, 2)
+
+
+def test_상한이_0인_두_원인을_구분한다() -> None:
+    """dry-run이 계산할 수 있는 것은 이 둘뿐이다 (파킹 #3)."""
+    assert explain_zero_bound(10, 0.0) == "max_ratio=0.0 - Tier 1을 껐다 (정상)"
+    msg = explain_zero_bound(10, 0.05)
+    assert msg is not None
+    assert "내림(floor)으로 0이 됐다" in msg
+    assert "10" in msg and "0.05" in msg
+
+
+def test_상한이_0이_아니면_None이다() -> None:
+    # 설명할 것이 없는데 문장을 내면 화면이 늘 시끄럽다.
+    assert explain_zero_bound(100, 0.05) is None
+
+
+def test_실행_경로와_같은_문자열을_쓴다() -> None:
+    """**복제 금지의 게이트다.** 한쪽만 고치면 여기가 죽는다."""
+    assert explain_zero_bound(10, 0.0) == _ZERO_BY_SWITCH

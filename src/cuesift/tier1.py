@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
@@ -319,6 +320,65 @@ def triage_with_tier1(
     return select_by_budget(rescored, budget_ratio)
 
 
+# **두 곳이 같은 문장을 써야 한다** - 실행 경로의 `_diagnose_empty_candidates`와
+# dry-run의 상한 줄이다. 복제하면 한쪽만 고쳐져 dry-run이 조용히 다른 원인을
+# 말하게 된다(`gray_zone()`을 공유한 것과 같은 이유, 2라운드 리뷰 C3).
+_ZERO_BY_SWITCH = "max_ratio=0.0 - Tier 1을 껐다 (정상)"
+
+
+def _zero_by_floor(total: int, max_ratio: float, *, noun: str) -> str:
+    """상한이 내림으로 0이 된 사정을 적는다.
+
+    **수 둘을 문장에 넣지 않으면 사용자가 무엇을 올려야 하는지 모른다** -
+    `max_ratio`를 키울지 세그먼트를 늘릴지가 이 두 수의 관계로만 정해진다.
+
+    **`noun`을 호출자가 주는 이유: `total`이 호출자마다 다른 수다.** dry-run은
+    자막 전체(`len(result.segments)`)를 넘기고 실행 경로는 번역 실패분이 빠진
+    수(`len(scored)`)를 넘긴다. 양쪽이 "세그먼트 수(N)"라고 말하면 20컷 중
+    16건이 실패한 실행에서 화면이 "세그먼트 수(4)"라고 말하고, 사용자는 파일이
+    4컷이라 읽어 처방이 어긋난다.
+
+    **기본값을 두지 않는 것은 `warn`·`total`과 같은 이유다**(Ruling P12) -
+    기본값이 있으면 새 호출부가 넘기지 않고도 멀쩡한 문자열을 받아, 틀린 명사가
+    조용히 화면에 나간다.
+    """
+    return (
+        f"{noun}({total})에 비해 max_ratio({max_ratio})가 작아 "
+        "Tier 1 상한이 내림(floor)으로 0이 됐다 "
+        "(select_tier1_candidates 독스트링 - n < 1/max_ratio)"
+    )
+
+
+def explain_zero_bound(total: int, max_ratio: float) -> str | None:
+    """Tier 1 상한이 0이 되는 **번역 없이 계산 가능한** 원인을 말한다.
+
+    나머지 넷(전량 excluded · 후보가 전부 실패분 · 회색지대 공백 · 세그먼트 0건)은
+    채점된 `SegmentRisk`가 있어야 판정되므로 dry-run에서는 알 수 없다 -
+    `_diagnose_empty_candidates`가 그것을 한다. **모르는 것을 말하지 않는 것이
+    이 함수의 계약이다.**
+
+    **지금 dry-run이 실제로 내는 갈래는 내림 하나뿐이다.** `max_ratio == 0.0`은
+    CLI가 `--tier1`과 함께 오면 "스위치와 모순"으로 exit 2에서 끊어 dry-run
+    분기에 닿지 못한다. 그런데도 그 갈래를 남기는 이유는 **문구를
+    `_diagnose_empty_candidates`와 공유하는 것이 `_ZERO_BY_SWITCH`의 존재
+    이유**여서다 - 여기서 떼면 상수의 소비자가 실행 경로 하나가 되어, 복제
+    금지를 지키던 테스트(`test_실행_경로와_같은_문자열을_쓴다`)가 무엇을
+    지키는지 알 수 없게 된다. CLI가 그 조합을 허용하도록 바뀌면 여기가 이미
+    맞는 답을 갖고 있다.
+
+    **상한이 0이 아니면 `None`이어야 한다.** 아무 때나 문장을 내면 화면이 늘
+    시끄러워져 진짜 0회일 때의 사유가 묻힌다.
+    """
+    if max_ratio == 0.0:
+        return _ZERO_BY_SWITCH
+    if math.floor(total * max_ratio) == 0:
+        # dry-run은 번역을 안 하므로 `total`이 자막 전체다. 실행 경로가 쓰는
+        # 명사("번역 성공 세그먼트 수")를 여기 쓰면 아직 번역하지도 않은 수를
+        # 성공분이라 부르게 된다.
+        return _zero_by_floor(total, max_ratio, noun="세그먼트 수")
+    return None
+
+
 def _diagnose_empty_candidates(
     scored: Sequence[SegmentRisk],
     candidate_ids: set[str],
@@ -365,7 +425,7 @@ def _diagnose_empty_candidates(
             )
         return "세그먼트가 0건이다 - Tier 1이 아니라 입력 자체를 봐야 한다"
     if max_ratio == 0.0:
-        return "max_ratio=0.0 - Tier 1을 껐다 (정상)"
+        return _ZERO_BY_SWITCH
     if candidate_ids:
         # cap>0이고 선별도 됐지만 전부 번역 실패분(target_text 없음 또는
         # 공백)이라 걸러졌다. **도달한다** - `source_text`가 공백뿐이면
@@ -373,11 +433,10 @@ def _diagnose_empty_candidates(
         # 통과한다(모듈 독스트링 「후보가 전부 번역 실패분」 절 참고).
         return "후보로 뽑혔지만 전부 번역 실패분(target_text 없음 또는 공백)이라 제외됐다"
     if gray_zone(scored):
-        return (
-            f"세그먼트 수({len(scored)})에 비해 max_ratio({max_ratio})가 작아 "
-            "Tier 1 상한이 내림(floor)으로 0이 됐다 "
-            "(select_tier1_candidates 독스트링 - n < 1/max_ratio)"
-        )
+        # **`scored`는 자막 전체가 아니다** - `excluded_ids`(번역 실패분)가
+        # 빠진 뒤 채점된 것이다. "세그먼트 수"라고 부르면 전량의 80%가 실패한
+        # 실행에서 사용자가 파일 크기를 오독한다.
+        return _zero_by_floor(len(scored), max_ratio, noun="번역 성공 세그먼트 수")
     return "회색지대가 비었다 (전부 hard_fail이거나 이미 선별됨)"
 
 
