@@ -1,7 +1,10 @@
 # Session Handoff
 
 > Last updated: 2026-08-29 (KST)
-> **브랜치 `fix/failure-diagnostics`에 번역 실패 진단 구현이 끝나 있다. 게이트 전부 통과.**
+> **번역 실패 진단은 `main`에 머지됐다(`782c4b3`, PR #16).**
+> **브랜치 `fix/cache-discard-invalid`에 파킹 #13(캐시가 실패 응답을 보존한다) 구현이
+> 끝나 있다. 게이트 전부 통과 — `pytest` 1582 passed.** 아래 "파킹된 finding" 다음의
+> "#13은 닫혔다" 절이 그 내용이고, 나머지 절들은 직전 작업(실패 진단)의 기록이다.
 > 커밋 수는 `git rev-list --count main..HEAD`로 센다 — 여기 숫자를 적으면
 > 그 문장을 고치는 커밋이 자기 자신을 틀리게 만든다(실측으로 한 번 겪었다).
 > **브랜치가 `origin`에 있는지, PR이 있는지, CI가 돌았는지는 아래 "배포 절차"의 명령으로 직접 재라.**
@@ -72,6 +75,11 @@ FR-2.6은 이미 ✅였고 이 작업은 그 FR이 만든 데이터를 화면과
 "산출물은 나왔는데 일부가 비었다"에 해당하는 값이 아예 없어서, 없는 것을 억지로 맞추다
 거짓 약속을 하게 된 것이다. **`3`은 재시도 여부를 주장하지 않는다.**
 
+> **이 절은 2026-08-29 시점의 기록이고 위 표의 첫 줄은 그 뒤에 바뀌었다.** 파킹 #13이
+> 닫히면서 `invalid_response`는 더 이상 캐시에 보존되지 않는다 — 재실행하면 실제로 다시
+> 호출한다. `empty_translation`은 그대로 보존되고, **종료 코드 3이라는 결론도 그대로다**
+> (근거가 하나 줄었을 뿐이다). 아래 "#13은 닫혔다" 절을 보라.
+
 ### ⓒ 명시적 우선순위가 반증 불가능한 게이트가 될 뻔했다
 
 `max()`를 `_EXIT_PRIORITY` 튜플로 바꾼 뒤 변이를 걸었더니 **죽는 테스트가 0건**이었다.
@@ -121,8 +129,8 @@ FR-2.6은 이미 ✅였고 이 작업은 그 FR이 만든 데이터를 화면과
 
 ```bash
 git rev-list --count main..HEAD          # 이 브랜치의 커밋 수
-git ls-remote --heads origin fix/failure-diagnostics   # 비면 아직 푸시 안 됨
-gh pr list --head fix/failure-diagnostics              # 비면 PR 없음
+git ls-remote --heads origin fix/cache-discard-invalid   # 비면 아직 푸시 안 됨
+gh pr list --head fix/cache-discard-invalid              # 비면 PR 없음
 gh pr checks --watch                                    # CI 통과 대기
 ```
 
@@ -164,7 +172,8 @@ gh pr checks --watch                                    # CI 통과 대기
 
 ## 파킹된 finding
 
-**#1·#2·#3이 닫혔다.** 셋이 한 덩어리("실패했는데 왜인지 안 말한다")였고 이 브랜치가 전부 냈다.
+**#1·#2·#3·#13이 닫혔다.** 앞의 셋은 한 덩어리("실패했는데 왜인지 안 말한다")였고,
+그 다음 브랜치(`fix/cache-discard-invalid`)가 #13을 냈다.
 
 | # | 무엇 | 왜 지금 안 했나 | 다시 열 조건 |
 | --- | --- | --- | --- |
@@ -176,22 +185,34 @@ gh pr checks --watch                                    # CI 통과 대기
 | 9 | **`default_map` 값의 타입 변환에 게이트가 없다** | 게이트를 만들면 click 내부 의존이 한 겹 더 는다 | `Path` 전용 메서드를 쓰게 되는 날 |
 | 11 | **`output.progress`에 스칼라가 아닌 YAML을 주면 트레이스백 + `exit 1`** | **기존 결함 부류의 세 번째 사례다** — `dry_run: [1]`·`signals.tier1.enabled: [1]`이 똑같이 행동한다 | 설정 파일 값 검증을 **부류 전체**로 손보는 작업 |
 | 12 | **닫힌 파이프 + 실제 번역 + 진행 켬** 조합이 미검증 | `_TolerantOutput`이 한 층 아래에서 `EPIPE`를 삼켜 위험이 낮다 | 파이프 계약을 다시 손볼 때 |
-| **13** | **캐시가 실패 응답을 보존한다 — 재실행이 같은 실패를 무료로 영구 반복한다** | `store/`는 이 작업의 대상이 아니고 이 브랜치가 만든 것도 아니다. **다만 종료 코드 값을 3으로 바꾼 근거가 바로 이것이다** | **다음 작업 후보 1순위.** 파킹 2번(권장 모델이 대량 실패)과 겹친다 |
 
-### #13 재현 — 그대로 돌릴 수 있다
+### #13은 닫혔다 — 그리고 노트 한 줄이 거짓이었다
 
-```text
-① 스텁 LLM 서버를 세워 지시를 어긴 응답(200 + 잡문)을 내게 하고 `translate --cache-dir C`를 돌린다
-   → exit 3 · invalid_response 2건 · 캐시 파일 3개 생성.
-② 서버 프로세스를 죽인다(포트 응답 없음).
-③ 같은 `--cache-dir C`로 재실행 → `캐시 히트 3 · 실제 호출 0 · invalid_response 2건 · exit 3`.
-```
+`invalid_response` 응답은 이제 캐시에서 폐기된다(`store/cache.py::discard` ·
+`CachingProvider.discard` · `translate/engine.py::_discard_cached`). 재실행하면 그 배치만
+실제로 다시 호출되고, 같은 배치에서 폴백으로 건진 번역은 캐시에 남아 재결제하지 않는다.
 
-원인은 `src/cuesift/store/provider.py`의 `complete()`가 성공·실패를 가리지 않고
-`_store_or_warn`으로 저장하는 것이다(미스 경로에 분기가 없다). `invalid_response`는 이 계층에서
-정상 `Completion`이라 저장되고, `provider_error`는 예외로 먼저 빠져 저장되지 않는다.
+**노트가 "모델을 바꿔도 재생된다"고 적은 것은 거짓이었다** — 캐시 키에 `identity`가
+들어가고 `identity = base_url|model`이라(`translate/openai_compat.py:129`) 모델 교체는
+이미 캐시를 우회했다. 실제 피해는 좁았다: *같은 모델·같은 설정으로 다시 돌릴 때*,
+즉 "그냥 한 번 더 돌려본다"가 무력화되는 것.
 
-**결과: 모델을 바꿔도 캐시를 지우기 전까지 같은 실패가 무료로 영구 재생된다.**
+**`empty_translation`은 남긴다.** 개수도 번호도 맞은 계약을 지킨 응답이라, 폐기하면
+같은 배치에서 성공한 나머지까지 다시 결제한다. 이 범위를 지키는 것이
+`tests/test_cache_discard.py::test_빈_번역은_캐시에서_빼지_않는다`다.
+
+**게이트는 2회차의 실제 호출 수다.** 세그먼트 2개 기준으로 전부 파싱 실패면 **3**,
+배치만 실패하고 개별 폴백이 성공하면 **1**, 빈 번역이면 **0**이고, 이 세 값이
+"폐기 없음"·"배치 호출부만 빠짐"·"개별 호출부만 빠짐"을 전부 가른다(변이 5종 실측:
+2·2·1·1·2건 사망). 실물 스모크(스텁이 잡문만 냄, 10큐)에서 2회차가
+`캐시 히트 0 · 실제 호출 11`이었고 **캐시 디렉터리에 파일이 0개**로 남았다 —
+폐기 전이었다면 `캐시 히트 11 · 실제 호출 0`이다.
+
+**종료 코드 3의 근거가 하나 줄었다.** `cli.py` 머리말과 README가 인용하던 실측
+("재실행하면 캐시 히트 3 · 실제 호출 0")은 `invalid_response`에 대해 더 이상 참이 아니다.
+값은 그대로 둔다 — 75(`EX_TEMPFAIL`)를 거부하는 이유는 남는다(사유 3종의 처방이 서로 달라
+코드 하나가 "재시도"를 대표할 수 없고, `empty_translation`은 여전히 캐시가 보존한다).
+두 문서의 문장을 그에 맞게 고쳤다.
 
 ## 남은 관측 하나 — FR-8.5의 R3
 
@@ -258,13 +279,17 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 ## 다음 세션 시작 절차
 
 ```bash
-git checkout fix/failure-diagnostics
-git log --oneline | head -3
+git checkout fix/cache-discard-invalid
+git log --oneline | head -4
 git status --short                        # clean이어야 한다
-git ls-remote --heads origin fix/failure-diagnostics   # 푸시됐나
-gh pr list --head fix/failure-diagnostics              # PR이 있나
+git ls-remote --heads origin fix/cache-discard-invalid   # 푸시됐나
+gh pr list --head fix/cache-discard-invalid              # PR이 있나
 ```
 
-머지가 끝났으면 **다음 작업은 파킹 #13(캐시가 실패를 보존한다)이 1순위다.**
-파킹 2번(README 권장 모델이 대량 실패)과 같은 뿌리이고, 이번 세션의 CRITICAL이
-바로 그 결함의 증상이었다. 그 다음이 **FR-8.3**(WP6의 마지막 조각, STT 어댑터가 선행)이다.
+파킹 #13은 닫혔다(위 절 참고). 머지가 끝났으면 **다음 작업은 FR-8.3**
+(WP6의 마지막 조각, STT 어댑터가 선행)이다.
+
+**파킹 2번(README 권장 모델 `qwen2.5:3b`가 3큐 중 2큐 실패)은 여전히 열려 있다.**
+같은 뿌리로 #13과 묶여 있었지만 같은 것이 아니다 — #13은 "실패를 캐시가 굳힌다"였고
+2번은 **"권장 모델이 애초에 실패한다"**다. 폐기가 재실행을 가능하게 만들었을 뿐,
+같은 모델이 같은 지시를 다시 어기는 문제는 그대로다.

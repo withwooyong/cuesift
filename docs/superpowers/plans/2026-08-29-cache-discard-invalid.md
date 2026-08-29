@@ -801,12 +801,18 @@ git commit -m "문서: 파킹 #13을 닫고 종료 코드 3의 근거를 고친�
 
 ```powershell
 .venv\Scripts\python.exe -m cuesift translate tests\fixtures\ingest\ten_cues.srt --to en --out $env:TEMP\cs1 --base-url http://127.0.0.1:8765/v1 --model stub --cache-dir $env:TEMP\cs-cache
-# → exit 3 · invalid_response
-# 서버를 죽이지 말고 같은 --cache-dir로 재실행
-# → 화면의 "실제 호출"이 0이 아니어야 한다. 이것이 파킹 #13의 재현이 닫힌 증거다
 ```
 
-**서버를 죽이고 재실행하면** 이제 `provider_error`가 나온다(캐시가 비었으므로 실제로 호출하고 실패한다) — 폐기 전에는 `invalid_response`가 캐시에서 그대로 재생됐다. 이 차이가 육안으로 확인할 수 있는 가장 짧은 증거다.
+**실측(2026-08-29, 스텁이 200 + 잡문만 냄).** 10큐 · 배치 1회 + 개별 폴백 10회 = 호출 11회다.
+
+| 실행 | 결과 |
+| --- | --- |
+| 1회차 | `exit 3` · **캐시 히트 0 · 실제 호출 11** · `invalid_response 10건` |
+| 2회차 (같은 `--cache-dir`, 서버 살아 있음) | `exit 3` · **캐시 히트 0 · 실제 호출 11** · `invalid_response 10건` |
+| 캐시 디렉터리 | 실행 후 **파일 0개** — 11개가 저장됐다가 전부 폐기됐다 |
+| 3회차 (서버를 죽이고) | `exit 3` · **캐시 히트 0 · 실제 호출 4** · **`provider_error` 10건**(시도 4회) |
+
+**2회차의 "실제 호출 11"이 파킹 #13의 재현이 닫힌 증거다** — 폐기 전에는 `캐시 히트 11 · 실제 호출 0`이었다. 3회차는 사유가 `invalid_response`에서 `provider_error`로 **바뀌는 것**을 보인다: 캐시가 비었으므로 실제로 호출하고 서버가 없어 실패한다. 폐기 전에는 죽은 서버에서도 `invalid_response`가 캐시에서 그대로 재생됐다.
 
 ## 하지 않는 것
 
