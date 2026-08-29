@@ -97,6 +97,37 @@ _CONTRACT = [
     ),
     ("0 --help", ["--help"], 0),
     ("0 --version", ["--version"], 0),
+    # **아래 둘은 짝이다** (FR-8.5 · 설계 D10). 재는 것은 "진행을 켜도 계약이
+    # 유지되는가" 하나뿐이라 인자가 `--progress` 하나만 다르고 기대 종료 코드는
+    # 같다. 짝을 이루지 않으면 둘 다 0인 것이 진행 표시와 무관한 이유로 0일
+    # 수도 있어 아무것도 증명하지 못한다.
+    #
+    # **`--progress`는 `translate`에만 있어 기존 `check` 시나리오를 그대로
+    # 복사할 수 없었다.** `translate`가 여기 처음 들어오므로 LLM 없이 끝나는
+    # `--dry-run`을 쓴다 - `provider.complete()`를 부르지 않는다.
+    #
+    # `conftest`의 `CUESIFT_PROGRESS=0`은 `os.environ`을 고쳐 자식에게도
+    # 상속되지만, **CLI가 환경변수를 이긴다**(설계 D5). 그래서 아래 두 번째
+    # 줄은 진행이 실제로 켜진 채 stdout이 닫힌 파이프를 만난다.
+    *[
+        (
+            f"0 translate --dry-run{label}",
+            [
+                "translate",
+                str(FIXTURES / "minimal.srt"),
+                "--to",
+                "en",
+                "--base-url",
+                "http://127.0.0.1:9/v1",
+                "--model",
+                "m",
+                "--dry-run",
+                *flag,
+            ],
+            0,
+        )
+        for label, flag in (("", []), (" --progress", ["--progress"]))
+    ],
 ]
 
 

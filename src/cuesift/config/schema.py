@@ -63,6 +63,9 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("glossary",), (("translate", "glossary"),)),
     Binding(("work_context",), (("translate", "work_context"),)),
     Binding(("output", "dir"), (("translate", "out"),)),
+    # **변환 함수가 없다.** `cache.enabled → --no-cache`가 `negate`를 거치는
+    # 것과 달리 YAML의 `true`가 곧 `--progress`다 (FR-8.5).
+    Binding(("output", "progress"), (("translate", "progress"),)),
     Binding(("cache", "dir"), (("translate", "cache_dir"),)),
     Binding(("cache", "enabled"), (("translate", "no_cache"),), negate),
     Binding(("dry_run",), (("translate", "dry_run"),)),
