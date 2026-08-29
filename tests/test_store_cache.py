@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from tests.fakes.provider import ScriptedProvider
 
-from cuesift.store.cache import CacheRequest, load, store
+from cuesift.store.cache import CacheRequest, discard, load, store
 from cuesift.store.provider import CachingProvider
 from cuesift.translate.provider import ChatMessage, Completion, TokenUsage
 
@@ -501,3 +501,20 @@ def test_attempt가_None이면_거부한다() -> None:
 def test_attempt가_음수면_거부한다() -> None:
     with pytest.raises(ValueError, match="attempt는 0 이상"):
         CacheRequest(identity="m", temperature=0.0, max_tokens=None, messages=(), attempt=-1)
+
+
+def test_store가_쓴_것을_discard가_지운다(tmp_path: Path) -> None:
+    # 경로 규칙이 갈라지면 여기서만 드러난다. discard가 엉뚱한 경로를 지우면
+    # 지울 것이 없어 `missing_ok=True`가 조용히 성공하기 때문이다.
+    request = _request()
+    store(tmp_path, request, _completion())
+    assert load(tmp_path, request) is not None
+
+    discard(tmp_path, request)
+
+    assert load(tmp_path, request) is None
+
+
+def test_없는_항목을_지우는_것은_무연산이다(tmp_path: Path) -> None:
+    # 폐기는 실패 경로에서 불린다. 거기서 예외를 내면 번역이 죽는다.
+    discard(tmp_path, _request())

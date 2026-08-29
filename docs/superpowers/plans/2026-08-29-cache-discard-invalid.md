@@ -393,9 +393,9 @@ from cuesift.store.cache import CACHE_IO_ERRORS, CacheRequest, discard, load, st
 
 | 변이 | 기대 |
 | --- | --- |
-| `cache.discard` 본문을 `pass`로 | ≥ 2건 사망 |
-| `CachingProvider.discard`가 `_request`를 안 쓰고 `temperature=0.0`을 하드코딩 | 1건 사망(`test_폐기는_호출과_같은_온도의_항목을_지운다`) |
-| `_discard_or_warn`의 `except`를 지움 | 1건 사망(`test_폐기_실패는_경고하고_진행한다`) |
+| `cache.discard` 본문을 `pass`로 | **3건 사망**(실측) |
+| `CachingProvider.discard`가 `_request`를 안 쓰고 `temperature=0.0`을 하드코딩 | **1건 사망**(`test_폐기는_호출과_같은_온도의_항목을_지운다`, 실측) |
+| `_discard_or_warn`의 `except`를 지움 | **1건 사망**(`test_폐기_실패는_경고하고_진행한다`, 실측) |
 
 **표에 적은 숫자는 실제로 관측한 값으로 바꿔 적는다.** 예상치를 남기면 다음 사람이 그것을 믿는다.
 
