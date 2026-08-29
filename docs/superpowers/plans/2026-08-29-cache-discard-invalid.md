@@ -623,15 +623,15 @@ def _discard_cached(
 
 각 변이 후 `pytest tests/test_cache_discard.py`를 돌리고 **되돌린다.**
 
-| 변이 | 기대 사망 |
+| 변이 | 사망 (실측) |
 | --- | --- |
-| `_discard_cached` 본문을 `pass`로 | 2건 |
-| `_run_window`의 호출만 제거 | 2건 |
-| `_run_single`의 호출만 제거 | 1건 (`test_파싱_실패_응답은…`) |
-| `_collect`의 `empty_translation` 자리에 `_discard_cached` 추가 | 1건 (`test_빈_번역은…`) — **범위의 못이 진짜인지 본다** |
-| `_MAX_TOKENS`를 `_discard_cached`에서만 `16`으로 | 2건 |
+| `_discard_cached` 본문을 `return`으로 | **2건** |
+| `_run_window`의 호출만 제거 | **2건** |
+| `_run_single`의 호출만 제거 | **1건** (`test_파싱_실패_응답은…`) |
+| `_run_window`가 `empty_translation`에도 폐기를 걸게 확대 | **1건** (`test_빈_번역은…`) — 범위의 못이 진짜 게이트다 |
+| `_MAX_TOKENS`를 `_discard_cached`에서만 `16`으로 | **2건** |
 
-**관측값을 표에 적어 넣는다.** 마지막 두 줄이 0건이면 게이트가 없는 것이므로 테스트를 보강한다.
+다섯 변이가 **서로 다른 조합**을 죽인다 - 어느 하나만으로는 행렬을 다 지키지 못한다.
 
 - [ ] **Step 7: 전체 게이트를 돌리고 커밋한다**
 
