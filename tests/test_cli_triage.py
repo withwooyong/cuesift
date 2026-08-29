@@ -14,7 +14,12 @@ from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import blank_at, normalize_rich_message
-from cuesift.cli import _format_triage_summary, _parse_review_budget, app
+from cuesift.cli import (
+    EXIT_TRANSLATION_FAILURE,
+    _format_triage_summary,
+    _parse_review_budget,
+    app,
+)
 from cuesift.report import TriageOutcome
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.spec import SpecProfile, available_builtins, load_builtin
@@ -506,7 +511,9 @@ def test_번역_실패분은_트리아지에서_빠진다(tmp_path: Path, monkey
 
     result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
 
-    assert result.exit_code == 1, result.output  # 번역 실패가 있으면 1이다 (FR-2.6)
+    # 번역 실패가 있으면 75다. FR-2.6은 "실패 표시 후 진행"만 요구하고
+    # 종료 코드를 말한 적이 없다 - 근거를 잘못 대고 있던 주석이다.
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     assert "대상 세그먼트 7개 (번역 실패 3건 제외)" in result.output
     assert "실제 14.3%" in result.output
     # **실패분이 애초에 안 들어왔다의 직접 증거다.** 비율만 보면 세그먼트
@@ -526,7 +533,7 @@ def test_전량_실패면_건너뛴다고_말한다(tmp_path: Path, monkeypatch:
 
     result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-budget", "10%"))
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     assert "번역된 세그먼트가 없어 건너뛴다 (전량 10건 실패)" in result.output
     # 0.0%를 찍으면 "볼 것이 없다"로 오독된다 - 그 문구가 나오지 않는 것이 요점이다.
     assert "실제 0.0%" not in result.output
@@ -609,7 +616,8 @@ def test_실패분_제외가_배치_신호를_눈멀게_하지_않는다(
 
     result = runner.invoke(app, _args(tmp_path, "overlap.vtt", "--review-budget", "50%"))
 
-    assert result.exit_code == 1, result.output  # 번역 실패 1건 (FR-2.6)
+    # 번역 실패 1건. 75는 구현 선택이지 FR-2.6이 요구한 값이 아니다.
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     assert "대상 세그먼트 1개 (번역 실패 1건 제외)" in result.output
     # 실패분을 **융합**에서는 여전히 뺀다 - D12는 유지된다.
     assert "struct.empty" not in result.output

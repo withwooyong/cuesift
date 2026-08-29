@@ -20,7 +20,7 @@ from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import blank_at, normalize_rich_message, scripted_at
-from cuesift.cli import _output_path, _review_path, app
+from cuesift.cli import EXIT_TRANSLATION_FAILURE, _output_path, _review_path, app
 from cuesift.report import json_report
 
 runner = CliRunner()
@@ -396,7 +396,7 @@ def test_화면_요약과_파일_수치가_일치한다(tmp_path: Path, monkeypa
         ),
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     summary = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]
 
     # **반-퇴화 가드가 먼저다.** 아래 세 대조는 값이 서로 다를 때만 무언가를
@@ -510,7 +510,7 @@ def test_total이_triaged와_excluded의_합이다(
         ),
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     summary = _read_review(tmp_path, "ten_cues.en.review.json")["summary"]
     assert summary["excluded_failures"] == 3, "실패가 0이면 아래 검산이 항등식이 된다"
     assert summary["total_segments"] == 10
@@ -729,10 +729,10 @@ def test_직렬화_실패는_예외_타입과_무관하게_exit_70이다(
 ) -> None:
     """설계 §8 — exit 1("규격 위반 발견")로 새면 내부 결함이 자막 결함으로 오보된다.
 
-    **exit 1이 최악인 이유는 "구별되지 않는다"이다** (리뷰 계약 축 I1 실측).
-    번역 실패가 함께 있는 흔한 실행에서는 정상 종료도 exit 1이라, 새어 나간
-    내부 결함이 "번역 일부 실패"와 **종료 코드로 구별되지 않는다.** CI는 번역을
-    재시도하고 리포트는 영영 안 나온다.
+    **exit 1이 최악인 이유는 "구별되지 않는다"였다** (리뷰 계약 축 I1 실측).
+    번역 부분 실패가 75로 갈라진 지금은 종료 코드로 구별은 되지만, 1은
+    `check`의 "규격 위반 발견"이라 새어 나간 내부 결함이 자막 결함으로
+    읽힌다. CI는 멀쩡한 자막을 고치려 들고 리포트는 영영 안 나온다.
 
     **세 타입을 모두 도는 것이 이 게이트의 핵심이다.** `TypeError` 하나만 보면
     `except Exception`을 `except TypeError`로 되돌리는 변이가 통과한다 -
@@ -869,7 +869,7 @@ def test_전량_실패해도_파일이_사실을_말한다(
         ),
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == EXIT_TRANSLATION_FAILURE, result.output
     doc = _read_review(tmp_path)
     assert doc["summary"]["triaged_segments"] == 0
     assert doc["summary"]["excluded_failures"] > 0

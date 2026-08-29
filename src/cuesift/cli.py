@@ -4,13 +4,14 @@
 `check`·`translate`는 배선이 끝나 실제로 동작한다. `transcribe`는 아직
 인자 스키마만 확정한 골격이라 EXIT_NOT_IMPLEMENTED로 종료한다.
 
-**종료 코드 여섯이 서로 겹치지 않는 것이 이 파일의 계약이다.**
+**종료 코드 일곱이 서로 겹치지 않는 것이 이 파일의 계약이다.**
 
 | 코드 | 언제 | 근거 |
 | --- | --- | --- |
-| 0 | 위반 없음, 또는 `--fail-on none` | |
-| 1 | 규격 위반 발견, 또는 번역 일부 세그먼트 실패(원문 유지) | FR-7.5, FR-2.6 |
+| 0 | 위반 없음, 또는 `--fail-on none`, 또는 전량 번역 성공 | |
+| 1 | 규격 위반 발견 (`check`만) | FR-7.5 |
 | 2 | 명령줄이 틀림 (파일 없음·디렉터리·프로파일 해석 실패·출력 경로 충돌) | typer 관행 |
+| 3 | 번역되지 않은 세그먼트가 남음, 원문 유지 (`translate`만) | 이 파일이 정한다 |
 | 66 | 파일 사정 (자막·용어집 파싱 실패, utf-8 아님, 읽거나 쓰지 못함) | `sysexits.h` EX_NOINPUT |
 | 69 | 외부 서비스(LLM 프로바이더)가 요청을 거부함 | `sysexits.h` EX_UNAVAILABLE |
 | 70 | 미구현(`transcribe`), 또는 산출물의 **내용** 결함 | `sysexits.h` EX_SOFTWARE |
@@ -18,6 +19,15 @@
 **1을 진단 실패에 쓰지 않는 것이 핵심이다.** 1은 "규격 위반 발견"이므로
 파일을 못 읽은 것을 1로 내면 CI가 "자막이 깨졌다"와 "경로가 틀렸다"에
 같은 대응을 하게 되고, 사용자는 멀쩡한 자막을 고치려 든다.
+
+**번역 실패도 1에서 뺐다.** 예전 표는 1을 `check`의 위반과 `translate`의
+실패가 겸하게 두고 근거로 FR-7.5·FR-2.6을 댔는데, **FR-7.5는 `check`만
+말하고 FR-2.6은 종료 코드를 언급하지 않는다.** 요구가 아니라 구현 선택이었고,
+겸하는 동안 CI는 두 원인에 같은 대응을 했다.
+
+**3이 `sysexits.h` 밖의 값인 것은 의도다.** 거기에는 "산출물은 나왔는데 일부가
+비었다"가 없고, 뜻이 가장 가깝던 75(EX_TEMPFAIL, "다시 시도하라")는 실측으로
+거짓이었다 - 캐시가 실패 응답을 보존해 재실행이 호출 0회로 같은 실패를 낸다.
 """
 
 from __future__ import annotations
@@ -27,7 +37,7 @@ import math
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -59,7 +69,7 @@ from cuesift.spec import (
     load_profile,
 )
 from cuesift.store import CacheRequest, CachingProvider
-from cuesift.tier1 import triage_with_tier1
+from cuesift.tier1 import explain_zero_bound, triage_with_tier1
 from cuesift.translate import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CONTEXT_WINDOW,
@@ -68,6 +78,7 @@ from cuesift.translate import (
     OpenAICompatibleProvider,
     Provider,
     ProviderError,
+    SegmentFailure,
     TokenUsage,
     TranslationResult,
     build_messages,
@@ -107,6 +118,76 @@ EXIT_BAD_INPUT = 66
 # 70("미구현·내부 오류")과 나누는 이유는 CI가 "아직 안 만든 기능"과
 # "LLM 서버가 401을 냈다"에 같은 대응을 하면 안 되기 때문이다.
 EXIT_UNAVAILABLE = 69
+
+# "산출물은 나갔는데 번역되지 않은 세그먼트가 남았다". **그 이상은 주장하지
+# 않는다** - 다시 돌리면 되는지는 사유에 달렸고, 사유는 화면이 말한다
+# (`_format_failure_lines`).
+#
+# **1에서 갈라져 나온 값이다.** 이전에는 `check`의 "규격 위반 발견"과 같은 1이라
+# CI가 "자막이 규격을 어겼다"와 "번역이 실패했다"에 같은 대응을 했다. 요구가
+# 그것을 시킨 적은 없다 - FR-7.5는 `check`만 말하고 FR-2.6은 "실패 표시 후
+# 진행"만 요구하며 종료 코드를 언급하지 않는다.
+#
+# **`sysexits.h`를 쓰지 않는다.** 거기에는 "산출물은 나왔는데 일부가 비었다"에
+# 해당하는 값이 없다. 후보였던 EX_TEMPFAIL(75)은 "다시 시도하면 된다"를 뜻하는데
+# **실측으로 거짓이다** - 스텁으로 `invalid_response`를 만든 뒤 서버를 죽이고
+# 같은 캐시로 재실행하면 `캐시 히트 3 · 실제 호출 0 · 실패 2건`이 그대로 나온다
+# (`store/provider.py`의 `complete()`가 성공·실패를 가리지 않고 저장한다).
+# **75였다면 CI가 재시도로 읽어 호출 0회짜리 무한 루프가 된다.**
+#
+# **69와 나누는 축은 "산출물이 나갔는가"다.** 69는 프로바이더가 요청을 거부해
+# 그 언어가 통째로 죽은 것이고, 3은 파일이 나왔는데 일부 줄이 원문으로 남은
+# 것이다.
+#
+# **이름이 "partial"이 아닌 이유**: 판정이 `if translated.failures`라 전량
+# 실패도 이 코드로 나간다. `EXIT_PARTIAL_FAILURE`였다면 이름이 거짓이었다.
+EXIT_TRANSLATION_FAILURE = 3
+
+# **값의 크기가 아니라 이 순서가 우선순위다.** `max()`로 합치면 코드 값의 크기가
+# 우선순위가 되는데 그것은 우연히만 맞는다. 이 튜플이 없으면 그 회귀가 조용히
+# 들어온다.
+#
+# **70이 맨 앞인 것이 이 순서의 핵심이다.** 70은 출력 자막·검수 리포트·HTML을
+# 쓰지 못한 것이라 **사용자가 LLM 설정을 고쳐도 사라지지 않는다.** 69는 고치면
+# 사라진다. 한 언어가 프로바이더 거부이고 다른 언어가 직렬화 실패라면 보고할
+# 것은 우리 쪽 결함이다.
+#
+# **69가 조기 break를 걸기 때문에 더 그렇다.** en에서 70이 난 뒤 ja에서 401이
+# 나면 호출부가 남은 언어를 건너뛰며 끝나는데, 여기서 69가 이기면 70은 다음
+# 실행까지 숨는다 - 그 다음 실행도 401이면 영영 안 보인다.
+#
+# 앞에 있을수록 근본적이다: 우리 쪽 결함 > 서비스가 죽은 것 > 파일 사정 >
+# 번역 실패. `_translate_one`이 내는 값은 이 넷뿐이다(2는 파싱 단계에서
+# `typer.Exit`으로 먼저 나가므로 여기 오지 않는다).
+_EXIT_PRIORITY = (
+    EXIT_NOT_IMPLEMENTED,
+    EXIT_UNAVAILABLE,
+    EXIT_BAD_INPUT,
+    EXIT_TRANSLATION_FAILURE,
+)
+
+
+def _combine_exit_codes(codes: Iterable[int]) -> int:
+    """대상 언어별 종료 코드를 하나로 합친다.
+
+    **0은 "아무 일 없음"이라 언제나 진다.** 하나라도 실패가 있으면 그것이 나간다.
+    **`_EXIT_PRIORITY`에 없는 값도 0으로 만들지 않는다** - 새 코드를 넣고 표에
+    등록하지 않은 것이 조용히 성공으로 나가면 CI가 실패를 통과로 읽는다.
+    미등록 값이 둘 이상이면 그중 **가장 작은 값**을 낸다(임의 선택이지만
+    결정적이라 같은 실행이 같은 코드를 낸다). 표에 넣어 순서를 정하는 것이
+    옳고, 이 갈래는 그때까지의 그물이다.
+
+    **집합으로 받으므로 인자 순서에 좌우되지 않는다.** `--to en,ja`와 `ja,en`이
+    다른 종료 코드를 내면 CI 판정이 언어 나열 순서로 갈린다.
+    """
+    seen = {c for c in codes if c}
+    if not seen:
+        return 0
+    for code in _EXIT_PRIORITY:
+        if code in seen:
+            return code
+    return sorted(seen)[0]
+
 
 # 자동 탐색은 현재 디렉터리 한 칸뿐이다(설계 D2). 상위로 올라가면 사용자가
 # 존재를 모르는 파일이 검수 기준을 바꾸고, 가중치와 hard fail 임계가 실린
@@ -1387,18 +1468,21 @@ def translate(
             _echo(line)
         return
 
-    # 종료 코드의 숫자 크기가 심각도 순과 일치한다: 0 < 1 < 2 < 66 < 69 < 70.
-    # 70(내부 오류)이 69(외부 서비스 거부)를 이기는 것이 옳다 - 한 언어가
-    # 프로바이더 거부이고 다른 언어가 직렬화 실패라면 보고할 것은 우리 쪽
-    # 결함이다. 사용자가 LLM 설정을 고쳐도 70은 사라지지 않는다.
-    # **이 성질이 깨지면 아래 max()가 틀린 코드를 낸다** - 새 코드를 추가할 때
-    # 반드시 확인한다. review.json 배선(FR-7.2)이 70을 추가하며 이 주석을 갱신했다.
     # **번역과 Tier 1이 같은 디렉터리를 봐야 한다.** 두 자리에서 각자 조립하면
     # 한쪽만 `--no-cache`를 반영하는 갈라짐이 조용히 생긴다 - 그때 Tier 1은
     # 캐시가 켜진 줄 알고 매 실행 새 호출을 내면서 화면은 "캐시 꺼짐"을 말한다.
     resolved_cache_dir = None if no_cache else (cache_dir or DEFAULT_CACHE_DIR)
 
-    worst = 0
+    # **숫자 크기로 합치지 않는다.** 우선순위는 `_EXIT_PRIORITY`가 갖는다.
+    #
+    # **오늘은 `max()`와 같은 답을 낸다.** `(70, 69, 66, 3)`이 값의 내림차순과
+    # 정확히 일치하기 때문이다(등록된 넷에 한해. 미등록 코드가 오면 갈라진다).
+    # 그럼에도 튜플을 두는 이유는 **다음에 추가되는 코드가 그 정렬을 깨뜨릴 때
+    # 조용히 틀리지 않기 위해서**다 - 이 브랜치의 초안이 실제로 그랬다.
+    # 부분 실패에 75(EX_TEMPFAIL)를 골랐을 때 `max()`는 75가 69(프로바이더
+    # 거부)를 이기게 했고, en이 부분 실패한 뒤 ja에서 401이 나면 CI가 진짜
+    # 원인을 잃었다. 값이 3으로 바뀌며 그 증상은 사라졌지만 구조는 남아 있다.
+    codes: list[int] = []
     # **설치·해제를 이 커맨드 하나로 한정한다** (FR-8.5 · 설계 §9 R1).
     # 전역 상태의 수명이 커맨드 경계를 넘으면 테스트가 서로 오염된다.
     #
@@ -1455,7 +1539,7 @@ def translate(
                 reporter=reporter,
                 weights=_config_weights(ctx),
             )
-            worst = max(worst, code)
+            codes.append(code)
             if code == EXIT_UNAVAILABLE:
                 # 인증·모델 오류는 다음 언어에서도 같다. 반복하면 진짜 원인이
                 # 실패 더미 아래 묻히고 호출만 언어 수만큼 는다 (설계 §6.4).
@@ -1482,6 +1566,7 @@ def translate(
         # **`finally`여야 한다.** 예외로 빠져나가면 다음 커맨드가 남의
         # 리포터를 쓴다 - 전역 상태의 수명이 커맨드 경계를 넘는다.
         install(None)
+    worst = _combine_exit_codes(codes)
     if worst:
         raise typer.Exit(worst)
 
@@ -1716,6 +1801,20 @@ def _dry_run_report(
                 f"  {_TIER1_BOUND_PREFIX}{bound}회 (재시도·폴백 제외"
                 f" · 후보 상한 비율 {max_ratio} · 샘플 {samples})"
             )
+            # **0회는 파라미터만 보여 주면 원인을 말한 것이 아니다**(파킹 #3).
+            # 실주행에는 `_diagnose_empty_candidates`가 원인 6개를 구분하는데
+            # dry-run에는 아무 설명이 없어, 사용자가 `--tier1`이 안 먹는다고 읽었다.
+            #
+            # **`explain_zero_bound`가 `None`을 낼 수 있다.** 0회의 원인 여섯 중
+            # 둘만 번역 없이 계산되므로, 모르는 것을 말하지 않고 줄을 붙이지 않는다.
+            if bound == 0:
+                why = explain_zero_bound(len(result.segments), max_ratio)
+                if why is not None:
+                    # **`lines`의 불변식은 "1 원소 = 1 줄"이다.** 한 원소에
+                    # 개행을 넣으면 화면은 같아 보여도 줄을 세거나 잘라 쓰는
+                    # 호출자(테스트의 `_bound_lines`가 그렇다)가 두 줄을 하나로
+                    # 세어 조용히 어긋난다.
+                    lines.append(f"    사유: {why}")
         for review_path in review_paths.get(target, ()):
             # **실제 실행의 문구와 같은 형태로 낸다**(`_translate_one`의
             # `f"  리포트 {review_path}"`). 다르게 쓰면 두 출력을 눈으로
@@ -2189,7 +2288,7 @@ def _translate_one(
             # 산출물이 실제로 나갔다는 뜻이다.
             reporter.done("기록 완료")
 
-    return 1 if translated.failures else 0
+    return EXIT_TRANSLATION_FAILURE if translated.failures else 0
 
 
 def _cache_identity(provider: Provider) -> str | None:
@@ -2263,9 +2362,42 @@ def _format_translate_summary(
         cache_line,
         token_line,
     ]
-    if result.failures:
-        ids = ", ".join(f.segment_id for f in result.failures)
-        lines.append(f"  실패 세그먼트(원문 유지): {ids}")
+    lines.extend(_format_failure_lines(result.failures))
+    return lines
+
+
+def _format_failure_lines(failures: Sequence[SegmentFailure]) -> list[str]:
+    """실패 세그먼트를 사유별로 묶어 낸다 (FR-2.6 · 파킹 #2).
+
+    **개수만 내면 안 되는 이유는 이미 이 파일에 있었다** - 원문이 남은 자막은
+    겉보기에 정상인 파일이라 미번역 자막이 그대로 배포된다. 여기에 사유를
+    더하는 이유는 그 다음 질문이 "그래서 다시 돌리면 되나"이기 때문이다:
+    `provider_error`는 서버·설정을, `empty_translation`은 모델을 가리킨다.
+
+    **많은 사유부터, 같으면 이름순으로 낸다.** 삽입 순서를 그대로 쓰면 배치
+    스케줄에 따라 줄 순서가 바뀌어 같은 입력이 다른 화면을 낸다(NFR-3).
+    이름순만으로 정렬하면 1건짜리 사유가 800건짜리 위에 올라와, 사용자가
+    가장 먼저 손대야 할 원인이 화면 아래로 밀린다.
+
+    **시도 횟수를 범위로 낸다.** 같은 사유라도 배치 경로와 개별 폴백 경로의
+    `attempts`가 다르다 - 하나로 뭉치면 "4번 버텼다"와 "한 번에 죽었다"가
+    같은 줄로 보인다.
+
+    **사유를 화이트리스트로 거르지 않는다.** `engine.py`가 사유를 하나 더
+    넣었을 때 화면에서 조용히 사라지면 그것이 정확히 이 함수가 고치는 결함이다.
+    """
+    if not failures:
+        return []
+    grouped: dict[str, list[SegmentFailure]] = {}
+    for failure in failures:
+        grouped.setdefault(failure.reason, []).append(failure)
+    lines = [f"  실패 세그먼트(원문 유지) {len(failures)}건:"]
+    for reason in sorted(grouped, key=lambda r: (-len(grouped[r]), r)):
+        group = grouped[reason]
+        attempts = sorted({f.attempts for f in group})
+        span = f"{attempts[0]}" if len(attempts) == 1 else f"{attempts[0]}~{attempts[-1]}"
+        ids = ", ".join(f.segment_id for f in group)
+        lines.append(f"    {reason} {len(group)}건 (시도 {span}회): {ids}")
     return lines
 
 
