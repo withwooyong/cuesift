@@ -2956,7 +2956,14 @@ def run() -> None:
     `run()`을 거치는 배포 경로는 1층이 전부 덮으므로 실사용 위험은 없고,
     `app()`을 직접 부르는 테스트·라이브러리 호출자에게만 해당한다.
 
-    `ENOSPC`는 어느 층도 삼키지 않는다 — 잘린 출력이 성공으로 보고되면 안 된다.
+    `ENOSPC`는 **위 세 층 중 어느 곳도** 삼키지 않는다 — 잘린 출력이 성공으로
+    보고되면 안 된다. 예외가 하나 있다: `progress.ProgressReporter._raw`는 자기
+    쓰기의 `ENOSPC`를 삼키고 리포터를 영구 비활성화한다(FR-8.5 · 설계 D10).
+    **종료 코드에는 영향이 없다** — 진행 표시는 부수적이고, 같은 디스크 상태를
+    본문의 `_echo`가 곧 다시 만나 그쪽에서 올린다. 근거는 `progress.py`의
+    `_raw` 주석에 있다. **"어느 층도"를 문자 그대로 읽으면 안 되는 이유가
+    이것이고, 그 사실을 여기 적지 않으면 종료 코드 계약을 확인하러 오는
+    독자가 틀린 결론에 도달한다.**
     """
     sys.stdout = _TolerantOutput(sys.stdout)  # type: ignore[assignment]
     sys.stderr = _TolerantOutput(sys.stderr)  # type: ignore[assignment]
