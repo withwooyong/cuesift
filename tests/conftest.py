@@ -50,7 +50,7 @@ import pathlib
 import re
 import shlex
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 
 import pytest
 from tests.fakes.provider import ScriptedProvider
@@ -251,6 +251,38 @@ def _설정_자동_탐색_차단(request: pytest.FixtureRequest, monkeypatch: py
     if _AUTO_DISCOVERY_FIXTURE in request.fixturenames:
         return
     monkeypatch.setattr("cuesift.cli._discover_config", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _진행_표시_차단(monkeypatch: pytest.MonkeyPatch) -> None:
+    """진행 표시를 **기본으로 끈다** (FR-8.5 · 설계 §9 R2).
+
+    테스트 실행은 비TTY라 자동 감지가 `plain`을 고르고, 그러면 진행 줄이
+    기존 stderr 단언에 섞인다. 착수 시점 1480건 중 다수가 한꺼번에 죽는다.
+
+    **환경변수여야 한다.** `monkeypatch.setattr`로 모듈 속성을 고정하면
+    인프로세스 테스트만 막히고 `test_cli_pipe.py`가 띄우는 **서브프로세스**는
+    그대로 진행을 낸다 - 위 `_설정_자동_탐색_차단`이 이미 같은 한계를 갖는다.
+
+    진행을 재는 테스트는 `--progress`로 켠다. **CLI가 환경변수를 이긴다**
+    (설계 D5).
+    """
+    monkeypatch.setenv("CUESIFT_PROGRESS", "0")
+
+
+@pytest.fixture(autouse=True)
+def _진행_리포터_초기화() -> Iterator[None]:
+    """활성 리포터를 테스트마다 비운다 (FR-8.5 · 설계 §9 R1).
+
+    `cuesift.progress`의 활성 리포터는 전역이다. 한 테스트가 설치한 채
+    끝나면 다음 테스트의 `_echo`가 남의 스트림에 쓴다 - 그 오염은 실패가
+    아니라 **엉뚱한 곳의 출력**으로 나타나 원인 추적이 매우 어렵다.
+    """
+    from cuesift import progress
+
+    progress.install(None)
+    yield
+    progress.install(None)
 
 
 # 유니코드 Box Drawing 블록. `rich`의 패널 테두리가 전부 여기 있다.

@@ -9,6 +9,7 @@ import pytest
 from tests.fakes.provider import EchoProvider, ScriptedProvider
 
 from cuesift.glossary import Glossary, GlossaryEntry
+from cuesift.progress import ProgressUpdate
 from cuesift.segment.models import Segment
 from cuesift.translate.engine import _MAX_BACKOFF_S, translate_segments
 from cuesift.translate.provider import (
@@ -1003,3 +1004,58 @@ def test_Completion_text가_None이면_ProviderError_밖에서_죽는다() -> No
         )
     # ProviderError 밖이라는 것이 요점이다 - engine의 폴백 두 절이 못 받는다.
     assert not isinstance(exc.value, ProviderError)
+
+
+def test_진행_콜백이_최종적으로_전량을_보고한다() -> None:
+    # 진행이 100%에 도달하지 않으면 사용자는 멈춘 것과 구별하지 못한다.
+    events: list[ProgressUpdate] = []
+    translate_segments(
+        _segs(25),
+        provider=EchoProvider(),
+        source_lang="ko",
+        target_lang="en",
+        batch_size=10,
+        on_progress=events.append,
+    )
+    assert len(events) == 3
+    assert events[-1] == ProgressUpdate(25, 25)
+
+
+def test_진행_콜백이_맥락을_함께_세지_않는다() -> None:
+    # `BatchWindow`는 `batch`·`before`·`after` 셋을 갖는데 뒤 둘은 맥락이지
+    # 번역 대상이 아니다. 더하면 done이 total을 넘고, 다음 배치에서
+    # 줄어든 것처럼 보인다.
+    events: list[ProgressUpdate] = []
+    translate_segments(
+        _segs(25),
+        provider=EchoProvider(),
+        source_lang="ko",
+        target_lang="en",
+        batch_size=10,
+        context_window=3,
+        on_progress=events.append,
+    )
+    assert [e.done for e in events] == [10, 20, 25]
+    assert all(e.total == 25 for e in events)
+
+
+def test_빈_입력은_진행도_내지_않는다() -> None:
+    # `test_빈_입력은_호출하지_않는다`의 형제다. 배치가 0개면 이벤트도 0개다.
+    events: list[ProgressUpdate] = []
+    translate_segments(
+        [],
+        provider=EchoProvider(),
+        source_lang="ko",
+        target_lang="en",
+        on_progress=events.append,
+    )
+    assert events == []
+
+
+def test_콜백을_주지_않으면_기존_호출부가_그대로다() -> None:
+    # 기본값이 None이고 그때 콜백은 **한 번도 호출되지 않는다**(설계 D3).
+    # 기존 호출부 0줄 변경이 이 결정의 산물이다.
+    result = translate_segments(
+        _segs(3), provider=EchoProvider(), source_lang="ko", target_lang="en"
+    )
+    assert [s.target_text for s in result.segments] == ["EN:문장0", "EN:문장1", "EN:문장2"]

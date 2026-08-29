@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from tests.fakes.provider import ScriptedProvider
 
+from cuesift.progress import ProgressUpdate
 from cuesift.segment import Segment, Signal
 from cuesift.signals.base import (
     SignalContext,
@@ -312,3 +313,65 @@ def test_register는_tier_속성이_없으면_거부한다():
     finally:
         registry().clear()
         registry().update(saved)
+
+
+class _무동작_Tier1_수집기:
+    """진행 분모만 재기 위한 tier 1 수집기. **프로바이더를 만지지 않는다.**
+
+    `_SpyTier1`과 달리 `provider_for`를 부르지 않는 이유는 이 수집기의
+    임무가 `names`를 2로 만드는 것뿐이기 때문이다 - 만지면 대본이
+    소진되거나 호출 수 단언이 흔들린다.
+    """
+
+    tier = 1
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def collect_tier1(self, seg: Segment, ctx: Tier1Context) -> Signal | None:
+        return None
+
+
+@pytest.fixture
+def 무동작_수집기_둘():
+    """tier 1 수집기를 **정확히 둘** 등록한다 (설계 D4).
+
+    `spy_registered`와 같은 저장·복원 절차다. 합치지 않는 이유는 그
+    픽스처가 "정확히 하나"를 전제하는 단언
+    (`spy_registered.tier1_calls == len(segs)`)에 쓰이기 때문이다.
+    """
+    saved = dict(registry())
+    try:
+        for name, existing in list(registry().items()):
+            if existing.tier == 1:
+                del registry()[name]
+        register(_무동작_Tier1_수집기("test.denominator_a"))
+        register(_무동작_Tier1_수집기("test.denominator_b"))
+        yield
+    finally:
+        registry().clear()
+        registry().update(saved)
+
+
+def test_진행_분모는_세그먼트_수_곱하기_수집기_수다(무동작_수집기_둘, signal_ctx):
+    """**오늘 보이지 않는 200% 버그를 고정한다** (설계 D4 · §4.3 ①).
+
+    `collect_tier1`은 `for name → for seg` 이중 루프다. 오늘 등록된 tier 1
+    수집기는 `llm.self_consistency` 하나뿐이라 `len(segments)`와
+    `len(segments) × len(names)`가 **같은 값을 낸다** - 틀린 정의를 골라도
+    전 스위트가 통과한다. 위 픽스처가 수집기를 둘로 만들어야 비로소 두
+    정의가 갈라진다.
+    """
+    names = [n for n, c in registry().items() if c.tier == 1]
+    assert len(names) == 2, "수집기가 둘이 아니면 이 테스트는 아무것도 재지 않는다"
+
+    t1 = Tier1Context(
+        signal=signal_ctx, provider_for=lambda attempt: None, samples=3, temperature=1.0
+    )
+    events: list[ProgressUpdate] = []
+    collect_tier1(_segments(), t1, on_progress=events.append)
+
+    # 세그먼트 2건 × 수집기 2종 = 4. `len(segments)`로 두면 total이 2가
+    # 되어 200%가 찍힌다.
+    assert [e.done for e in events] == [1, 2, 3, 4]
+    assert [e.total for e in events] == [4, 4, 4, 4]

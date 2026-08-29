@@ -316,8 +316,18 @@ def test_도움말에_네_옵션이_모두_있다() -> None:
     나온다. 뒤에 이름 문자가 오지 않는 자리만 세어 스위치 자체를 확인한다.
     **ANSI를 안 지우면 이 검사가 거짓 통과한다** - 색이 켜지면 `--tier1-max-ratio`가
     `--tier1` + ANSI + `-max-ratio`로 쪼개지고 `(?![\\w-])`는 `\\x1b`를 허용한다.
+
+    **`COLUMNS`를 못 박는 것은 축이 둘이었기 때문이다**(FR-8.5가 실측으로
+    드러냈다). 기본 폭 80에서는 rich가 이름 열을 줄이며 `--tier1-max-rat…`로
+    **말줄임한다** - 이 단언이 잡는 것이 색인지 폭인지가 섞인다. 실제로
+    `--progress/--no-progress`(이름 열 24칸)가 들어오자 `--tier1-max-ratio`와
+    `--tier1-temperature` 둘이 여기서 죽었다. 원인은 진행 표시가 아니라
+    **긴 옵션이 하나 늘어난 것**이고, 어떤 긴 옵션이 들어와도 같은 일이
+    난다. 90 이상이면 넷 다 온전히 나온다(실측: 80 ✗ / 90·100·110·120 ✓).
     """
-    result = runner.invoke(app, ["translate", "--help"], color=True, env={"FORCE_COLOR": "1"})
+    result = runner.invoke(
+        app, ["translate", "--help"], color=True, env={"FORCE_COLOR": "1", "COLUMNS": "100"}
+    )
     assert result.exit_code == 0
     squashed = normalize_rich_message(result.output)
     for name in ("--tier1-max-ratio", "--tier1-samples", "--tier1-temperature"):
@@ -1372,3 +1382,43 @@ def test_Tier1_재점수가_1차_융합과_같은_가중치를_쓴다(
     # "같은 표를 본다"로 읽힌다. 비어 있지 않음을 먼저 못 박는다.
     assert 본것[0] is not None, 본것
     assert 본것[-1] is 본것[0], (본것[0], 본것[-1])
+
+
+def test_진행_표시가_Tier_1과_리포트_단계까지_덮는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**배선 8곳 중 5곳이 이 테스트에만 걸린다** (FR-8.5 · 리뷰 라운드 2 재검).
+
+    `tests/test_cli_progress.py`의 배출 게이트는 `--tier1`도 `--review-out`도
+    주지 않아 **Tier 1 단계와 리포트 단계가 한 번도 실행되지 않았다.** 그래서
+    `triage_with_tier1(on_progress=...)`·Tier 1의 `phase`/`done`·리포트의
+    `phase`/`done` 다섯 곳을 지워도 **죽는 테스트가 0건**이었다(변이 실측).
+
+    `_full_args`가 `--review-budget`과 `--review-out`을 이미 주므로 이 한 건이
+    다섯 곳을 한꺼번에 덮는다. **`_TIER1_RUNS`가 없으면 안 된다** - 기본
+    `max_ratio`(0.05)는 10큐에서 `floor(10 x 0.05) = 0`이라 후보가 0건이고,
+    그러면 Tier 1 진척 이벤트가 하나도 나지 않는다(실측: 프로바이더 호출 1회).
+
+    `_assert_tier1_ran`이 함께 있어야 하는 이유는
+    이 파일의 다른 테스트와 같다 - 후보 0건이면 Tier 1 진척 이벤트가 하나도
+    나지 않는데 `phase`/`done` 줄은 그대로 찍혀 **무연산 위에서 초록**이 된다.
+    """
+    fake = _clean_echo()
+    _patch_provider(monkeypatch, fake)
+    result = runner.invoke(app, _full_args(tmp_path, "--tier1", "--progress", *_TIER1_RUNS))
+    assert result.exit_code == 0, result.stderr
+    _assert_tier1_ran(fake)
+
+    # `CliRunner`의 stderr는 TTY가 아니므로 감지가 `plain`을 고른다 (설계 D7).
+    assert "\r" not in result.stderr
+    # **Tier 1 진척이 실제로 흐른다.** `n/n (100%)` 형태가 없으면
+    # `triage_with_tier1(on_progress=...)`을 지워도 아무도 울지 않는다.
+    assert re.search(r"\[en\] Tier 1 \d+/\d+ \(\d+%\)", result.stderr), result.stderr
+    assert "[en] Tier 1 완료" in result.stderr
+    # 리포트 단계의 `phase`/`done`. `--review-out`이 있어야 도달한다.
+    assert "[en] 리포트 기록 완료" in result.stderr
+
+    # **stdout은 진행으로 오염되지 않는다** (설계 D9). 이 파일의 다른
+    # 테스트들이 `result.stdout`에서 트리아지 요약을 읽는다.
+    assert "[en] Tier 1 " not in result.stdout
+    assert "기록 완료" not in result.stdout

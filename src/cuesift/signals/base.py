@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from cuesift.glossary import Glossary
+from cuesift.progress import ProgressCallback, ProgressUpdate
 from cuesift.segment import Segment, Signal
 from cuesift.spec import SpecProfile
 
@@ -209,6 +210,7 @@ def collect_tier1(
     segments: Sequence[Segment],
     ctx: Tier1Context,
     enabled: Iterable[str] | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict[str, list[Signal]]:
     """tier 1 수집기를 **주어진 세그먼트에만** 돌린다 (FR-4.1 · 설계 §4.1).
 
@@ -224,6 +226,12 @@ def collect_tier1(
     (이미 쓴 LLM 비용까지 소실된다). 설계 §6.2가 부분 실패 처리를 수집기 쪽에
     배정했으므로 이 전파 자체는 위반이 아니지만, `Tier1Collector.collect_tier1`
     구현이 예외를 올려 보내면 조용한 사고가 된다.
+
+    `on_progress`의 **분모는 `len(segments) × len(names)`다**(FR-8.5 · 설계 D4).
+    아래가 이중 루프이기 때문이다. `len(segments)`로 두면 수집기가 2종이
+    되는 날 **200%가 찍힌다** - 오늘은 tier 1 수집기가 하나뿐이라 두 정의가
+    같은 값을 내므로, 이 사실을 지키는 것은 가짜 수집기를 등록하는
+    테스트뿐이다.
     """
     if enabled is None:
         names = [n for n, c in _REGISTRY.items() if c.tier == 1]
@@ -242,6 +250,10 @@ def collect_tier1(
     # 신호가 하나도 없는 세그먼트도 키를 갖는다. 빠진 키는 KeyError를 부른다.
     result: dict[str, list[Signal]] = {seg.id: [] for seg in segments}
 
+    # **이중 루프라 분모가 곱이다** (설계 D4).
+    total = len(segments) * len(names)
+    done = 0
+
     for name in names:
         collector = _REGISTRY[name]
         # collect_all의 hasattr 분기와 같은 이유다 - `_REGISTRY`에는
@@ -251,5 +263,8 @@ def collect_tier1(
             signal = collector.collect_tier1(seg, ctx)
             if signal is not None:
                 result[seg.id].append(signal)
+            done += 1
+            if on_progress is not None:
+                on_progress(ProgressUpdate(done, total))
 
     return result

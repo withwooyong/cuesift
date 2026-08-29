@@ -39,6 +39,7 @@ from cuesift import __version__
 from cuesift.config import Config, load_config
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
+from cuesift.progress import ProgressReporter, clear_active, env_flag, install, resolve_style
 from cuesift.report import (
     TriageOutcome,
     layer_tokens_reported,
@@ -413,7 +414,14 @@ def _echo(message: str = "", *, err: bool = False) -> None:
     `app()`을 직접 부르는 호출자(테스트·라이브러리 사용)가 프록시를 못 받기 때문이다.
     그때 예외가 본문을 빠져나가면 `check()`가 `typer.Exit(1)`에 도달하지 못해
     **위반을 찾고도 종료 코드가 1이 아니게 된다.**
+
+    **쓰기 전에 진행 줄을 지운다**(FR-8.5 · 설계 D11). `\\r`이 떠 있는 중에
+    메시지가 나가면 두 문장이 한 줄에 겹친다. `err` 여부와 무관하게 지우는
+    것은 대화형 터미널에서 stdout과 stderr가 **같은 tty**이기 때문이다 -
+    `_tier1_warn`은 의도적으로 stdout으로 나간다. stdout이 리다이렉트된
+    경우 `clear_active()`는 stderr만 건드리므로 손해가 없다.
     """
+    clear_active()
     stream = sys.stderr if err else sys.stdout
     try:
         typer.echo(message, err=err)
@@ -613,6 +621,25 @@ def _prefer_env(
     if env and _from_config(ctx, name):
         return env
     return value or env
+
+
+def _prefer_env_bool(
+    ctx: typer.Context | None, name: str, value: bool | None, env_name: str
+) -> bool | None:
+    """불리언 3상에 우선순위를 적용한다 - CLI > 환경변수 > 설정 파일 (설계 D5).
+
+    위 `_prefer_env`의 불리언 형제다. 문자열 판본을 그대로 쓸 수 없는 이유는
+    `False`가 falsy라 `value or env`가 `--no-progress`를 조용히 무시하기
+    때문이다 - 그것이 "감지가 틀린 환경의 탈출로"라는 플래그의 존재 이유를
+    없앤다. `test_진행_False가_falsy라서_삼켜지지_않는다`가 이 한 줄을 건다.
+
+    환경변수 판독은 `progress.env_flag` 하나만 쓴다. 규칙이 두 곳에 생기면
+    `CUESIFT_PROGRESS=false`가 참이 되는 날이 온다.
+    """
+    env = env_flag(env_name)
+    if env is not None and _from_config(ctx, name):
+        return env
+    return env if value is None else value
 
 
 def _resolve_llm(
@@ -946,6 +973,18 @@ def translate(
             help="실행하지 않고 배치 수·캐시 히트·호출 필요 수를 추정합니다 (NFR-2).",
         ),
     ] = False,
+    progress: Annotated[
+        bool | None,
+        # **3상이다.** 기본값 `None`이 "지정 안 함"이고, 그때 자동 감지가
+        # 정한다. `False`를 기본으로 두면 감지가 영영 안 돈다.
+        # 플래그는 **켜고 끄기만** 정한다 - 스타일은 언제나 감지가 정한다
+        # (설계 D7). `--progress`를 CI에서 줘도 `\r`이 아니라 이정표 줄이
+        # 나온다.
+        typer.Option(
+            "--progress/--no-progress",
+            help="진행 표시를 켜거나 끕니다. 기본은 자동 감지 (FR-8.5).",
+        ),
+    ] = None,
 ) -> None:
     """FR-8.1: 자막을 번역해 언어별 파일로 냅니다."""
     if no_cache and cache_dir is not None:
@@ -1360,67 +1399,89 @@ def translate(
     resolved_cache_dir = None if no_cache else (cache_dir or DEFAULT_CACHE_DIR)
 
     worst = 0
-    for i, target in enumerate(targets):
-        # **대상 언어마다 새로 만든다.** `CountingProvider`는 누적기라 한
-        # 인스턴스를 공유하면 뒤 언어의 `review.json`이 앞 언어의 토큰까지 실어
-        # Tier 1 비용이 언어 수만큼 부풀어 보인다.
-        #
-        # **`provider`는 여기서 아직 raw다.** `CachingProvider`로 감싸는 것은
-        # `_translate_one` 안의 지역 변수 재바인딩이라 여기까지 오지 않는다.
-        # 그 성질에 기대는 것이 D7의 배치(`CachingProvider(CountingProvider(raw))`)를
-        # 성립시킨다 - `triage_with_tier1`이 이것을 다시 감싸므로 계측이 캐시
-        # 안쪽에 놓이고, 캐시 히트는 세지 않는다(실제로 쓰지 않은 토큰이다).
-        #
-        # **`identity`도 raw에서 뽑는다.** `CachingProvider`는 `cache_identity`를
-        # 위임하지 **않으므로**(Ruling R40 - 위임하면 이중 래핑이 조용히 켜진다)
-        # 감싼 뒤에 물으면 `None`이 나와 Tier 1 캐시가 통째로 꺼진다.
-        tier1_settings = None
-        if tier1:
-            tier1_settings = _Tier1Settings(
-                counting=CountingProvider(provider),
-                max_ratio=effective_max_ratio,
-                samples=effective_samples,
-                temperature=effective_temperature,
-                cache_dir=resolved_cache_dir,
-                identity=_cache_identity(provider),
-            )
-        code = _translate_one(
-            result=result,
-            input_path=input,
-            out_dir=out,
-            source_lang=source_lang,
-            target_lang=target,
-            provider=provider,
-            glossary_path=glossary,
-            work_context=work_context,
-            context_window=context_window,
-            cache_dir=resolved_cache_dir,
-            triage_profile=profiles.get(target),
-            budget_ratio=budget_ratio,
-            threshold=review_threshold,
-            policy_label=policy_label,
-            review_out=review_out,
-            review_format=review_format,
-            tier1=tier1_settings,
-            weights=_config_weights(ctx),
-        )
-        worst = max(worst, code)
-        if code == EXIT_UNAVAILABLE:
-            # 인증·모델 오류는 다음 언어에서도 같다. 반복하면 진짜 원인이
-            # 실패 더미 아래 묻히고 호출만 언어 수만큼 는다 (설계 §6.4).
-            remaining = targets[i + 1 :]
-            if remaining:
-                # **여기서 말하지 않으면 "중단됐다"와 "애초에 안 시켰다"가
-                # 화면에서 구별되지 않는다.** `--to en,ja,th`에서 en만 성공하고
-                # 멈추면 디렉터리엔 `en.srt`만 남는데, 그것은 `--to en`만 친
-                # 결과와 바이트 단위로 같다. 어느 언어까지 됐는지는 위
-                # `_translate_one`의 `[target_lang]` 라벨이 말하고, 그 뒤로
-                # 뭐가 안 됐는지는 이 줄이 말한다(리뷰 라운드 1 Important 2).
-                _echo(
-                    f"중단: 남은 대상 언어 {', '.join(remaining)}는 시도하지 않았다",
-                    err=True,
+    # **설치·해제를 이 커맨드 하나로 한정한다** (FR-8.5 · 설계 §9 R1).
+    # 전역 상태의 수명이 커맨드 경계를 넘으면 테스트가 서로 오염된다.
+    #
+    # **플래그는 켜고 끄기만 정한다.** `interactive`인지 `plain`인지는
+    # 언제나 `resolve_style`의 감지가 정한다(설계 D7) - CI에서 `--progress`를
+    # 줘도 캐리지 리턴 갱신이 아니라 이정표 줄이 나온다.
+    reporter = ProgressReporter(
+        resolve_style(_prefer_env_bool(ctx, "progress", progress, "CUESIFT_PROGRESS"))
+    )
+    install(reporter)
+    try:
+        for i, target in enumerate(targets):
+            # **대상 언어마다 새로 만든다.** `CountingProvider`는 누적기라 한
+            # 인스턴스를 공유하면 뒤 언어의 `review.json`이 앞 언어의 토큰까지 실어
+            # Tier 1 비용이 언어 수만큼 부풀어 보인다.
+            #
+            # **`provider`는 여기서 아직 raw다.** `CachingProvider`로 감싸는 것은
+            # `_translate_one` 안의 지역 변수 재바인딩이라 여기까지 오지 않는다.
+            # 그 성질에 기대는 것이 D7의 배치(`CachingProvider(CountingProvider(raw))`)를
+            # 성립시킨다 - `triage_with_tier1`이 이것을 다시 감싸므로 계측이 캐시
+            # 안쪽에 놓이고, 캐시 히트는 세지 않는다(실제로 쓰지 않은 토큰이다).
+            #
+            # **`identity`도 raw에서 뽑는다.** `CachingProvider`는 `cache_identity`를
+            # 위임하지 **않으므로**(Ruling R40 - 위임하면 이중 래핑이 조용히 켜진다)
+            # 감싼 뒤에 물으면 `None`이 나와 Tier 1 캐시가 통째로 꺼진다.
+            tier1_settings = None
+            if tier1:
+                tier1_settings = _Tier1Settings(
+                    counting=CountingProvider(provider),
+                    max_ratio=effective_max_ratio,
+                    samples=effective_samples,
+                    temperature=effective_temperature,
+                    cache_dir=resolved_cache_dir,
+                    identity=_cache_identity(provider),
                 )
-            break
+            code = _translate_one(
+                result=result,
+                input_path=input,
+                out_dir=out,
+                source_lang=source_lang,
+                target_lang=target,
+                provider=provider,
+                glossary_path=glossary,
+                work_context=work_context,
+                context_window=context_window,
+                cache_dir=resolved_cache_dir,
+                triage_profile=profiles.get(target),
+                budget_ratio=budget_ratio,
+                threshold=review_threshold,
+                policy_label=policy_label,
+                review_out=review_out,
+                review_format=review_format,
+                tier1=tier1_settings,
+                reporter=reporter,
+                weights=_config_weights(ctx),
+            )
+            worst = max(worst, code)
+            if code == EXIT_UNAVAILABLE:
+                # 인증·모델 오류는 다음 언어에서도 같다. 반복하면 진짜 원인이
+                # 실패 더미 아래 묻히고 호출만 언어 수만큼 는다 (설계 §6.4).
+                remaining = targets[i + 1 :]
+                if remaining:
+                    # **여기서 말하지 않으면 "중단됐다"와 "애초에 안 시켰다"가
+                    # 화면에서 구별되지 않는다.** `--to en,ja,th`에서 en만 성공하고
+                    # 멈추면 디렉터리엔 `en.srt`만 남는데, 그것은 `--to en`만 친
+                    # 결과와 바이트 단위로 같다. 어느 언어까지 됐는지는 위
+                    # `_translate_one`의 `[target_lang]` 라벨이 말하고, 그 뒤로
+                    # 뭐가 안 됐는지는 이 줄이 말한다(리뷰 라운드 1 Important 2).
+                    _echo(
+                        f"중단: 남은 대상 언어 {', '.join(remaining)}는 시도하지 않았다",
+                        err=True,
+                    )
+                break
+    finally:
+        # **해제보다 먼저 지운다.** `Ctrl+C`나 예상 못 한 예외는 `_echo`를
+        # 지나지 않아 `clear_active()`가 불리지 않는다 - 그러면 떠 있던
+        # `\r` 줄이 개행 없이 남아 셸 프롬프트가 `20/45 (44%)` 위에 겹쳐
+        # 찍힌다(실측: KeyboardInterrupt, exit 130). 정상 종료 경로에서는
+        # `done()`이 이미 `_line_len`을 0으로 만들어 두므로 무해하다.
+        reporter.clear()
+        # **`finally`여야 한다.** 예외로 빠져나가면 다음 커맨드가 남의
+        # 리포터를 쓴다 - 전역 상태의 수명이 커맨드 경계를 넘는다.
+        install(None)
     if worst:
         raise typer.Exit(worst)
 
@@ -1692,6 +1753,7 @@ def _translate_one(
     review_out: Path | None,
     review_format: ReviewFormat,
     tier1: _Tier1Settings | None,
+    reporter: ProgressReporter,
     weights: Mapping[str, float] | None = None,
 ) -> int:
     """대상 언어 하나를 번역해 파일로 낸다. 종료 코드 후보를 돌려준다.
@@ -1773,6 +1835,11 @@ def _translate_one(
                 warn=lambda message: _echo(f"[{target_lang}] {message}", err=True),
             )
 
+    # ① 번역 (FR-8.5 · 설계 §4.3). **예외 경로에서는 `done()`을 부르지
+    # 않는다** - 실패는 아래 `_echo(err=True)`가 말하고 그것이
+    # `clear_active()`로 진행 줄을 지운다. 실패 뒤에 "완료"를 찍으면
+    # 화면이 거짓말을 한다.
+    reporter.phase(f"[{target_lang}] 번역")
     try:
         translated = translate_segments(
             result.segments,
@@ -1782,6 +1849,7 @@ def _translate_one(
             glossary=glossary,
             work_context=work_context,
             context_window=context_window,
+            on_progress=reporter.update,
         )
     except FatalProviderError as exc:
         _echo(f"[{target_lang}] 프로바이더가 요청을 거부했다: {exc}", err=True)
@@ -1803,6 +1871,7 @@ def _translate_one(
         # 배치·맥락 조립이 틀린 것이므로 명령줄 오류다.
         _echo(f"[{target_lang}] {exc}", err=True)
         return 2
+    reporter.done(f"완료 (실패 {len(translated.failures)})")
 
     out_path = _output_path(input_path, out_dir, source_lang, target_lang)
     try:
@@ -1905,6 +1974,7 @@ def _translate_one(
                 threshold=threshold,
                 policy_label=policy_label,
                 tier1=tier1,
+                reporter=reporter,
                 weights=weights,
             )
         except FatalProviderError as exc:
@@ -1986,6 +2056,10 @@ def _translate_one(
                 _echo(line)
 
         if review_out is not None:
+            # ③ 리포트 (FR-8.5). **`ReviewFormat`이 세 값뿐이라** 이 블록에
+            # 들어온 이상 JSON·HTML 중 최소 하나는 반드시 나간다 - "리포트
+            # 기록 완료"가 아무것도 안 쓰고 찍히는 조합이 없다.
+            reporter.phase(f"[{target_lang}] 리포트")
             # **요약 출력 뒤에 온다.** 화면이 먼저 수치를 말하고 그 다음
             # 줄이 "그 수치가 어느 파일에 들어갔다"를 말한다. 순서를
             # 뒤집으면 경로가 수치보다 먼저 나와 어느 실행의 산출물인지
@@ -2110,6 +2184,10 @@ def _translate_one(
                     )
                     return EXIT_NOT_IMPLEMENTED
                 _echo(f"  리포트 {html_path}")
+
+            # 실패 경로는 위에서 전부 `return`으로 빠졌다 - 여기 오면
+            # 산출물이 실제로 나갔다는 뜻이다.
+            reporter.done("기록 완료")
 
     return 1 if translated.failures else 0
 
@@ -2313,6 +2391,7 @@ def _run_triage(
     budget_ratio: float | None,
     threshold: float | None,
     policy_label: str,
+    reporter: ProgressReporter,
     tier1: _Tier1Settings | None = None,
     weights: Mapping[str, float] | None = None,
 ) -> TriageOutcome:
@@ -2471,6 +2550,9 @@ def _run_triage(
             안_돈_사유.append(message)
             _echo(f"[{target_lang}] {_TIER1_WARN_PREFIX}{message}")
 
+        # ② Tier 1 (FR-8.5 · 설계 D1). **`tier1`이 None이면 단계 자체가
+        # 없다** - 이 블록 밖에서는 LLM 호출이 없어 진척을 잴 대상이 없다.
+        reporter.phase(f"[{target_lang}] Tier 1")
         scored = triage_with_tier1(
             translated.segments,
             ctx,
@@ -2484,7 +2566,9 @@ def _run_triage(
             identity=tier1.identity,
             excluded_ids=failed_ids,
             weights=weights,
+            on_progress=reporter.update,
         )
+        reporter.done()
         return _outcome(
             tuple(scored),
             tuple(kept),
@@ -2872,7 +2956,14 @@ def run() -> None:
     `run()`을 거치는 배포 경로는 1층이 전부 덮으므로 실사용 위험은 없고,
     `app()`을 직접 부르는 테스트·라이브러리 호출자에게만 해당한다.
 
-    `ENOSPC`는 어느 층도 삼키지 않는다 — 잘린 출력이 성공으로 보고되면 안 된다.
+    `ENOSPC`는 **위 세 층 중 어느 곳도** 삼키지 않는다 — 잘린 출력이 성공으로
+    보고되면 안 된다. 예외가 하나 있다: `progress.ProgressReporter._raw`는 자기
+    쓰기의 `ENOSPC`를 삼키고 리포터를 영구 비활성화한다(FR-8.5 · 설계 D10).
+    **종료 코드에는 영향이 없다** — 진행 표시는 부수적이고, 같은 디스크 상태를
+    본문의 `_echo`가 곧 다시 만나 그쪽에서 올린다. 근거는 `progress.py`의
+    `_raw` 주석에 있다. **"어느 층도"를 문자 그대로 읽으면 안 되는 이유가
+    이것이고, 그 사실을 여기 적지 않으면 종료 코드 계약을 확인하러 오는
+    독자가 틀린 결론에 도달한다.**
     """
     sys.stdout = _TolerantOutput(sys.stdout)  # type: ignore[assignment]
     sys.stderr = _TolerantOutput(sys.stderr)  # type: ignore[assignment]

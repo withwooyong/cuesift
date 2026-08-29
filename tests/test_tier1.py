@@ -8,6 +8,7 @@ import json
 import pytest
 from tests.fakes.provider import EchoProvider
 
+from cuesift.progress import ProgressUpdate
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals.base import SignalContext
 from cuesift.spec import load_builtin
@@ -801,3 +802,28 @@ def test_Tier1이_실제로_도는_경로에서도_excluded_ids가_유지된다(
     ids = [r.segment_id for r in risks]
     assert len(ids) == 9
     assert "9" not in ids
+
+
+def test_진행_콜백이_Tier1_수집까지_흐른다(signal_ctx):
+    """`triage_with_tier1`은 진행을 **만들지 않고 넘기기만** 한다 (설계 D1).
+
+    만들면 ①~④(수집·융합·후보 선정)까지 진행에 섞여 분모가 두 겹이 되고,
+    사용자는 "무엇의 진행인지"를 잃는다.
+    """
+    provider = _VaryingProvider()
+    events: list[ProgressUpdate] = []
+
+    triage_with_tier1(
+        _plain_segments(10),
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        warn=_ignore,
+        on_progress=events.append,
+    )
+
+    # 후보 2건(10 × 0.2) × tier 1 수집기 1종 = 2. 같은 후보 수를
+    # `test_tier1은_후보에만_불린다`가 호출 6회(2 × samples 3)로 이미 고정한다.
+    assert events[-1] == ProgressUpdate(2, 2)

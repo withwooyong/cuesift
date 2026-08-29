@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
+from cuesift.progress import ProgressCallback
 from cuesift.risk.fuse import fuse
 from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals.base import SignalContext, Tier1Context, collect_all, collect_tier1
@@ -33,6 +34,7 @@ def triage_with_tier1(
     identity: str | None = None,
     excluded_ids: Collection[str] = (),
     weights: Mapping[str, float] | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -192,6 +194,11 @@ def triage_with_tier1(
     낸다(설계 D10 - `cli._TIER1_BOUND_PREFIX`). 요청 하나가 재시도·개별
     폴백으로 여러 호출이 되므로 그 화면도 프로바이더 **호출** 수의 상한은
     아니다 - 재시도 횟수는 백엔드 사정이라 산식이 내는 수가 아니다(§11 R8).
+
+    `on_progress`는 **⑤ Tier 1 수집에만 간다**(FR-8.5 · 설계 D1). 이 함수가
+    자기 진행을 따로 만들지 않는 이유는 ①~④(수집·융합·후보 선정)가 LLM
+    호출이 없어 순식간에 끝나기 때문이다 - 섞으면 분모가 두 겹이 되고
+    사용자는 "무엇의 진행인지"를 잃는다.
     """
     # 중복 id는 ④의 candidate_ids 집합화에서 조용히 뭉개져 FR-4.3 상한을
     # 초과시킨다(2라운드 리뷰 C6 실측: 중복 4건 포함 10건·cap=3에서 실제
@@ -296,7 +303,7 @@ def triage_with_tier1(
         return scored
 
     # ⑤ Tier 1 - 후보에만
-    tier1 = collect_tier1(candidates, tier1_ctx)
+    tier1 = collect_tier1(candidates, tier1_ctx, on_progress=on_progress)
 
     # ⑥ 재융합 - Tier 0 신호에 Tier 1 신호를 더해 다시 계산한다.
     # 이름은 "re-scored"다 - 두 신호 출처를 **더한다**(신호 소실 없음)는

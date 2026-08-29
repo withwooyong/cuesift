@@ -425,3 +425,55 @@ def test_실제_translate에서_CLI가_환경변수를_이긴다(
     assert result.exit_code == 0, result.output
     assert "http://from-cli" in result.stdout
     assert "http://from-env" not in result.stdout
+
+
+# --- 진행 표시의 우선순위 4층 (FR-8.5 · 설계 D5) ---
+#
+# **`_resolve_llm`의 4층 테스트(위쪽)와 같은 형식을 쓴다.** 형식을 새로
+# 만들면 두 게이트가 서로 다른 것을 재게 된다.
+
+
+def test_진행_CLI가_환경변수를_이긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuesift.cli import _prefer_env_bool
+
+    monkeypatch.setenv("CUESIFT_PROGRESS", "1")
+    got = _prefer_env_bool(_FakeCtx("COMMANDLINE"), "progress", False, "CUESIFT_PROGRESS")
+    assert got is False
+
+
+def test_진행_환경변수가_설정_파일을_이긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `DEFAULT_MAP`은 설정 파일에서 온 값이다. `value or env`로 짜면
+    # 설정의 True가 환경변수의 False를 이겨 `--no-progress`의 존재 이유가
+    # 사라진다 (설계 D5).
+    from cuesift.cli import _prefer_env_bool
+
+    monkeypatch.setenv("CUESIFT_PROGRESS", "0")
+    got = _prefer_env_bool(_FakeCtx("DEFAULT_MAP"), "progress", True, "CUESIFT_PROGRESS")
+    assert got is False
+
+
+def test_진행_설정_파일이_자동_감지를_이긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cuesift.cli import _prefer_env_bool
+
+    monkeypatch.delenv("CUESIFT_PROGRESS", raising=False)
+    got = _prefer_env_bool(_FakeCtx("DEFAULT_MAP"), "progress", False, "CUESIFT_PROGRESS")
+    assert got is False
+
+
+def test_진행_아무것도_없으면_감지에_맡긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `None`이어야 `resolve_style`이 감지로 내려간다. `False`를 내면
+    # 감지가 영영 안 돈다.
+    from cuesift.cli import _prefer_env_bool
+
+    monkeypatch.delenv("CUESIFT_PROGRESS", raising=False)
+    assert _prefer_env_bool(None, "progress", None, "CUESIFT_PROGRESS") is None
+
+
+def test_진행_False가_falsy라서_삼켜지지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `_prefer_env`의 문자열 판본을 그대로 베끼면 `value or env`가
+    # `--no-progress`를 조용히 무시한다. **이 한 건이 불리언 형제를
+    # 따로 만든 이유 전체다.**
+    from cuesift.cli import _prefer_env_bool
+
+    monkeypatch.setenv("CUESIFT_PROGRESS", "1")
+    assert _prefer_env_bool(None, "progress", False, "CUESIFT_PROGRESS") is False

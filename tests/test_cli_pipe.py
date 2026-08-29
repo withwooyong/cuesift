@@ -97,6 +97,40 @@ _CONTRACT = [
     ),
     ("0 --help", ["--help"], 0),
     ("0 --version", ["--version"], 0),
+    # **아래 둘은 짝이다** (FR-8.5 · 설계 D10). 재는 것은 "진행을 켜도 계약이
+    # 유지되는가" 하나뿐이라 인자가 `--progress` 하나만 다르고 기대 종료 코드는
+    # 같다. 짝을 이루지 않으면 둘 다 0인 것이 진행 표시와 무관한 이유로 0일
+    # 수도 있어 아무것도 증명하지 못한다.
+    #
+    # **`--progress`는 `translate`에만 있어 기존 `check` 시나리오를 그대로
+    # 복사할 수 없었다.** `translate`가 여기 처음 들어오므로 LLM 없이 끝나는
+    # `--dry-run`을 쓴다 - `provider.complete()`를 부르지 않는다.
+    #
+    # **여기서 진행 줄이 실제로 나가지는 않는다.** `--dry-run`은 리포터를
+    # 설치하기 **전에** return하므로 이 시나리오의 stderr는 0바이트다(실측:
+    # 리뷰 라운드 2 F1). 이 짝이 재는 것은 "`--progress`를 붙여도 닫힌
+    # 파이프에서 종료 코드가 흐려지지 않는가"이지 진행 표시의 출력이 아니다.
+    # **진행이 실제로 나가는 것은 `tests/test_cli_progress.py`가 잰다** -
+    # 거기는 가짜 프로바이더를 꽂아 번역 경로를 끝까지 태운다.
+    *[
+        (
+            f"0 translate --dry-run{label}",
+            [
+                "translate",
+                str(FIXTURES / "minimal.srt"),
+                "--to",
+                "en",
+                "--base-url",
+                "http://127.0.0.1:9/v1",
+                "--model",
+                "m",
+                "--dry-run",
+                *flag,
+            ],
+            0,
+        )
+        for label, flag in (("", []), (" --progress", ["--progress"]))
+    ],
 ]
 
 
