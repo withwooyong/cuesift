@@ -10,7 +10,10 @@
 
 ## Current Status
 
-**작업 중인 브랜치가 없다.** `main`이 최신이고 다음 작업은 새 브랜치를 파는 것부터 시작한다.
+**파킹 #13 작업은 끝났고, 열려 있는 것은 이 문서 자신뿐이다.**
+`docs/handoff-2026-08-30` 브랜치의 PR [#18](https://github.com/withwooyong/cuesift/pull/18)이
+바로 이 인수인계 문서를 담고 있다 — **그것이 머지되면 작업 중인 브랜치는 하나도 없다.**
+아래 표의 마지막 행은 그래서 ✅가 아니다. 값이 아니라 "현재 상태 재는 법"의 명령으로 확인하라.
 
 | 단계 | 상태 | 산출물 |
 | --- | --- | --- |
@@ -20,6 +23,7 @@
 | PR CI | ✅ | 5잡 전부 pass |
 | **`main` 머지** | ✅ | squash · **`9909ede`** · 11 files changed · 1302 insertions |
 | 머지 후 `main` CI | ✅ | 5잡 전부 success (push 트리거) |
+| **이 인수인계 문서의 PR** | ⬜ **미머지** | [#18](https://github.com/withwooyong/cuesift/pull/18) · CI 5잡 pass · 머지는 승인 대기 |
 | 로컬 정리 | ✅ | `main` 갱신 · 로컬 브랜치 삭제 |
 
 FR 개수는 움직이지 않았다 — 파킹 #13은 FR-2.7(재개)의 **동작 수정**이지 새 요구의 구현이 아니다.
@@ -217,13 +221,15 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 
 ## 다음 세션 시작 절차
 
-**작업 중인 브랜치가 없다.** 이전 인수인계처럼 특정 브랜치를 체크아웃하는 절차가 아니라,
-`main`에서 새로 파는 것으로 시작한다.
+**첫 일은 이 문서를 담은 PR [#18](https://github.com/withwooyong/cuesift/pull/18)이
+머지됐는지 확인하는 것이다.** 미머지면 그것부터 닫는다 — 열어 둔 채 새 작업을 시작하면
+다음 인수인계가 이 문서 위에 겹친다.
 
 ```bash
+gh pr view 18 --json state --jq .state   # MERGED 가 아니면 그것부터
 git checkout main && git pull
 git status --short          # clean 이어야 한다
-git log --oneline -3        # 최상단이 9909ede
+git log --oneline -3        # 파킹 #13 머지는 9909ede
 
 git checkout -b docs/readme-progress   # 위 "다음 작업" 1순위로 갈 때
 ```
