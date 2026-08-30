@@ -1,184 +1,143 @@
 # Session Handoff
 
-> Last updated: 2026-08-29 (KST)
-> **브랜치 `fix/cache-discard-invalid`에 파킹 #13(캐시가 실패 응답을 보존한다) 구현이
-> 끝나 있다. 게이트 전부 통과 · 작업트리 clean · 아직 푸시하지 않았다.**
-> 커밋 수는 `git rev-list --count main..HEAD`로 센다 — 여기 숫자를 적으면
-> 그 문장을 고치는 커밋이 자기 자신을 틀리게 만든다(실측으로 한 번 겪었다).
-> **브랜치가 `origin`에 있는지, PR이 있는지, CI가 돌았는지는 아래 "배포 절차"의 명령으로 직접 재라.**
-> 값이 아니라 명령이다.
+> Last updated: 2026-08-30 (KST)
+> **파킹 #13(캐시가 파싱 실패 응답을 보존한다)이 PR [#17](https://github.com/withwooyong/cuesift/pull/17)로
+> `main`에 머지됐다(squash, `9909ede`). 브랜치는 로컬에서 삭제됐고 작업트리는 clean이다.**
+> **이번 세션은 코드를 한 줄도 바꾸지 않았다** — 직전 세션이 완성해 둔 브랜치를 푸시·PR·CI·머지로
+> 내보낸 것이 전부다.
+> 상태 값은 여기 적힌 숫자가 아니라 아래 "현재 상태 재는 법"의 명령으로 직접 재라.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
 ## Current Status
 
-**파킹 #13이 닫혔다.** FR 개수는 움직이지 않는다 — FR-2.7(재개)의 **동작 수정**이고
-새 요구를 구현한 것이 아니다.
+**파킹 #13 작업은 끝났고, 열려 있는 것은 이 문서 자신뿐이다.**
+`docs/handoff-2026-08-30` 브랜치의 PR [#18](https://github.com/withwooyong/cuesift/pull/18)이
+바로 이 인수인계 문서를 담고 있다 — **그것이 머지되면 작업 중인 브랜치는 하나도 없다.**
+아래 표의 마지막 행은 그래서 ✅가 아니다. 값이 아니라 "현재 상태 재는 법"의 명령으로 확인하라.
 
 | 단계 | 상태 | 산출물 |
 | --- | --- | --- |
-| 착수 조사 | ✅ | 파킹 노트 **한 줄이 거짓**임을 코드로 확인(아래 ⓐ) |
-| [구현 계획](docs/superpowers/plans/2026-08-29-cache-discard-invalid.md) | ✅ 커밋 `47087dd` | 태스크 3개 · 게이트 수치 고정 |
-| 구현 (T1·T2) | ✅ `a198b4c`·`1fa80b6` | 캐시 폐기 표면 · engine 배선 |
-| 문서 (T3) | ✅ `d11864a` | 종료 코드 3의 근거 정정 · README · CHANGELOG |
-| 변이 증명 | ✅ 8종 | store 3종 · engine 5종, 전부 사망 확인 |
-| 런타임 스모크 | ✅ | 스텁 서버로 재현이 닫힌 것을 실물 확인 |
-| 푸시 · PR · CI | ⬜ **아래 "배포 절차"로 직접 재라** | — |
+| 파킹 #13 구현 (직전 세션) | ✅ | 캐시 폐기 표면 · engine 배선 · 문서 정정 |
+| 푸시 | ✅ | `origin/fix/cache-discard-invalid` (브랜치 잔존, `d96098c`) |
+| PR 생성 | ✅ | [#17](https://github.com/withwooyong/cuesift/pull/17) |
+| PR CI | ✅ | 5잡 전부 pass |
+| **`main` 머지** | ✅ | squash · **`9909ede`** · 11 files changed · 1302 insertions |
+| 머지 후 `main` CI | ✅ | 5잡 전부 success (push 트리거) |
+| **이 인수인계 문서의 PR** | ⬜ **미머지** | [#18](https://github.com/withwooyong/cuesift/pull/18) · CI 5잡 pass · 머지는 승인 대기 |
+| 로컬 정리 | ✅ | `main` 갱신 · 로컬 브랜치 삭제 |
 
-**`main` 머지는 사용자 승인 항목이다.**
+FR 개수는 움직이지 않았다 — 파킹 #13은 FR-2.7(재개)의 **동작 수정**이지 새 요구의 구현이 아니다.
 
-## 무엇이 바뀌었나
+## 현재 상태 재는 법
 
-| 부분 | 무엇 |
-| --- | --- |
-| `store/cache.py` | `_entry_path()`(키→경로 규칙의 단일 출처) · `discard()` 신설. `load`·`store`가 같은 헬퍼를 쓴다 |
-| `store/provider.py` | `CachingProvider.discard()`(공개) · `_discard_or_warn()` · `_request()`(조회·저장·폐기가 **같은 키**를 보게 하는 단일 출처) |
-| `translate/engine.py` | `InvalidResponseError` 분기 **2곳**에서 폐기를 시킨다 · `_MAX_TOKENS` 상수화 |
-| 사용자에게 보이는 변화 | 파싱 실패한 배치는 **재실행 시 실제로 다시 호출된다**. 성공분·빈 번역은 캐시에 남는다 |
-
-### 범위의 못 — 사유 3종 중 하나만 뺀다
-
-| 사유 | 캐시되나 | 근거 |
-| --- | --- | --- |
-| `provider_error` | ❌ (전부터) | 예외가 저장 코드에 도달하지 못한다. **구조**로 보장됨 |
-| `invalid_response` | ❌ **(이번 작업)** | 모델이 계약을 어긴 응답. 재호출이 실제로 성공할 수 있다 |
-| `empty_translation` | ✅ **유지** | 개수도 번호도 맞은 **계약을 지킨 응답**이다. 폐기하면 같은 배치의 성공분까지 재결제한다 |
+```bash
+git branch --show-current        # main 이어야 한다
+git status --short               # clean 이어야 한다
+git log --oneline -3             # 최상단이 9909ede 여야 한다
+gh run list --branch main --limit 1   # 최근 main CI 결과
+```
 
 ## 이번 세션이 배운 것
 
-### ⓐ 파킹 노트가 "무엇이 안 되는가"를 실제보다 넓게 적었다
+### ⓐ `Linting: 0 files`는 결과가 아니라 가드 명령의 에코였다
 
-직전 세션의 ⓐ와 **반대 방향의 같은 결함**이다 — 그때는 조건을 좁게 적어 우선순위를
-낮게 보이게 했고, 이번엔 넓게 적어 피해를 크게 보이게 했다.
+CI 로그를 `grep`으로 훑으면 `Linting: 0 files`와 `Linting: 39 files`가 **둘 다** 잡힌다.
+앞의 것은 검사 결과가 아니라, 워크플로가 그 문자열을 감시하려고 적어 둔
+`if grep -qE '^Linting: 0 files' lint.log` 명령 자체가 로그에 에코된 것이다.
 
-| 노트가 적은 것 | 실측 |
-| --- | --- |
-| "**모델을 바꿔도** 캐시를 지우기 전까지 같은 실패가 영구 재생된다" | **거짓.** 캐시 키에 `identity`가 들어가고 `identity = base_url\|model`이다(`translate/openai_compat.py:129`) — 모델 교체는 이미 캐시를 우회했다 |
-| "`complete()`가 성공·실패를 가리지 않고 저장한다" | 참 |
-| "`provider_error`는 저장되지 않는다" | 참. 조건문이 아니라 **구조**로 그렇다 |
+**CI 로그를 grep할 때는 실행된 명령문과 그 출력이 같은 스트림에 섞인다.**
+숫자만 뽑아 세면 워크플로가 스스로 적어 둔 임계값을 결과로 오독한다.
+줄 번호를 함께 보고 앞뒤를 확인하면 갈린다.
 
-실제 피해는 좁았다: *같은 모델·같은 설정으로 다시 돌릴 때*, 즉 **"그냥 한 번 더 돌려본다"**
-가 무력화되는 것. 모델·엔드포인트·프롬프트·용어집·온도를 바꾸는 복구 경로는 전부
-키가 달라져 이미 미스가 났다. **범위를 좁히고 나서야 `empty_translation`을 남기는 결정이
-가능해졌다** — "전부 망가졌다"로 읽었으면 전부 지웠을 것이다.
+이 저장소는 "0개 수집은 통과가 아니라 설정 오류"를 이미 CI에 게이트로 못 박아 두었다.
 
-### ⓑ 한 숫자가 셋을 가르는 게이트를 만들 수 있다
+### ⓑ CHANGELOG는 머지 커밋 해시를 인용하지 않는다
 
-세그먼트 2개·`batch_size=2`로 두 번 돌렸을 때 **2회차의 실제 호출 수**가 게이트다.
+`/handoff`의 수집 스크립트가 `ARCHIVE_NEEDED=1`을 냈지만 **아카이브하지 않았다.**
+스킬의 규칙은 "최신 3개 버전만 남긴다"인데, 이 CHANGELOG의 버전 절은 이미 정확히 3개
+(`[Unreleased]` · `[2026-07-28]` · `[2026-07-27]`)다. 332줄인 원인은 버전이 많아서가 아니라
+**`[Unreleased]` 한 절이 280줄**이기 때문이라, 규칙을 기계적으로 적용하면 자를 대상이 없다.
 
-| 시나리오 | 기대 | 폐기 없음 | 배치 호출부만 빠짐 | 개별 호출부만 빠짐 |
-| --- | --- | --- | --- | --- |
-| 전부 파싱 실패 | **3** | 0 | 0 | 1 |
-| 배치만 실패, 개별 폴백 성공 | **1** | 0 | 0 | 1 |
-| 빈 번역(형식은 맞음) | **0** | 0 | 0 | 0 |
+또한 머지 커밋 해시(`782c4b3`·`a6ecb4a`·`b31d0bd`·`0573626`)를 CHANGELOG에서 찾으면 **전부 0건**이다.
+이 저장소는 squash 전 **브랜치의 개별 커밋 해시**를 인용하는 관행이고, 파킹 #13 항목도
+이미 그렇게 적혀 있다(`47087dd`·`a198b4c`·`1fa80b6`·`d11864a`).
 
-세 열의 값이 전부 달라 **표 자체가 변이 증명**이 된다. "캐시가 비었다"를 파일로 확인하는
-방식을 택하지 않은 이유는 그러면 테스트가 경로 규칙을 재구현하게 되고, 그 재구현이
-틀려도 통과하기 때문이다.
+**그 해시들은 `main` 이력에서 도달 불가다**(`git merge-base --is-ancestor` 전부 실패).
+객체가 살아 있는 이유는 `origin`에 작업 브랜치를 남겨 두기 때문이다 — 이 저장소가
+`origin/feat/*`를 지우지 않는 것이 이 관행의 전제다. **원격 브랜치를 정리하면 CHANGELOG의
+해시 인용이 통째로 죽는다.**
 
-### ⓒ 실패 방향이 "오늘과 같음"인 설계를 골랐다
+### ⓒ squash 머지 후의 `git branch -d` 경고는 정상이다
 
-지연 커밋(`accept()`)이 이론상 더 정확하다 — 쓰레기가 애초에 안 써진다. 버린 이유는
-**모든 호출자가 opt-in해야 하기 때문**이다. Tier 1 자가일관성은 파싱 검증이 없어
-`accept()`를 부를 자리가 없고, 안 부르면 **Tier 1 캐시가 조용히 전부 꺼진다.**
-
-명시적 폐기(`discard()`)는 반대다. 호출부가 빠뜨리면 **옛날 동작**(쓸모없는 응답이 캐시에
-남음)이고 회귀가 아니다. 이 저장소가 반복해 겪은 결함은 전부 "조용한 열화" 쪽이었다.
-
-### ⓓ 수정이 다른 문서의 근거를 거짓으로 만들 수 있다
-
-종료 코드 `3`을 고른 근거가 **바로 이 결함이었다.** `cli.py` 머리말과 README가
-*"재실행하면 캐시 히트 3 · 실제 호출 0"* 이라는 실측을 인용하고 있었고, 이 수정으로
-`invalid_response`에 대해 거짓이 됐다.
-
-**값은 바꾸지 않았다.** 75(`EX_TEMPFAIL`)를 거부하는 이유가 남기 때문이다 — 사유 3종의
-처방이 서로 달라(`provider_error`는 재실행 · `invalid_response`는 모델 교체 ·
-`empty_translation`은 원문 확인) 코드 하나가 "재시도"를 대표할 수 없고,
-`empty_translation`은 여전히 캐시가 보존한다. **바꾼 것은 근거 문장이다.**
-
-`git grep`으로 인용처를 먼저 찾지 않았으면 저장소의 종료 코드 계약 출처가 거짓말을
-계속했을 것이다. **결함을 고칠 때 그 결함을 근거로 쓴 문서를 찾는다.**
-
-## 배포 절차 — **"푸시했다"와 "CI가 돌았다"는 다르다**
-
-```bash
-git rev-list --count main..HEAD          # 이 브랜치의 커밋 수
-git ls-remote --heads origin fix/cache-discard-invalid   # 비면 아직 푸시 안 됨
-gh pr list --head fix/cache-discard-invalid              # 비면 PR 없음
-gh pr checks --watch                                     # CI 통과 대기
+```text
+warning: deleting branch 'fix/cache-discard-invalid' that has been merged to
+         'refs/remotes/origin/fix/cache-discard-invalid', but not yet merged to HEAD
 ```
 
-**`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거가 `branches: [main]`뿐이라
-직접 푸시하면 머지된 **뒤에야** CI가 돈다 — 게이트가 아니라 사후 통보다.
+원본 커밋 5개가 하나로 합쳐져 원본 해시가 `main`에 존재하지 않기 때문이다.
+git이 원격 브랜치와 대조해 삭제를 승인했으므로 `-D`로 강제할 일이 아니다.
 
 ## 게이트 실행 기록
 
-| 게이트 | 이 세션 | 비고 |
+로컬은 CI와 같은 대상(`.`)으로 돌렸고, CI 수치는 로그에서 직접 읽어 대조했다.
+
+| 게이트 | 로컬 (머지 전) | CI (PR · main 양쪽) |
 | --- | --- | --- |
-| `python -m compileall src tests` | 통과 | |
-| `ruff check .` | **All checks passed!** | 대상은 `.` — `src tests`로 좁히지 않는다 |
-| `ruff format --check .` | **115 files already formatted** | 신규 테스트 1개로 114 → 115 |
-| `pytest --cov=cuesift` | **1582 passed · 3 deselected** · 커버리지 **99%**(2505문 중 31 미도달) | 착수 기준선 1571 → **+11** |
-| 런타임 스모크 | 아래 표 | 스텁 서버는 **리포 밖**에 두었다 |
-| `python scripts/check_links.py` | 마크다운 **39개** · 상대 링크 **189개** · 깨진 링크 **0** | 계획서 추가로 38 → 39 |
-| `npx markdownlint-cli2` | **39 files** · **0 issues** | 두 도구의 파일 수가 **일치**한다 |
+| `ruff check .` | **All checks passed!** | pass |
+| `ruff format --check .` | **115 files already formatted** | pass |
+| `pytest --cov=cuesift` | **1582 passed · 3 deselected** · 커버리지 **99%** | **1581 passed · 1 skipped · 3 deselected** (3.11~3.14 네 잡 모두) |
+| 커버리지 TOTAL | 2505문 중 31 미도달 | 동일 |
+| `scripts/check_links.py` | 마크다운 **39개** · 상대 링크 **189개** · 깨진 링크 **0** | 동일 |
+| `npx markdownlint-cli2` | **39 files** · **0 issues** | 동일 |
 
-**CI는 1건 적게 센다.** `data/`가 `.gitignore`에 있어 깨끗한 체크아웃에는 벤치 트랙이 없고
-`tests/test_bench_glossary.py`가 1건을 skip한다 — CI의 기대값은
-**1581 passed · 1 skipped · 3 deselected**다.
+**로컬 1582와 CI 1581의 차이는 예측된 것이다.** `data/`가 `.gitignore`에 있어 깨끗한
+체크아웃에는 벤치 트랙이 없고 `tests/test_bench_glossary.py`가 1건을 skip한다.
+직전 세션의 인수인계가 미리 적어 둔 기대값과 정확히 일치했다.
 
-### 런타임 스모크 (스텁이 200 + 잡문만 냄, 10큐)
+두 문서 도구의 파일 개수가 **39개로 일치한다.**
 
-10큐는 배치 1회 + 개별 폴백 10회 = 호출 11회다.
-
-| 실행 | 결과 |
-| --- | --- |
-| 1회차 | `exit 3` · **캐시 히트 0 · 실제 호출 11** · `invalid_response 10건` |
-| 2회차 (같은 `--cache-dir`) | `exit 3` · **캐시 히트 0 · 실제 호출 11** · `invalid_response 10건` |
-| 캐시 디렉터리 | 실행 후 **파일 0개** — 11개가 저장됐다가 전부 폐기됐다 |
-| 3회차 (서버를 죽이고) | `exit 3` · **캐시 히트 0 · 실제 호출 4** · **`provider_error` 10건** |
-
-**2회차의 "실제 호출 11"이 재현이 닫힌 증거다** — 폐기 전에는 `캐시 히트 11 · 실제 호출 0`
-이었다. 3회차는 사유가 `invalid_response`에서 `provider_error`로 **바뀌는 것**을 보인다.
-
-### 변이 증명
-
-| 변이 | 사망 |
-| --- | --- |
-| `cache.discard` 본문을 `pass`로 | **3건** |
-| `CachingProvider.discard`가 `temperature`를 하드코딩 | **1건** |
-| `_discard_or_warn`의 `except`를 무력화 | **1건** |
-| `_discard_cached` 본문을 `return`으로 | **2건** |
-| `_run_window`의 호출만 제거 | **2건** |
-| `_run_single`의 호출만 제거 | **1건** |
-| `_run_window`가 `empty_translation`에도 폐기를 걸게 확대 | **1건** (범위의 못이 진짜 게이트다) |
-| `_MAX_TOKENS`를 `_discard_cached`에서만 `16`으로 | **2건** |
-
-**마지막 셋이 서로 다른 것을 지킨다** — 호출부 하나만 빠지는 경우, 범위가 넓어지는 경우,
-키가 어긋나는 경우가 각각 다른 테스트로 잡힌다.
-
-## README/문서 갱신 필요 — **이번 세션에서 고치지 않았다**
+## README/문서 갱신 필요 — **이번 세션에서도 고치지 않았다**
 
 | 무엇 | 왜 낡았나 | 확인할 진실원 |
 | --- | --- | --- |
-| **README에 `--progress`·`CUESIFT_PROGRESS`가 한 글자도 없다** | FR-8.5(직전 세션, `a6ecb4a`)가 기능을 넣었는데 대외 문서에 반영되지 않았다. 표에 행 하나 더하는 일이 아니라 **절 신설**이다 | `src/cuesift/cli.py:1504`(`_prefer_env_bool(..., "CUESIFT_PROGRESS")`) · `src/cuesift/progress.py` · `docs/superpowers/specs/2026-08-29-progress-display-design.md` |
+| **README에 `--progress`·`CUESIFT_PROGRESS`가 없다** | FR-8.5(`a6ecb4a`)가 기능을 넣었는데 대외 문서에 반영되지 않았다. `grep -c "progress\|진행 표시" README.md`가 **0건**이다(이번 세션 실측) | `src/cuesift/cli.py`의 `_prefer_env_bool(..., "CUESIFT_PROGRESS")` · `src/cuesift/progress.py` · [설계 스펙](docs/superpowers/specs/2026-08-29-progress-display-design.md) |
 
-세션 끝(컨텍스트가 가장 얕은 시점)에 기능 설명을 쓰면 "그럴듯하지만 틀린 README"가 된다.
-**온전한 컨텍스트를 가진 다음 세션이 하는 편이 낫다.**
+**표에 행 하나 더하는 일이 아니라 절 신설이다.** `/handoff`의 drift 검사가
+`[HIGH] ENV_KEYS_IN_CODE_BUT_NOT_IN_README`로 `CUESIFT_PROGRESS`를 지목했지만,
+그 신호의 처방("README 환경변수 표에 행 추가")을 적용할 표가 이 README에 없다 —
+일반 환경변수(`CUESIFT_BASE_URL`·`CUESIFT_MODEL`·`CUESIFT_API_KEY`)는 코드 블록과 산문이고,
+표로 된 것은 `-m live` 테스트 전용 `CUESIFT_LIVE_*` 하나뿐이다.
+표를 새로 만드는 것은 섹션 구조 변경이라 세션 끝에 할 일이 아니다.
+
+**두 세션 연속으로 이월된 항목이다.** 다음 세션이 컨텍스트가 온전할 때 집어들 것.
 
 ## 다음 작업
 
-**1순위는 FR-8.3(`transcribe`)이다** — WP6의 마지막 조각이고 STT 어댑터(WP9)가 선행이다.
+```mermaid
+flowchart LR
+    A["README --progress 절 신설<br/>(선행 없음)"] --> Z["v0.1"]
+    B["WP9 STT 어댑터<br/>FR-1.2 · 1.4"] --> C["FR-8.3 transcribe 배선<br/>(WP6 마지막 조각)"]
+    C --> Z
+    style A fill:#e6f4ea,stroke:#137333
+    style B fill:#fef7e0,stroke:#f9ab00
+    style C fill:#fef7e0,stroke:#f9ab00
+```
 
-**파킹 2번(README 권장 모델 `qwen2.5:3b`가 3큐 중 2큐 실패)은 여전히 열려 있다.**
-같은 뿌리로 #13과 묶여 있었지만 같은 것이 아니다 — #13은 "실패를 캐시가 굳힌다"였고
-2번은 **"권장 모델이 애초에 실패한다"**다. 폐기가 재실행을 가능하게 만들었을 뿐,
-같은 모델이 같은 지시를 다시 어기는 문제는 그대로다. **이제는 재실행이 실제 호출이 되므로
-그 문제를 실측하기가 쉬워졌다.**
+| 순위 | 작업 | 왜 이 순서인가 | 규모 |
+| --- | --- | --- | --- |
+| **1** | README에 `--progress` 절 신설 | 선행이 없고, 이미 두 세션 이월됐다. 기능은 완성돼 있는데 사용자가 알 방법이 없다 | M |
+| **2** | WP9 — STT 어댑터 (FR-1.2·1.4) | FR-8.3의 선행이다. 어댑터가 없으면 `transcribe`가 부를 대상이 없다 | M |
+| **3** | FR-8.3 — `transcribe` CLI 배선 | **WP6에 남은 마지막 조각이다.** FR-8.3은 §5.8("CLI") 소속이라 STT 로직이 아니라 CLI의 몫이고, WP9는 어댑터만 낸다. 그래서 WP6이 🟡다(5개 중 4개) | M |
+
+**파킹 2번(권장 모델 `qwen2.5:3b`가 3큐 중 2큐 실패)은 여전히 열려 있다.**
+파킹 #13과 같은 뿌리였지만 같은 것이 아니다 — #13은 "실패를 캐시가 굳힌다"였고 2번은
+**"권장 모델이 애초에 실패한다"**다. 폐기가 재실행을 가능하게 만들었을 뿐, 같은 모델이 같은
+지시를 다시 어기는 문제는 그대로다. **이제는 재실행이 실제 호출이 되므로 실측하기가 쉬워졌다.**
 
 ## 파킹된 finding
 
 **#1·#2·#3·#13이 닫혔다.** 앞의 셋은 한 덩어리("실패했는데 왜인지 안 말한다")였고,
-`fix/cache-discard-invalid`가 #13을 냈다.
+파킹 #13은 PR [#17](https://github.com/withwooyong/cuesift/pull/17)이 닫았다.
 
 | # | 무엇 | 왜 지금 안 했나 | 다시 열 조건 |
 | --- | --- | --- | --- |
@@ -205,14 +164,14 @@ cd C:\Users\aeby\vscode\cuesift
 
 **확인하지 않은 것을 확인했다고 적지 않는다.**
 
-## 승계 항목 — 이 브랜치가 건드리지 않았다
+## 승계 항목 — 아무도 건드리지 않았다
 
 | 항목 | 상태 |
 | --- | --- |
 | **Q4**(자가일관성 유사도 측정 수단) | 여전히 열려 있다. 판정은 벤치마크에 Tier 1을 태우는 별도 작업의 몫 |
 | **FR-4.2**(역번역) | 구현 안 함. 문자 단위 유사도로는 `llm.retranslation_gap`이 **역방향으로 작동**한다 |
-| **FR-8.3**(`transcribe`) | STT 어댑터(WP9)가 선행이지만 **FR-8.3 자신은 WP6에 남는다** — §5.8("CLI") 소속이다. **그래서 WP6은 🟡다**(5개 중 4개) |
-| **`engine.py::_run_single`의 전역 index** | 확인됐고 안 고쳤다. `main`에도 있다 |
+| **FR-8.3**(`transcribe`) | STT 어댑터(WP9)가 선행이지만 **FR-8.3 자신은 WP6에 남는다** — §5.8("CLI") 소속이다 |
+| **`engine.py::_run_single`의 전역 index** | 확인됐고 안 고쳤다. `main`에 있다 |
 | `segments[].reasons`의 순서 미검증 | NFR-3 재현성 문제. 열려 있다 |
 
 ## 개발 환경 메모 (승계)
@@ -226,19 +185,18 @@ CI가 5회 연속 실패한 전례가 있다).
 
 **변이 실험은 스크래치 사본에서 하고 `PYTHONPATH`를 강제한다.** editable install의 `.pth`가
 사본을 가려 "생존" 오탐을 낸다. 리포에서 직접 할 때는 **파일 복사본으로 복원하라** —
-`git checkout --`가 미커밋 작업을 날린 전례가 있다(이번 세션도 변이 8종을 전부
-`cp <파일>.bak` 복원으로 돌렸다).
+`git checkout --`가 미커밋 작업을 날린 전례가 있다.
 
 **콘솔에서 한글 출력이 깨져 보이는 것은 표시 문제이지 버그가 아니다.** 판정이 필요하면
 파일로 받아 `read_bytes()` 후 utf-8·cp949 순으로 디코드해 읽는다 — 실행 로그가
-**cp949로 떨어진다**(이번 세션 스모크 실측).
+**cp949로 떨어진다**(스모크 실측). 이번 세션에도 `scripts/check_links.py`의 콘솔 출력이
+깨져 보였으나 CI 로그(UTF-8)에서 같은 수치가 확인됐다.
 
 **파이썬 스크립트로 문서를 고칠 때 `newline=""`을 준다.** `Path.write_text`의 기본값이
 `newline=None`이라 Windows에서 `\n`을 `\r\n`으로 번역해 **2줄 수정이 1967줄 변경으로** 찍힌다.
 
 **Bash heredoc 안의 파이썬에 Windows 경로를 넣지 마라.** 역슬래시가 한 겹 먹혀
-`tests\\fixtures`가 `tests\fixtures`(폼피드)로 바뀐다 — 이번 세션에 문자열 치환이
-그것으로 실패했다. 경로가 섞인 편집은 `Edit` 도구로 한다.
+`tests\\fixtures`가 `tests\fixtures`(폼피드)로 바뀐다. 경로가 섞인 편집은 `Edit` 도구로 한다.
 
 Ollama는 트레이 앱 겸 백그라운드 서비스로 자동 기동해 `127.0.0.1:11434`를 듣는다.
 PATH에 없으면 `$env:LOCALAPPDATA\Programs\Ollama\ollama.exe`를 직접 부른다.
@@ -263,13 +221,19 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 
 ## 다음 세션 시작 절차
 
+**첫 일은 이 문서를 담은 PR [#18](https://github.com/withwooyong/cuesift/pull/18)이
+머지됐는지 확인하는 것이다.** 미머지면 그것부터 닫는다 — 열어 둔 채 새 작업을 시작하면
+다음 인수인계가 이 문서 위에 겹친다.
+
 ```bash
-git checkout fix/cache-discard-invalid
-git log --oneline | head -5
-git status --short                                       # clean이어야 한다
-git ls-remote --heads origin fix/cache-discard-invalid   # 푸시됐나
-gh pr list --head fix/cache-discard-invalid              # PR이 있나
+gh pr view 18 --json state --jq .state   # MERGED 가 아니면 그것부터
+git checkout main && git pull
+git status --short          # clean 이어야 한다
+git log --oneline -3        # 파킹 #13 머지는 9909ede
+
+git checkout -b docs/readme-progress   # 위 "다음 작업" 1순위로 갈 때
 ```
 
-**푸시·PR이 아직이면 그것부터다.** 이 저장소에서 PR은 리뷰가 아니라 **게이트**다 —
-`test 3.11`~`3.14`·`docs`가 다른 OS·다른 환경변수에서 도는 것을 머지 **전에** 확인한다.
+**`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거가 `branches: [main]`뿐이라
+직접 푸시하면 머지된 **뒤에야** CI가 돈다 — 게이트가 아니라 사후 통보다.
+PR 절차는 [CLAUDE.md](CLAUDE.md)의 "PR 절차"에 있다.
