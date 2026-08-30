@@ -22,6 +22,15 @@
 **예외를 캐시하지 않는 것은 구조적으로 보장된다.** 안쪽 `complete()`가
 던지면 아래 저장 코드에 도달하지 못한다. 조건문으로 거르는 것이 아니라서
 새 예외 종류가 생겨도 규칙이 깨지지 않는다.
+
+**쓸모없는 응답을 캐시하지 않는 것은 구조가 아니라 호출자가 한다** (파킹
+#13). 위의 보장과 강도가 다르다 - 예외는 저장 코드에 도달하지 못하지만,
+파싱조차 안 되는 응답은 이 계층에서 정상 `Completion`이라 그냥 저장된다.
+그것을 아는 것은 engine뿐이므로(`translate/batch.py::parse_translations`)
+engine이 `discard()`로 지운다. 그래서 이 규칙은 호출부가 빠뜨리면 깨지고,
+그때의 동작은 "옛날 동작"(쓸모없는 응답이 캐시에 남아 재실행이 실제 호출
+0개로 같은 실패를 재생)이다. 지키는 것은 이 문장이 아니라
+`tests/test_cache_discard.py`다.
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ from pathlib import Path
 # 독스트링 참고). `cache.py`가 이 패키지 안에서 더 낮은 계층이라
 # (`provider.py`가 `cache.py`를 이미 임포트한다) 반대 방향으로 임포트하면
 # 순환 임포트가 된다.
-from cuesift.store.cache import CACHE_IO_ERRORS, CacheRequest, load, store
+from cuesift.store.cache import CACHE_IO_ERRORS, CacheRequest, discard, load, store
 from cuesift.translate.provider import ChatMessage, Completion, Provider
 
 
@@ -113,13 +122,7 @@ class CachingProvider:
         max_tokens: int | None,
     ) -> Completion:
         """캐시를 보고, 없으면 안쪽을 부르고 저장한다."""
-        request = CacheRequest(
-            identity=self._identity,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            messages=tuple(messages),
-            attempt=self._attempt,
-        )
+        request = self._request(messages, temperature=temperature, max_tokens=max_tokens)
         cached = self._load_or_none(request)
         if cached is not None:
             self.hits += 1
@@ -149,6 +152,56 @@ class CachingProvider:
         close = getattr(self._inner, "close", None)
         if close is not None:
             close()
+
+    def discard(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> None:
+        """호출자가 "이 응답은 쓸모없었다"고 알릴 때 그 항목을 지운다 (파킹 #13).
+
+        **판정은 여기서 하지 않는다.** 이 계층은 응답이 파싱되는지 모른다 -
+        아는 것은 engine이고(`translate/batch.py::parse_translations`), 그래서
+        폐기는 engine이 시킨다. 캐시가 스스로 판정하려 들면 기대 id를 모르는
+        채로 흉내 내게 되고, 판정이 두 곳으로 갈라진다.
+
+        **인자가 `complete()`와 글자 그대로 같아야 한다.** 하나라도 어긋나면
+        키가 달라져 **엉뚱한 항목을 지우고**, 지울 것이 없으니
+        `unlink(missing_ok=True)`가 조용히 성공한다 - 어긋남이 실패로
+        드러나지 않는다. 이것을 지키는 것은 이 주석이 아니라
+        `tests/test_store_provider.py::test_폐기는_호출과_같은_온도의_항목을_지운다`이고,
+        인자를 하나라도 하드코딩하면 그쪽이 죽는다.
+
+        **`empty_translation`에는 쓰지 않는다** (`translate/engine.py`의
+        `_discard_cached` 참고) - 그것은 개수도 번호도 맞은, 계약을 지킨
+        응답이다.
+        """
+        self._discard_or_warn(
+            self._request(messages, temperature=temperature, max_tokens=max_tokens)
+        )
+
+    def _request(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> CacheRequest:
+        """조회·저장·폐기가 **같은 키**를 보게 하는 단일 출처.
+
+        조립을 복제하면 `complete`가 쓴 것을 `discard`가 못 지운다 - 그리고
+        그 어긋남은 조용하다(지울 것이 없으니 성공한다). 필드가 하나 늘 때
+        한쪽만 고치는 실수가 구조적으로 불가능해야 한다.
+        """
+        return CacheRequest(
+            identity=self._identity,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            messages=tuple(messages),
+            attempt=self._attempt,
+        )
 
     def _load_or_none(self, request: CacheRequest) -> Completion | None:
         """캐시 조회 실패를 미스로 떨어뜨린다. **경고 없이 조용히.**
@@ -193,6 +246,17 @@ class CachingProvider:
             # 도달하지 않지만, 서드파티 `Provider`가 어기는 경우까지 막는
             # 것은 이 계층의 책임 밖이라고 판단했다.
             self._warn_once(f"캐시를 쓰지 못했다(재개가 동작하지 않는다): {exc}")
+
+    def _discard_or_warn(self, request: CacheRequest) -> None:
+        try:
+            discard(self._cache_dir, request)
+        except CACHE_IO_ERRORS as exc:
+            # 지우지 못했다는 것은 **"다시 돌려도 같은 실패가 재생된다"**는
+            # 뜻이다. 조용히 넘어가면 사용자는 재시도가 된 줄 안다.
+            # `_store_or_warn`과 경고 깃발을 공유하는 것은 둘이 사용자에게
+            # 같은 한 가지 사실을 말하기 때문이다 - 캐시가 제대로 동작하지
+            # 않는다.
+            self._warn_once(f"캐시 항목을 지우지 못했다(재실행이 같은 실패를 낸다): {exc}")
 
     def _warn_once(self, message: str) -> None:
         if self._warned:

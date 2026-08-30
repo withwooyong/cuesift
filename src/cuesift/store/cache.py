@@ -147,6 +147,16 @@ class CacheRequest:
         return _sha256(material)
 
 
+def _entry_path(cache_dir: Path, request: CacheRequest) -> Path:
+    """키에서 파일 경로를 만든다. **이 규칙의 단일 출처다.**
+
+    `load`·`store`·`discard` 셋이 각자 조립하면 한 곳만 바뀔 때 서로가 쓴
+    것을 못 읽거나 못 지운다. 특히 폐기는 실패가 조용하다 - 엉뚱한 경로를
+    지우면 지울 것이 없어 `unlink(missing_ok=True)`가 성공한다.
+    """
+    return cache_dir / f"{request.key}.json"
+
+
 def load(cache_dir: Path, request: CacheRequest) -> Completion | None:
     """캐시에서 읽는다. 조금이라도 미심쩍으면 `None`이다.
 
@@ -161,7 +171,7 @@ def load(cache_dir: Path, request: CacheRequest) -> Completion | None:
     `TypeError`는 `ProviderError`의 자손이 아니라 번역 루프 밖으로 샌다 -
     이 모듈이 막겠다고 선언한 실패 모드와 정확히 같은 형태다.
     """
-    path = cache_dir / f"{request.key}.json"
+    path = _entry_path(cache_dir, request)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -260,13 +270,31 @@ def store(cache_dir: Path, request: CacheRequest, completion: Completion) -> Non
         },
         "created_at": datetime.now(UTC).isoformat(),
     }
-    tmp = cache_dir / f"{request.key}.json.{os.getpid()}.tmp"
+    final = _entry_path(cache_dir, request)
+    tmp = Path(f"{final}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, cache_dir / f"{request.key}.json")
+        os.replace(tmp, final)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
+
+
+def discard(cache_dir: Path, request: CacheRequest) -> None:
+    """이 요청의 캐시 항목을 지운다 (FR-2.7 · 파킹 #13).
+
+    **`store()`와 마찬가지로 실패를 삼키지 않는다** - 호출자가 경고를 낸다.
+    여기서 삼키면 "다시 돌리면 재시도된다"가 거짓이 된 것을 아무도 모른다.
+
+    **판정은 이 계층의 일이 아니다.** 무엇이 쓸모없는 응답인지 아는 것은
+    `translate/batch.py::parse_translations`이고, 캐시는 그 판정을 재현할
+    재료(기대 id)를 갖고 있지 않다. 여기서 흉내 내면 판정이 두 곳으로
+    갈라져 한쪽만 고쳐진다.
+
+    없는 항목을 지우는 것은 무연산이다 - 폐기는 실패 경로에서 불리므로
+    여기서 `FileNotFoundError`를 내면 번역이 그 자리에서 죽는다.
+    """
+    _entry_path(cache_dir, request).unlink(missing_ok=True)
 
 
 def _matches(raw: object, request: CacheRequest) -> bool:

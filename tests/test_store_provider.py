@@ -317,3 +317,74 @@ def test_cache_identity는_의도적으로_없다() -> None:
     (`cli.py`의 `_cache_identity(provider)` → `CachingProvider(provider, identity=...)`).
     """
     assert not hasattr(CachingProvider, "cache_identity")
+
+
+def test_폐기하면_다음_호출이_안쪽을_부른다(tmp_path: Path) -> None:
+    # 파킹 #13의 핵심. 폐기가 없으면 2회차가 inner를 부르지 않는다.
+    inner = ScriptedProvider(["응답1", "응답2"])
+    provider = _cached(inner, tmp_path)
+
+    provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+    provider.discard(_MESSAGES, temperature=0.0, max_tokens=None)
+    second = provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+
+    assert len(inner.calls) == 2
+    assert second.text == "응답2"
+
+
+def test_폐기는_다른_항목을_건드리지_않는다(tmp_path: Path) -> None:
+    # 키를 무시하고 디렉터리를 비우는 구현이면 여기서 죽는다.
+    other = (ChatMessage(role="system", content="지시"), ChatMessage(role="user", content="다른"))
+    inner = ScriptedProvider(["A", "B"])
+    provider = _cached(inner, tmp_path)
+    provider.complete(_MESSAGES, temperature=0.0, max_tokens=None)
+    provider.complete(other, temperature=0.0, max_tokens=None)
+
+    provider.discard(_MESSAGES, temperature=0.0, max_tokens=None)
+
+    assert provider.complete(other, temperature=0.0, max_tokens=None).text == "B"
+    assert len(inner.calls) == 2  # other는 캐시에서 나왔다
+
+
+def test_저장한_적_없는_것을_폐기해도_죽지_않는다(tmp_path: Path) -> None:
+    warnings: list[str] = []
+    provider = CachingProvider(
+        ScriptedProvider([]), identity="i|u|m", cache_dir=tmp_path, warn=warnings.append
+    )
+
+    provider.discard(_MESSAGES, temperature=0.0, max_tokens=None)
+
+    assert warnings == []
+
+
+def test_폐기_실패는_경고하고_진행한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 지우지 못했다는 것은 "다시 돌려도 같은 실패가 재생된다"는 뜻이다.
+    # 조용히 넘어가면 사용자는 재시도가 된 줄 안다. `_load_or_none`의 조용한
+    # 미스와 다른 이유는 결과가 다르기 때문이다 - 그쪽은 이번 호출이 느릴
+    # 뿐이다.
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("권한 없음")
+
+    monkeypatch.setattr("cuesift.store.provider.discard", boom)
+    warnings: list[str] = []
+    provider = CachingProvider(
+        ScriptedProvider(["응답1"]), identity="i|u|m", cache_dir=tmp_path, warn=warnings.append
+    )
+
+    provider.discard(_MESSAGES, temperature=0.0, max_tokens=None)
+    provider.discard(_MESSAGES, temperature=0.0, max_tokens=None)
+
+    assert len(warnings) == 1  # 경고는 한 번만. 수백 번이면 진짜 출력이 묻힌다
+
+
+def test_폐기는_호출과_같은_온도의_항목을_지운다(tmp_path: Path) -> None:
+    # `discard`가 `_request`를 쓰지 않고 인자를 하나라도 하드코딩하면 여기서
+    # 죽는다. 하드코딩된 값과 우연히 같은 0.0만 쓰는 테스트로는 드러나지 않는다.
+    inner = ScriptedProvider(["뜨거운1", "뜨거운2"])
+    provider = _cached(inner, tmp_path)
+
+    provider.complete(_MESSAGES, temperature=0.7, max_tokens=None)
+    provider.discard(_MESSAGES, temperature=0.7, max_tokens=None)
+    provider.complete(_MESSAGES, temperature=0.7, max_tokens=None)
+
+    assert len(inner.calls) == 2

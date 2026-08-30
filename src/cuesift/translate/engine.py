@@ -70,6 +70,12 @@ _BACKOFF_BASE_S = 1.0
 # 크게 잡은 설정뿐이다.
 _MAX_BACKOFF_S = 60.0
 
+# 프로바이더에 넘기는 `max_tokens`다. **상수인 이유는 폐기 때문이다** -
+# 호출과 폐기가 서로 다른 값을 쓰면 `CacheRequest.key`가 달라져 엉뚱한 항목을
+# 지우고, 지울 것이 없으니 조용히 성공한다(`_discard_cached` 참고). 두 자리에
+# 각각 적으면 한쪽만 바뀌는 실수가 가능해진다.
+_MAX_TOKENS: int | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class SegmentFailure:
@@ -270,6 +276,9 @@ def _run_window(
     try:
         mapping = parse_translations(completion.text, expected)
     except InvalidResponseError:
+        # 폴백을 부르기 **전**이다 - 폴백까지 실패해도 깨진 배치 응답은
+        # 이미 지워져 있어야 한다 (파킹 #13).
+        _discard_cached(provider, messages, temperature=temperature)
         fallback_usage, texts, fallback_failures = _fallback_individually(
             window,
             provider=provider,
@@ -402,6 +411,7 @@ def _run_single(
     try:
         mapping = parse_translations(completion.text, [segment.index])
     except InvalidResponseError:
+        _discard_cached(provider, messages, temperature=temperature)
         return (
             usage,
             {},
@@ -440,6 +450,33 @@ def _collect(
             continue
         texts[segment.id] = text
     return texts, failures
+
+
+def _discard_cached(
+    provider: Provider,
+    messages: Sequence[ChatMessage],
+    *,
+    temperature: float,
+) -> None:
+    """파싱조차 되지 않은 응답을 캐시에서 뺀다 (FR-2.7 · 파킹 #13).
+
+    **`getattr`인 이유는 `Provider` 프로토콜에 없는 표면이기 때문이다.**
+    캐시를 끼우지 않은 프로바이더(`--no-cache`·raw)에는 없고, 그때는 할 일이
+    없는 것이지 오류가 아니다 - 여기서 `AttributeError`가 나면 실패 경로에서
+    번역이 통째로 죽는다. `cli.py`의 `getattr(provider, "close", None)`·
+    `getattr(provider, "cache_identity", None)`과 같은 관행이다.
+
+    **`empty_translation`에는 걸지 않는다.** 그것은 개수도 번호도 맞은,
+    계약을 지킨 응답이다(`_collect` 참고) - 폐기하면 같은 배치에서 성공한
+    나머지까지 다시 결제한다. `provider_error`는 애초에 저장되지 않는다
+    (예외가 저장 코드에 도달하지 못한다).
+
+    **판정을 여기서 하는 것이 계약이다.** 캐시 계층은 기대 id를 몰라
+    `parse_translations`와 같은 판정을 할 수 없다.
+    """
+    discard = getattr(provider, "discard", None)
+    if discard is not None:
+        discard(messages, temperature=temperature, max_tokens=_MAX_TOKENS)
 
 
 def _call_with_retry(
@@ -483,7 +520,9 @@ def _call_with_retry(
 
     for attempt in range(max_retries + 1):
         try:
-            completion = provider.complete(messages, temperature=temperature, max_tokens=None)
+            completion = provider.complete(
+                messages, temperature=temperature, max_tokens=_MAX_TOKENS
+            )
         except FatalProviderError:
             raise
         except RetryableProviderError as e:
