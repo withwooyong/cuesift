@@ -156,7 +156,21 @@ class OpenAICompatibleSttProvider:
                     TranscriptCue(
                         start_s=item.get("start"),
                         end_s=item.get("end"),
-                        text=str(item.get("text", "")).strip(),
+                        # **`get("text", "")`이 아니라 `or ""`다.** 기본값은 키가
+                        # **없을 때만** 쓰이므로 `"text": null`에서는 `None`이
+                        # 그대로 나오고 `str(None)`이 문자열 `"None"`이 된다 -
+                        # 예외도 없고 개수도 타임코드도 정상이라 **가짜 원문
+                        # "None"이 검수 큐에 앉는다.** D4가 막는 것과 같은
+                        # 부류이며, 여기는 트리아지 엔진이라 그것을 사람이 읽고
+                        # 오염이 지표까지 간다.
+                        #
+                        # `or`는 falsy 값 전부를 `""`로 떨어뜨린다 - `None`·`0`·
+                        # `False`·`""`가 모두 빈 문자열이 된다. **의도한 동작이다.**
+                        # 넷 중 무엇도 검수할 원문이 아니고, 빈 텍스트 큐는
+                        # 인제스트가 표시 불가로 걸러 낸다(전부 그렇게 되면
+                        # `IngestError("empty")`). 반대로 `"0"`처럼 falsy가 아닌
+                        # 문자열은 그대로 살아남는다.
+                        text=str(item.get("text") or "").strip(),
                     )
                 )
             except ValueError as e:

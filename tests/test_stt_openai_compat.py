@@ -225,3 +225,47 @@ def test_translate의_비공개_헬퍼에_의존하는_사실을_고정한다() 
 
     for name in ("_require_http_url", "_require_ascii_api_key", "_raise_for_status"):
         assert hasattr(tc, name), f"{name}이 사라졌다 - stt/openai_compat.py가 이것에 의존한다"
+
+
+def test_text가_null이면_빈_문자열이_된다(tmp_path: Path) -> None:
+    """`str(None)`은 `"None"`이다 - D4와 같은 부류의 조용한 오류다.
+
+    예외도 안 나고 개수도 타임코드도 정상이라 파이프라인이 초록으로 통과하는데,
+    **가짜 원문 `"None"`이 검수 큐에 앉아 사람이 그것을 읽는다.**
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"segments": [{"start": 0.0, "end": 1.0, "text": None}]})
+
+    t = _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    assert t.cues[0].text == ""
+
+
+def test_api_key를_주면_Authorization_헤더를_붙인다(tmp_path: Path) -> None:
+    # 이 작업 패키지가 보안 민감으로 분류된 근거가 이 한 줄이다.
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        return httpx.Response(200, json=VERBOSE_BODY)
+
+    _provider(handler, api_key="sk-test").transcribe(_audio(tmp_path), language="ko")
+    assert seen["auth"] == "Bearer sk-test"
+
+
+def test_api_key가_없거나_비면_Authorization_헤더를_붙이지_않는다(tmp_path: Path) -> None:
+    """붙는 쪽만 보면 "항상 붙인다"로 바꾸는 변이가 살아남는다.
+
+    빈 문자열까지 보는 것은 `is not None` 검사를 막기 위해서다 - 그러면
+    `Bearer `가 나가고 서버가 401을 내는데 401은 Fatal이라 **"키가 없다"가
+    "키가 틀렸다"로 둔갑한다**(`translate` 181행의 실측).
+    """
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Authorization"))
+        return httpx.Response(200, json=VERBOSE_BODY)
+
+    _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    _provider(handler, api_key="").transcribe(_audio(tmp_path), language="ko")
+    assert seen == [None, None]
