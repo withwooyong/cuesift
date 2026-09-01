@@ -33,9 +33,15 @@ class FakeSttProvider:
         self._model = model
         self._error = error
         self.calls: list[Path] = []
+        # **`language`를 버리면 안 된다.** 버리면 `provider.transcribe(path,
+        # language=None)` 변이가 전 스위트에서 생존한다 - 키워드 자체를 지우면
+        # `TypeError`로 죽지만 **값이 틀린 것**은 아무도 못 잡는다.
+        # Whisper 계열에서 언어 힌트는 전사 결과를 실질적으로 바꾼다.
+        self.languages: list[str | None] = []
 
     def transcribe(self, audio: Path, *, language: str | None) -> Transcript:
         self.calls.append(audio)
+        self.languages.append(language)
         if self._error is not None:
             raise self._error
         # **`tuple`로 감싸는 것이 필수다.** `Transcript.__post_init__`이 리스트를

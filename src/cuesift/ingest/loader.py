@@ -99,8 +99,17 @@ def load_media(path: Path, provider: SttProvider, *, source_lang: str = "ko") ->
     "자막 파일이 잘못됐다"로 보고하는데 실제 원인은 STT 백엔드다 - 호출부는
     둘을 다른 종료 코드로 바꾼다.
 
-    `source_lang`은 응답의 `language`가 있으면 그것으로 덮는다(FR-1.5).
-    **자막 파일 입력에도 적용돼야 하는 요구라 이 경로만으로는 반쪽이다**(설계 §1.3).
+    **`source_lang`은 호출자가 선언한 값을 그대로 쓴다** (FR-1.5). `transcript.language`로
+    덮으면 안 되는 이유는 그 값의 **도메인이 정의돼 있지 않기** 때문이다 - 백엔드는
+    `"korean"`·`"ko"`·`"Korean"`을 제각각 내고, §12 Q3가 "능력이 균일하지 않다"를
+    전제로 둔다. `signals/structural.py`의 `_SCRIPT_RANGES` 키는 정확히 `ko`·`ja`
+    둘뿐이라 `"korean"`이 들어오면 `.get()`이 `None`을 내고 그 자리의 `return None`이
+    **미번역 신호를 예외 없이 통째로 끈다**(실측). 미탐이 늘어 Recall@Budget이
+    조용히 내려간다 - 크래시가 아니라 지표가 틀리는 부류다.
+
+    `load_subtitle`의 같은 필드가 **"호출자가 선언한 ISO 코드"**를 불변식으로 갖고
+    있으므로 두 경로가 같아야 한다. 탐지된 언어가 필요해지면 `Transcript.language`에
+    그대로 남아 있으니 그때 별도 필드로 싣는다.
 
     `_reject_non_subtitle`을 부르지 않는다 - 그 함수는 영상 입력을 **거절**하는데
     여기서는 영상이 정상 입력이다.
@@ -123,7 +132,7 @@ def load_media(path: Path, provider: SttProvider, *, source_lang: str = "ko") ->
         # 넣어도 `None`으로 남는다(실측). 그 `None`이 `writer.py`의
         # `save(format_=)`로 흘러가 `.tmp` 확장자 판별에서 죽는다.
         format="srt",
-        source_lang=transcript.language or source_lang,
+        source_lang=source_lang,
         subs=subs,
         event_index=event_index,
     )
@@ -152,23 +161,42 @@ def _from_transcript(
             # 공백만 있는 큐는 화면에 아무것도 안 띄운다. 남기면 CPS가 0으로
             # 계산돼 규격 검사가 무의미한 세그먼트가 검수 큐에 낀다.
             # 자막 경로의 `_keep_displayed`와 같은 판단이다.
+            #
+            # **태그만 있는 큐(`{music}`)는 여기서 안 걸린다** - 아래 `plaintext`가
+            # 태그를 지우므로 `source_text`가 빈 채로 남는다. 자막 경로도 빈 큐를
+            # 남기고 FR-3.2가 hard fail로 잡는 것과 같다(`_keep_displayed`).
             continue
         start_ms = _to_ms(cue.start_s, field="start_s", position=position, path=path)
         end_ms = _to_ms(cue.end_s, field="end_s", position=position, path=path)
         index = len(segments)
         seg_id = f"{index:05d}"
+        # **`text=`로 직접 넣지 않고 `plaintext` setter를 지난다.** 그래야 자막
+        # 경로와 **같은 함수**를 통과한다 - `load_subtitle`은 `source_text`를
+        # `event.plaintext`에서 받으므로 오버라이드 블록이 빠진 상태가 불변식이다.
+        # 직접 넣으면 셋이 갈린다 (전부 실측).
+        #
+        # 1. `{music}안녕`이 `source_text`에 그대로 남아 길이가 **9 vs 2**가 된다.
+        #    CPS가 4.5배로 부풀고 **그 오탐은 hard fail이라 FR-6.2에 따라 검수
+        #    예산을 우회해** 실제 검수 비율을 부풀린다 - Recall@Budget이 무너진다.
+        # 2. `writer.py`의 `_LEADING_OVERRIDES`가 그 `{music}`을 위치 태그로 오인해
+        #    번역문 앞에 다시 붙인다. SRT 저장 때 pysubs2가 지워 출력 파일은
+        #    멀쩡하므로 **예외도 경고도 없다.**
+        # 3. 실제 개행이 `SSAEvent.text`에 담긴다. SSA 규약은 `\N`이라 ass로
+        #    저장하면 `Dialogue:` 줄이 물리적으로 쪼개진다.
+        event = pysubs2.SSAEvent(start=start_ms, end=end_ms)
+        event.plaintext = text
+        subs.append(event)
         segments.append(
             Segment(
                 id=seg_id,
                 index=index,
                 start_ms=start_ms,
                 end_ms=end_ms,
-                source_text=text,
+                source_text=event.plaintext,
                 # FR-1.4. 이 경로로 들어온 원문은 **전부** 표시 대상이다.
                 source_from_stt=True,
             )
         )
-        subs.append(pysubs2.SSAEvent(start=start_ms, end=end_ms, text=text))
         # 필터 뒤에도 순서가 곧 원본 위치다 - `subs`를 같은 루프에서 채우므로
         # 걸러진 큐는 양쪽에서 함께 빠진다.
         event_index[seg_id] = index
