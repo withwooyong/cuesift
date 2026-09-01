@@ -92,6 +92,9 @@ def test_전사에서_자막을_써_낸다(
     큐로 왕복이 성립하는지는 이 자리에서만 확인된다.
     """
     result = load_media(live_audio, live_provider)
+    # **공허한 통과를 먼저 막는다.** 백엔드가 0큐를 내면 아래 `all(())`은 `True`이고
+    # `0 == 0`이라 이 테스트가 전부 초록으로 통과한다 - 아무것도 재지 않은 채로.
+    assert result.segments, "세그먼트가 0개다 - 백엔드가 큐를 하나도 내지 않았다"
     assert all(segment.source_from_stt for segment in result.segments)
 
     out = tmp_path / "live.srt"

@@ -207,7 +207,8 @@ R1("원문이 틀리면 N개 언어로 복제된다")은 실재하는 위험이�
 | --- | --- | --- |
 | `summary` | `source_from_stt` | `outcome.source_from_stt` (필드) |
 | `segments[]` | `source_from_stt` | `segment.source_from_stt` |
-| `report.html` | 행 배지 · 요약 줄의 `· 원문 STT` | 둘 다 `outcome.source_from_stt`. 세그먼트 속성이지 `Span` 하이라이트가 아니다 |
+| `report.html` | 요약 줄의 `· 원문 STT` | `outcome.source_from_stt` (`html_report.py:207`) |
+| `report.html` | 행 배지 | **`segment.source_from_stt`** (`html_report.py:312`). 요약 줄과 원천이 다르다 — 배지는 행마다 붙으므로 그 행의 세그먼트에서 읽는다. 세그먼트 속성이지 `Span` 하이라이트가 아니다 |
 
 **`summary` 값은 `TriageOutcome`의 필드에서 읽는다. 유도하지 않는다.**
 

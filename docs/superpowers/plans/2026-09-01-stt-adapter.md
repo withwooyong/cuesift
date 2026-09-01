@@ -24,9 +24,9 @@
 | B4 | 게이트 수치 T7 = `1646 passed` | 실측 **1678 passed** (+32) | 리뷰 지적 대응으로 테스트가 늘었다. 내역은 원장 `progress.md`의 누적 편차 추적표에 있다 |
 | B5 | "새 `IngestError.reason`을 만들면 CLI 분기가 안내 없이 샌다" | **그 문장이 거짓이었다.** `IngestError.reason` 소비처는 실측 **0건** | 아래 본문 두 자리(Task 5)의 주석을 실측에 맞춰 고쳤다. `video_input`을 쓰는 판단 자체는 유지한다 — 근거가 "CLI 분기"가 아니라 "같은 상황에 같은 이름"이다 |
 
-**표가 말하는 것은 넷 중 셋이 실측으로 뒤집혔다는 것이다** — B1·B2·B3은 전부 코드를
-돌려 보고서야 드러났고, 문서만 읽어서는 어느 것도 보이지 않았다. B5는 반대 방향이다:
-계획서가 근거로 든 사실이 애초에 없었다.
+**표가 말하는 것은 다섯 중 셋이 실측으로 뒤집혔다는 것이다** — B1·B2·B3은 전부 코드를
+돌려 보고서야 드러났고, 문서만 읽어서는 어느 것도 보이지 않았다. B4는 그 셋의 부수
+결과(테스트가 늘었다)이고, B5는 반대 방향이다: 계획서가 근거로 든 사실이 애초에 없었다.
 
 **B3은 스펙에도 같은 사본이 있었다** — [설계 스펙 §6](../specs/2026-08-30-stt-adapter-design.md)의
 표와 그 아래 문단이다. 둘 다 고쳤다. **한쪽만 고치면 다음 사람이 남은 쪽을 복사한다.**
@@ -1757,7 +1757,7 @@ def test_배지_텍스트를_이스케이프한다() -> None:
             #
             # `segments[]`는 선별된 것만 담으므로(설계 D3) 이 키가 없으면
             # **한 건도 선별되지 않은 STT 실행에서 파일 어디에도 흔적이 남지 않는다.**
-            "source_from_stt": any(seg.source_from_stt for seg in outcome.segments),
+            "source_from_stt": outcome.source_from_stt,
 ```
 
 ```python
@@ -1828,7 +1828,7 @@ _STT_BADGE = '<span class="badge-stt" title="STT로 생성한 원문이다">원�
     # **아래 유도식은 구현에서 폐기됐다 (구현 중 바뀐 결정 B3).** 실제 코드는
     # `outcome.source_from_stt`를 읽는다 - "행이 0개인 실행"이 정확히 유도식이
     # 거짓 `false`를 내는 자리라, 옛 식은 자기가 겨눈 상황에서 실패했다.
-    origin = " · 원문 STT" if any(s.source_from_stt for s in outcome.segments) else ""
+    origin = " · 원문 STT" if outcome.source_from_stt else ""
 ```
 
 - [ ] **Step 7: 통과를 확인한다**
