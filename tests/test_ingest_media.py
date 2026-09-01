@@ -9,13 +9,17 @@ import pysubs2
 import pytest
 from tests.fakes.stt import FakeSttProvider
 
+from cuesift.cli import _run_triage
 from cuesift.ingest import IngestError, load_input, load_media, load_subtitle, write_subtitle
+from cuesift.progress import ProgressReporter
+from cuesift.report import build_review
 from cuesift.risk import fuse
 from cuesift.segment import SegmentRisk, Signal
 from cuesift.signals import SignalContext, collect_all
 from cuesift.spec import load_builtin
 from cuesift.stt.provider import SttProvider
-from cuesift.translate.provider import FatalProviderError
+from cuesift.translate.engine import SegmentFailure, TranslationResult
+from cuesift.translate.provider import FatalProviderError, TokenUsage
 from cuesift.triage import review_ratio, select_by_budget
 
 # **이 데이터가 D5 게이트의 분해능이다.** 값이 전부 `.5` tie면 짝수 반올림이
@@ -457,3 +461,46 @@ def test_STT_플래그를_hard_fail로_올리면_비율이_1이_된다(tmp_path:
     assert len(risks) == len(result.segments), "전량이 플래그를 갖는다는 전제를 고정한다"
     scored = select_by_budget(risks, 0.34)
     assert review_ratio(scored) == 1.0
+
+
+def test_STT_입력이_전량_번역_실패해도_배선이_출처를_남긴다(tmp_path: Path) -> None:
+    """**유도원이 CLI로 옮겨졌으므로 게이트도 그 자리에 있어야 한다** (FR-1.4 · 설계 D8).
+
+    `TriageOutcome`을 직접 만드는 리포터 회귀 2건은 `_run_triage`를 지나지
+    않아 **`translated.segments`와 `kept`의 차이를 관측하지 못한다.** 배선을
+    `kept`로 되돌리면 전량 실패에서 그 집합이 비어 `any`가 `False`를 내는데,
+    그것이 F1 원본 결함 그대로다 - 이 테스트가 없으면 전 스위트가 통과한다.
+
+    전량 실패는 `struct.empty` 경로가 아니라 **조기 반환**으로 간다
+    (`if not kept:` → `_outcome((), ())`). 그 반환 지점에도 출처가 실려야
+    `review.json`이 "무슨 입력을 무슨 정책으로 돌렸는데 비었나"를 말한다.
+    """
+    result = load_media(_media(tmp_path), FakeSttProvider(CUES))
+    # 전량 실패 - `target_text`는 `None`인 채로 두고 실패 목록에 전부 싣는다.
+    translated = TranslationResult(
+        target_lang="en",
+        segments=tuple(result.segments),
+        failures=tuple(
+            SegmentFailure(segment_id=seg.id, reason="provider_error", attempts=1)
+            for seg in result.segments
+        ),
+        usage=TokenUsage(),
+    )
+
+    outcome = _run_triage(
+        target_lang="en",
+        profile=CTX.profile,
+        glossary=None,
+        source_lang="ko",
+        translated=translated,
+        budget_ratio=0.1,
+        threshold=None,
+        policy_label="예산 10%",
+        reporter=ProgressReporter("off"),
+    )
+
+    # 전제 고정 - 조기 반환 경로를 실제로 밟았는지 본다.
+    assert outcome.segments == ()
+    assert outcome.excluded_failures == len(result.segments)
+    assert outcome.source_from_stt is True
+    assert build_review(outcome)["summary"]["source_from_stt"] is True
