@@ -10,6 +10,27 @@
 
 **Spec:** [`docs/superpowers/specs/2026-08-30-stt-adapter-design.md`](../specs/2026-08-30-stt-adapter-design.md) — 결정 D1~D11, 위험 R1~R4, 게이트 §8.1이 전부 거기 있다. **이 계획은 스펙에서 논증을 가져오지 반복하지 않는다.**
 
+## 구현 중 바뀐 결정 (2026-09-02, 구현 완료 시점에 추가)
+
+> **이 절이 아래 본문 코드 블록보다 최신이다** (`CLAUDE.md` 문서 지도).
+> 본문은 착수 전에 쓴 것이고 여기는 실제로 구현하며 실측으로 뒤집힌 것이다.
+> **본문의 코드 블록을 그대로 복사하기 전에 이 표에서 그 결정이 살아 있는지 본다.**
+
+| # | 계획서가 말한 것 | 실제로 무엇을 했나 | 왜 |
+| --- | --- | --- | --- |
+| B1 | P3 — 타임코드 방어를 프로바이더 계층에 두고 `IngestError("bad_timecode")`를 **만들지 않는다** | `_to_ms`가 `IngestError("bad_timecode")`를 낸다 | `round(1e308 * 1000)`이 `OverflowError`를 내 **예외 계층 밖으로 샜다.** 프로바이더 방어만으로는 인제스트 경로가 안 덮인다 |
+| B2 | `source_lang=transcript.language or source_lang` | **선언값을 그대로 쓴다** | `transcript.language`가 `_SCRIPT_RANGES.get("korean")`에서 `None`이 되어 **구조 신호가 통째로 꺼졌다.** 계획서가 지시한 테스트 이름도 함께 바뀌었다 |
+| B3 | `summary.source_from_stt`를 `outcome.segments`에서 유도 | `TriageOutcome.source_from_stt` **필드** + `__post_init__` 불변식 | 유도식이 **전량 번역 실패 실행에서 거짓 `false`를 냈다**(리뷰어 둘이 독립 재현, Critical). 불변식이 필드와 세그먼트의 갈림을 구조로 막는다 |
+| B4 | 게이트 수치 T7 = `1646 passed` | 실측 **1678 passed** (+32) | 리뷰 지적 대응으로 테스트가 늘었다. 내역은 원장 `progress.md`의 누적 편차 추적표에 있다 |
+| B5 | "새 `IngestError.reason`을 만들면 CLI 분기가 안내 없이 샌다" | **그 문장이 거짓이었다.** `IngestError.reason` 소비처는 실측 **0건** | 아래 본문 두 자리(Task 5)의 주석을 실측에 맞춰 고쳤다. `video_input`을 쓰는 판단 자체는 유지한다 — 근거가 "CLI 분기"가 아니라 "같은 상황에 같은 이름"이다 |
+
+**표가 말하는 것은 넷 중 셋이 실측으로 뒤집혔다는 것이다** — B1·B2·B3은 전부 코드를
+돌려 보고서야 드러났고, 문서만 읽어서는 어느 것도 보이지 않았다. B5는 반대 방향이다:
+계획서가 근거로 든 사실이 애초에 없었다.
+
+**B3은 스펙에도 같은 사본이 있었다** — [설계 스펙 §6](../specs/2026-08-30-stt-adapter-design.md)의
+표와 그 아래 문단이다. 둘 다 고쳤다. **한쪽만 고치면 다음 사람이 남은 쪽을 복사한다.**
+
 ## Global Constraints
 
 스펙과 `CLAUDE.md`에서 그대로 옮긴 것이다. **모든 태스크의 요구사항에 이 절이 암묵적으로 포함된다.**
@@ -1430,8 +1451,12 @@ def test_영상만_주어지면_전사한다(tmp_path: Path) -> None:
 
 
 def test_영상만_주어졌는데_프로바이더가_없으면_거부한다(tmp_path: Path) -> None:
-    # 기존 `_reject_non_subtitle`과 같은 reason을 쓴다 - CLI가 이미 그것으로
-    # 메시지를 고르고 있어, 새 reason을 만들면 그 분기가 안내 없이 샌다.
+    # 기존 `_reject_non_subtitle`과 같은 reason을 쓴다 - 같은 상황에 같은
+    # 이름을 준다.
+    #
+    # **초판은 여기에 "CLI가 이미 그것으로 메시지를 고르고 있어, 새 reason을
+    # 만들면 그 분기가 안내 없이 샌다"고 적었고 그것은 거짓이었다** -
+    # `IngestError.reason`의 소비처는 실측 **0건**이다(구현 중 바뀐 결정 B5).
     with pytest.raises(IngestError) as exc:
         load_input(media=_media(tmp_path))
     assert exc.value.reason == "video_input"
@@ -1489,9 +1514,14 @@ def load_input(
         return load_subtitle(subtitle, source_lang=source_lang)
     if media is not None:
         if provider is None:
-            # `_reject_non_subtitle`과 **같은 reason을 쓴다.** CLI가 이미
-            # `video_input`으로 안내 메시지를 고르고 있어, 새 reason을 만들면
-            # 그 분기가 안내 없이 샌다.
+            # `_reject_non_subtitle`과 **같은 reason을 쓴다.** 같은 상황에
+            # 같은 이름을 준다.
+            #
+            # **초판이 든 근거("CLI가 이미 `video_input`으로 안내 메시지를
+            # 고르고 있어, 새 reason을 만들면 그 분기가 안내 없이 샌다")는
+            # 거짓이다** - `IngestError.reason`의 소비처는 실측 **0건**이고
+            # CLI는 `reason`이 아니라 메시지 본문을 그대로 낸다
+            # (구현 중 바뀐 결정 B5). 판단은 유지하되 근거를 바꾼다.
             raise IngestError(
                 "video_input",
                 f"{media}: 영상 입력에는 STT 프로바이더가 필요하다. "
@@ -1571,10 +1601,12 @@ def test_summary가_stt_여부를_낸다() -> None:
 
 
 def test_summary의_값을_세그먼트에서_유도한다() -> None:
-    """`TriageOutcome`에 필드를 새로 두지 않는 이유를 고정한다.
+    """**이 테스트는 구현되지 않았다 (구현 중 바뀐 결정 B3).**
 
-    두면 세그먼트의 플래그와 요약의 플래그가 서로 다른 경로로 채워져
-    갈라질 수 있다. 유도하면 갈라질 자리가 없다.
+    `TriageOutcome`에 필드를 두지 않으려던 이유는 세그먼트의 플래그와 요약의
+    플래그가 서로 다른 경로로 채워져 갈라질 수 있다는 것이었다. 그러나 유도식이
+    **전량 번역 실패 실행에서 거짓 `false`를 낸다.** 갈라짐은 필드를 두고
+    `__post_init__` 불변식으로 막는 쪽을 택했다.
     """
     outcome = _outcome_with(source_from_stt=False, selected=1)
     assert build_review(outcome)["summary"]["source_from_stt"] is False
@@ -1710,7 +1742,13 @@ def test_배지_텍스트를_이스케이프한다() -> None:
 ```python
             "hard_fail_count": outcome.hard_fail_count,
             "signal_hits": outcome.signal_hits,
-            # 원문이 STT에서 왔는가 (FR-1.4). **`outcome.segments`에서 유도한다.**
+            # 원문이 STT에서 왔는가 (FR-1.4).
+            #
+            # **아래 유도식은 구현에서 폐기됐다 (구현 중 바뀐 결정 B3).**
+            # 실제 코드는 `outcome.source_from_stt` 필드를 읽는다 -
+            # `outcome.segments`는 번역 실패분이 빠진 집합이라 **전량 실패
+            # 실행에서 비고, `any(())`는 `False`를 낸다.** 이 블록을 그대로
+            # 복사하면 그 버그가 되살아난다.
             #
             # `TriageOutcome`에 필드를 새로 두면 세그먼트의 플래그와 요약의
             # 플래그가 **서로 다른 경로로 채워져** 갈라질 수 있는데, 유도하면
@@ -1785,7 +1823,11 @@ _STT_BADGE = '<span class="badge-stt" title="STT로 생성한 원문이다">원�
 
 ```python
     # 행이 0개인 실행에서도 출처가 드러나야 한다 - `review.json`의
-    # `summary.source_from_stt`와 같은 이유이고, 같은 식으로 유도한다.
+    # `summary.source_from_stt`와 같은 이유다.
+    #
+    # **아래 유도식은 구현에서 폐기됐다 (구현 중 바뀐 결정 B3).** 실제 코드는
+    # `outcome.source_from_stt`를 읽는다 - "행이 0개인 실행"이 정확히 유도식이
+    # 거짓 `false`를 내는 자리라, 옛 식은 자기가 겨눈 상황에서 실패했다.
     origin = " · 원문 STT" if any(s.source_from_stt for s in outcome.segments) else ""
 ```
 

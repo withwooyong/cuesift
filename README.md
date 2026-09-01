@@ -895,9 +895,52 @@ cuesift --config ./ci.yaml check a.ja.srt     # 명시 지정
 으로 적으며 대응하는 CLI 플래그는 없습니다. **기본값은 전부 1.0이고 저장소는 이것을
 튜닝하지 않습니다** — README 상단의 배수는 기본 가중치에서 나온 수치입니다.
 
-### `cuesift transcribe` (설계 확정, 구현 예정)
+### STT — 음성에서 원문 만들기 (FR-1.2·1.4, 라이브러리 동작합니다)
 
-아래 명령은 아직 종료 코드 `70`(미구현)을 반환합니다.
+자막 파일이 없는 영상·오디오에서 원문 자막을 만듭니다. **`cuesift.stt`는 OpenAI 호환
+`/v1/audio/transcriptions` 엔드포인트를 HTTP로 칩니다** — `faster-whisper`·`whisperx` 같은
+파이썬 STT 패키지를 넣지 않으므로 런타임 의존성은 `typer`·`pysubs2`·`pyyaml`·`httpx`
+**네 개 그대로**입니다. 어댑터는 뒤에 무엇이 있는지 모릅니다.
+
+```python
+from pathlib import Path
+
+from cuesift.ingest import load_media
+from cuesift.stt import OpenAICompatibleSttProvider
+
+provider = OpenAICompatibleSttProvider(
+    base_url="http://localhost:8080/v1",   # OpenAI 호환 STT 서버
+    model="whisper-1",
+)
+result = load_media(Path("episode02.mp4"), provider, source_lang="ko")
+
+print(len(result.segments), result.segments[0].source_from_stt)   # -> N True
+```
+
+**백엔드는 `response_format=verbose_json`을 지원해야 합니다.** 세그먼트 타임코드가 없으면
+`FatalProviderError`로 **명시적으로 실패합니다** — 조용히 통과시키면 전 세그먼트가
+`0ms~0ms`가 되어 규격 검사와 CPS 계산이 전부 무의미해집니다.
+
+> **Ollama는 `/v1/audio/transcriptions`를 제공하지 않습니다.** 번역용으로 Ollama를 쓰고
+> 계시더라도 STT 백엔드는 따로 띄워야 합니다.
+>
+> **권장 모델과 엔드포인트는 아직 적지 않습니다.** live 테스트로 실측하기 전까지는
+> 검증되지 않은 주장이고, 이 저장소는 출처 없는 수치를 기본값으로 넣지 않습니다.
+
+이렇게 만든 원문에는 **`원문 검수 필요` 플래그**가 붙습니다(FR-1.4). 원문이 틀리면 오류가
+N개 언어로 복제되기 때문입니다(요구사항정의서 §11 R1). 플래그는 `review.json`의
+`summary.source_from_stt`·`segments[].source_from_stt`와 `report.html`의 요약 줄·행 배지에
+드러납니다. **위험 점수에도 hard fail에도 들어가지 않습니다** — 넣으면 STT 실행의 실제
+검수 비율이 1이 되어 이 README 상단의 배수가 산출 불가가 됩니다.
+
+**자막과 영상을 함께 주면 자막을 채택합니다**(FR-1.3). STT 오류가 증폭되는 것을 막기
+위해서이고, 자막 파싱이 실패해도 **STT로 폴백하지 않습니다** — 폴백하면 사용자가 준
+원문이 조용히 기계 전사로 바뀝니다.
+
+### `cuesift transcribe` (CLI 배선은 구현 예정)
+
+위 어댑터를 부르는 **CLI 명령은 아직 없습니다.** 아래 명령은 종료 코드 `70`(미구현)을
+반환합니다 — FR-8.3은 §5.8("CLI") 소속이라 WP6의 몫입니다.
 
 ```bash
 # 영상 입력 (자막 없음) — STT로 원문 생성
@@ -918,14 +961,19 @@ pytest
 ruff check .
 ```
 
-> STT(`whisperx`)와 품질추정(`unbabel-comet`)은 `torch`를 끌고 오므로 **선택 의존성**으로 분리했습니다.
-> 필요할 때만 `pip install -e ".[dev,stt,qe]"` 로 설치하세요.
-> 개발은 Python **3.11 / 3.12** 를 권장합니다 — CI가 검증하는 범위이며, 그 이상은 torch 휠이 없을 수 있습니다.
+> **STT에는 아무것도 더 설치하지 않아도 됩니다.** `cuesift.stt`는 OpenAI 호환 엔드포인트를
+> `httpx`로 치므로 위 네 줄만으로 동작합니다 — `pyproject.toml`의 `stt` 추가 항목(`whisperx`)은
+> **쓰이지 않습니다.** 품질추정(`qe` = `unbabel-comet`)은 v0.2 Tier 2 자리이고 아직 코드가 없습니다.
+> 둘 다 `torch`를 끌고 오므로 선택 의존성으로 남겨 두었을 뿐입니다.
+> CI는 Python **3.11 · 3.12 · 3.13 · 3.14** 넷을 검증합니다 (`requires-python = ">=3.11"`과 같은 집합).
 
-### 실제 LLM 엔드포인트 테스트 (`-m live`)
+### 실제 엔드포인트 테스트 (`-m live`)
 
-번역 테스트는 기본적으로 **가짜 프로바이더** 위에서 돕니다. 실제 엔드포인트를 치는 테스트는
-`pyproject.toml`의 `-m "not live"`로 제외되어 있으므로, 돌리려면 명령줄에서 `-m live`로 덮습니다.
+번역과 STT 테스트는 기본적으로 **가짜 프로바이더** 위에서 돕니다. 실제 엔드포인트를 치는
+테스트는 `pyproject.toml`의 `-m "not live"`로 제외되어 있으므로, 돌리려면 명령줄에서
+`-m live`로 덮습니다. **파일마다 필요한 환경변수가 다릅니다.**
+
+번역 (`tests/test_translate_live.py`):
 
 | 환경변수 | 필수 | 설명 |
 |---|---|---|
@@ -933,8 +981,20 @@ ruff check .
 | `CUESIFT_LIVE_MODEL` | ✅ | 모델 이름. 예: `qwen2.5:3b` |
 | `CUESIFT_LIVE_API_KEY` | — | 없으면 `Authorization` 헤더를 붙이지 않습니다. 로컬 Ollama는 불필요 |
 
-앞의 둘 중 하나라도 없으면 **실패가 아니라 skip**입니다 — `-m live`는 "돌릴 의사가 있다"이지
-"엔드포인트가 있다"가 아니고, 상시 빨간 게이트는 무시되는 게이트가 됩니다.
+STT (`tests/test_stt_live.py`):
+
+| 환경변수 | 필수 | 설명 |
+|---|---|---|
+| `CUESIFT_LIVE_STT_BASE_URL` | ✅ | `/audio/transcriptions`를 제공하는 OpenAI 호환 엔드포인트 |
+| `CUESIFT_LIVE_STT_MODEL` | ✅ | 모델 이름. 예: `whisper-1` |
+| `CUESIFT_LIVE_AUDIO` | ✅ | 오디오·영상 파일 경로. **저장소 밖을 가리켜야 합니다** |
+| `CUESIFT_LIVE_STT_API_KEY` | — | 로컬 백엔드는 불필요 |
+
+**오디오를 저장소에 넣지 않습니다.** 링크 체커도 markdownlint도 바이너리를 보지 않아
+어떤 게이트의 대상도 아닌 파일이 되기 때문입니다.
+
+필수 환경변수가 하나라도 없으면 **실패가 아니라 skip**입니다 — `-m live`는 "돌릴 의사가
+있다"이지 "엔드포인트가 있다"가 아니고, 상시 빨간 게이트는 무시되는 게이트가 됩니다.
 
 ```powershell
 winget install --id Ollama.Ollama -e     # 설치 후 새 터미널
@@ -943,6 +1003,15 @@ ollama pull qwen2.5:3b
 $env:CUESIFT_LIVE_BASE_URL = "http://localhost:11434/v1"
 $env:CUESIFT_LIVE_MODEL    = "qwen2.5:3b"
 .venv/Scripts/python.exe -m pytest tests/test_translate_live.py -m live -v -s
+```
+
+STT 쪽은 이렇습니다.
+
+```powershell
+$env:CUESIFT_LIVE_STT_BASE_URL = "http://localhost:8080/v1"
+$env:CUESIFT_LIVE_STT_MODEL    = "whisper-1"
+$env:CUESIFT_LIVE_AUDIO        = "C:/media/clip.mp3"
+.venv/Scripts/python.exe -m pytest tests/test_stt_live.py -m live -v -s
 ```
 
 `-s`는 장식이 아닙니다. 이 테스트의 목적이 `[live] calls=N`을 눈으로 읽는 것인데,
@@ -962,6 +1031,11 @@ $env:CUESIFT_LIVE_MODEL    = "qwen2.5:3b"
 | [인제스트 구현 계획](docs/superpowers/plans/2026-07-31-ingest.md) | 태스크 8개 · 계획 결함 4건과 정정 기록 |
 | [`check` 배선 설계](docs/superpowers/specs/2026-08-03-check-cli-design.md) | 신호 엔진을 우회하는 근거 · 종료 코드 5종 · 심각도 단일 등급 |
 | [`check` 배선 구현 계획](docs/superpowers/plans/2026-08-13-check-cli.md) | 태스크 7개 · 실측으로 정정한 설계 5건 |
+| [STT 어댑터 설계](docs/superpowers/specs/2026-08-30-stt-adapter-design.md) | 파이썬 STT 패키지를 배제한 근거(D1) · `verbose_json` 관문(D4) · 플래그를 점수에 넣지 않는 이유(D8) |
+| [STT 어댑터 구현 계획](docs/superpowers/plans/2026-09-01-stt-adapter.md) | 태스크 7개 · **구현 중 바뀐 결정 5건** (본문 코드 블록보다 그 절이 최신입니다) |
+
+`docs/superpowers/` 아래에는 위 표에 없는 설계 스펙과 계획이 더 있습니다 — 번역 엔진 ·
+Tier 1 신호 · `review.json` · `report.html` · 설정 파일 · 진행 표시.
 
 ## 라이선스
 

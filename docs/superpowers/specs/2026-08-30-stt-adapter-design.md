@@ -205,13 +205,39 @@ R1("원문이 틀리면 N개 언어로 복제된다")은 실재하는 위험이�
 
 | 층 | 키 | 값 |
 | --- | --- | --- |
-| `summary` | `source_from_stt` | `any(seg.source_from_stt for seg in outcome.segments)` |
+| `summary` | `source_from_stt` | `outcome.source_from_stt` (필드) |
 | `segments[]` | `source_from_stt` | `segment.source_from_stt` |
-| `report.html` | 행 배지 | 세그먼트 속성이지 `Span` 하이라이트가 아니다 |
+| `report.html` | 행 배지 · 요약 줄의 `· 원문 STT` | 둘 다 `outcome.source_from_stt`. 세그먼트 속성이지 `Span` 하이라이트가 아니다 |
 
-**`summary` 값은 유도해서 낸다.** `TriageOutcome`에 필드를 새로 두면 세그먼트의 플래그와
-요약의 플래그가 서로 다른 경로로 채워져 갈라질 수 있는데, 유도하면 갈라질 자리가 없다.
-`build_review`가 이미 `outcome.segments`를 `by_id`로 쥐고 있어 추가 배선도 필요 없다.
+**`summary` 값은 `TriageOutcome`의 필드에서 읽는다. 유도하지 않는다.**
+
+> **초판은 여기서 틀렸다(2026-09-01 구현 중 정정).** 초판은 `any(seg.source_from_stt
+> for seg in outcome.segments)`로 유도하라고 적었다 — 세그먼트와 요약이 서로 다른 경로로
+> 채워져 갈라지는 것을 막으려는 의도였다. **그 유도식은 전량 번역 실패 실행에서 거짓
+> `false`를 낸다.** `segments[]`는 번역 실패분이 빠진 집합이라 그 실행에서 비고, 빈
+> 이터러블 위의 `any`는 `False`다 — `total_segments: 4`인데 `source_from_stt: false`인
+> 문서가 나가고, `false`는 "모름"이 아니라 **"자막 파일이었다"** 로 읽힌다. 예외도 경고도
+> 없다. 리뷰어 둘이 독립적으로 재현해 Critical로 잡았다.
+
+대신 갈라짐은 **불변식**으로 막는다. `TriageOutcome.__post_init__`이 세그먼트가 있는
+실행에서 `source_from_stt != any(s.source_from_stt for s in segments)`를 거부한다.
+입력 하나는 자막이거나 STT이지 섞이지 않으므로 둘은 반드시 같고, 다르면 배선이 틀린 것이다.
+**세그먼트가 비어 있을 때는 제약하지 않는다** — 전량 실패 경로가 정확히 그 자리이고,
+거기서 `any(())`와 같기를 요구하면 필드를 둔 이유가 통째로 사라진다.
+
+값의 원천은 `cli.py`가 **`translated.segments`** 에서 읽는다(실패분이 남아 있는 집합이다).
+
+```mermaid
+flowchart LR
+    A["translated.segments<br/>(실패분 포함)"] -->|"any(seg.source_from_stt)"| B["TriageOutcome<br/>.source_from_stt"]
+    B --> C["review.json<br/>summary.source_from_stt"]
+    B --> D["report.html<br/>요약 줄 · 원문 STT"]
+    B -. "__post_init__ 불변식" .- E["outcome.segments[]<br/>.source_from_stt"]
+    E --> F["review.json segments[]<br/>· report.html 행 배지"]
+```
+
+**도식이 말하는 것은 원천이 하나라는 것이다** — 요약과 세그먼트가 같은 `TriageOutcome`에서
+갈라져 나오고, 점선이 둘의 갈림을 생성 시점에 막는다.
 
 `summary`가 이 값을 받을 자리인 근거는 그 절의 독스트링에 있다 — "파일만 보고 무엇을
 어느 규격으로 어떤 정책에서 걸렀나를 알 수 있어야 한다. 리포트 파일은 옮겨지고 첨부되고
@@ -277,6 +303,22 @@ skip되므로, PR 본문에는 두 수치를 각각 적는다. `passed`만 읽�
 | R2 | 플래그가 나중에 hard fail로 승격되어 지표가 무너진다 | §8.1의 첫 게이트가 그것을 회귀로 잡는다. 주석에 근거를 남긴다 |
 | R3 | `IngestResult` 합성이 WP5 라운드트립에서 깨진다 | **2026-09-01 실행으로 닫혔다** — 합성 `SSAFile`로 `write_subtitle`이 성립한다(§3). 다만 위험 대상은 `subs` 하나가 아니라 **`subs`·`format`·`event_index` 셋**이었고, **실제로 죽는 두 지점은 원래 이 행이 말하지 않던 나머지 둘**이었다. 구현은 §8.1의 두 게이트로 고정한다 |
 | R4 | 외부 URL(OpenAI Audio API 스펙)은 링크 체커가 보지 않는다 | 착수 시점에 사람이 응답 스키마를 재확인한다. `translations.ted.com` 사례와 같은 종류의 위험이다 |
+
+### 9.1 다음 작업 패키지에 넘기는 위험 (2026-09-02 구현 완료 시점)
+
+**여기 적은 넷은 이 WP에서 고치지 않기로 한 것이다.** 범위 밖이거나 도달 경로가 아직
+없기 때문이며, **적어 두지 않으면 다음 사람이 "빠뜨렸나"를 의심하거나 그대로 밟는다.**
+
+| # | 위험 | 언제 터지나 | 성격 |
+| --- | --- | --- | --- |
+| C1 | `_output_path`가 `talk.en.mp4`를 만들고 그 안에 SRT를 넣는다 | 다음 WP가 **영상 입력을 CLI에 배선하는 순간** | **조용한 실패다** — 예외가 나지 않는다 |
+| C2 | `_reject_non_subtitle`의 메시지 "STT는 v0.1에 없다"가 거짓이 된다 | 같은 시점 | 문구가 낡는다 |
+| C3 | `bench/track_io.py`의 `_FIELDS`가 `source_from_stt`를 직렬화하지 않아 왕복에서 조용히 `False`로 리셋된다 | 벤치가 STT 트랙을 다루게 되는 시점 | **도달 경로가 현재 없다** |
+| C4 | `pytest`에 `filterwarnings`가 없어 경고가 게이트를 통과한다 | 이미 상시 | 전체 스위트에 걸린 **별도 과제**이지 이 브랜치의 것이 아니다 |
+
+**C1과 C2는 같은 순간에 함께 터진다** — 둘 다 "영상 입력이 CLI에 도달하는가"에 걸려 있고,
+그 배선은 FR-8.3(`transcribe`)이라 WP6의 몫이다(§1.3). C1이 조용하다는 것이 셋 중 가장
+중요한 사실이다.
 
 ## 10. 미해결
 
