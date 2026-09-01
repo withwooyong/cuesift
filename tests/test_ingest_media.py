@@ -308,6 +308,9 @@ def test_둘_다_주어지면_자막을_채택한다(tmp_path: Path) -> None:
     result = load_input(subtitle=_subtitle(tmp_path), media=_media(tmp_path), provider=provider)
     assert result.segments[0].source_text == "자막에서 왔다"
     assert provider.calls == []
+    # **이 줄은 위 두 단언과 다른 변이를 잡는다**(실측). 자막 경로
+    # (`_to_segments`)가 `source_from_stt=True`를 켜는 변이를 전체 스위트에서
+    # **이 단언 하나만** 죽인다 - 지우면 그 변이가 나머지 전부를 통과한다(실측).
     assert not any(seg.source_from_stt for seg in result.segments)
 
 
@@ -328,11 +331,25 @@ def test_영상만_주어지면_전사한다(tmp_path: Path) -> None:
 
 
 def test_영상만_주어졌는데_프로바이더가_없으면_거부한다(tmp_path: Path) -> None:
-    # 기존 `_reject_non_subtitle`과 같은 reason을 쓴다 - CLI가 이미 그것으로
-    # 메시지를 고르고 있어, 새 reason을 만들면 그 분기가 안내 없이 샌다.
+    # 기존 `_reject_non_subtitle`과 **같은 reason**을 단언한다. 근거는
+    # `load_input` 안의 주석에 있다 - 여기 복사하지 않는 것은, 같은 문장을 두 곳에
+    # 두면 한쪽만 고쳐져 갈라지기 때문이다(이 줄의 이전 판이 실제로 그랬다).
     with pytest.raises(IngestError) as exc:
         load_input(media=_media(tmp_path))
     assert exc.value.reason == "video_input"
+
+
+def test_자막_경로가_틀리면_영상으로_폴백하지_않는다(tmp_path: Path) -> None:
+    """자막을 명시했는데 없으면 `not_found`다 - 영상으로 폴백하지 않는다 (FR-1.3).
+
+    폴백하면 경로 오타 하나로 **사용자가 모르는 사이에 STT 요금이 나간다.**
+    `provider.calls == []`가 그것을 잡는다.
+    """
+    provider = FakeSttProvider(CUES)
+    with pytest.raises(IngestError) as exc:
+        load_input(subtitle=tmp_path / "없는파일.srt", media=_media(tmp_path), provider=provider)
+    assert exc.value.reason == "not_found"
+    assert provider.calls == []
 
 
 def test_아무것도_주어지지_않으면_거부한다() -> None:

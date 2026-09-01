@@ -165,6 +165,11 @@ def load_input(
     `ja` 원문에 한글 패턴을 물려 미번역 신호가 미탐으로 굳는다 - 크래시가
     아니라 Recall@Budget이 조용히 내려가는 부류다 (`load_media` 독스트링 참조).
 
+    **자막을 명시했는데 그 파일이 없으면 영상으로 폴백하지 않는다.** `subtitle`이
+    주어진 순간 분기가 끝나고 `load_subtitle`의 `not_found`가 그대로 나간다.
+    폴백하면 경로 오타 하나로 사용자가 **모르는 사이에 STT 요금을 낸다** -
+    파일명을 잘못 친 사람이 원한 것은 전사가 아니라 오류 메시지다.
+
     **영상을 무시했다는 사실을 사용자에게 알리는 것은 CLI(WP6)의 몫이다.**
     라이브러리에 경고 채널을 새로 파면 이번 범위에서 쓸 곳이 없는 표면이 생긴다.
 
@@ -175,12 +180,17 @@ def load_input(
         return load_subtitle(subtitle, source_lang=source_lang)
     if media is not None:
         if provider is None:
-            # `_reject_non_subtitle`과 **같은 reason을 쓴다.** `reason`은
-            # 계약이고 메시지는 사람용이다(`IngestError` 독스트링) - 지금
-            # `cli.py`는 `str(exc)`만 찍고 reason으로 분기하지 않으므로(실측),
-            # 새 reason을 만들면 **소비처 없는 계약 항목**이 하나 늘 뿐이다.
-            # 같은 상황(영상을 자막 자리에 넣었다)에 두 이름이 붙으면 나중에
-            # reason으로 분기하는 호출부가 한쪽만 처리하고 다른 쪽을 흘린다.
+            # `_reject_non_subtitle`과 **같은 reason을 쓴다.** 둘은 같은 부류다 -
+            # "영상을 자막처럼 처리할 수단이 없다"이고, 갈리는 것은 사용자 조치다
+            # (자막을 넣어라 / STT 설정을 넣어라). **그 차이는 메시지가 나른다** -
+            # `IngestError` 독스트링이 `reason`은 계약, 메시지는 사람용이라고
+            # 못 박았고 두 메시지가 실제로 다르다.
+            #
+            # **이 선택의 비용을 적어 둔다:** `reason`만 보는 호출자는 두 조치를
+            # 구분하지 못한다. 오늘은 그런 호출자가 없지만(실측:
+            # `grep -rn "[.]reason" src/cuesift/`의 유일한 히트 `cli.py:2404`는
+            # `SegmentFailure.reason`으로 **다른 타입**이다), 조치별로 분기하는
+            # 호출부가 생기면 그때는 메시지가 아니라 reason을 쪼개야 한다.
             raise IngestError(
                 "video_input",
                 f"{media}: 영상 입력에는 STT 프로바이더가 필요하다. "
