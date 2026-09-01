@@ -38,6 +38,8 @@ h1 { font-size: 1.25rem; margin: 0 0 1rem; }
 .summary dt { font-size: 0.8rem; opacity: 0.7; }
 .summary dd { margin: 0; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
 .meta { margin: 0.75rem 0 0; font-size: 0.85rem; opacity: 0.7; }
+.badge-stt { margin-left: 0.4em; padding: 0 0.35em; border-radius: 3px;
+             background: #fef7e0; color: #7a5900; font-size: 0.8em; white-space: nowrap; }
 table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
 th, td {
   border-bottom: 1px solid currentColor; padding: 0.5rem;
@@ -119,7 +121,7 @@ _SUMMARY = Template(
 <div><dt>hard fail</dt><dd>$hard_fail</dd></div>
 <div><dt>번역 실패</dt><dd>$excluded</dd></div>
 </dl>
-<p class="meta">$source_lang -&gt; $target_lang · 규격 $profile · 정책 $policy</p>
+<p class="meta">$source_lang -&gt; $target_lang · 규격 $profile · 정책 $policy$origin</p>
 </section>"""
 )
 
@@ -144,8 +146,8 @@ _TABLE = Template(
 )
 
 _ROW = Template(
-    """<tr class="seg" data-hardfail="$hardfail" data-signals="$signals">
-<td class="id">$id</td>
+    """<tr class="seg" data-hardfail="$hardfail" data-signals="$signals" data-stt="$stt">
+<td class="id">$id$badge</td>
 <td class="tc">$timecode</td>
 <td class="score">$score</td>
 <td class="src">$source</td>
@@ -164,6 +166,19 @@ def esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+# STT 원문 배지 (FR-1.4). `_ROW`의 `id` 칸에 그대로 얹힌다.
+#
+# **두 문구에 `<`·`>`·`"`·`&`가 들어가면 이 상수가 마크업을 깨뜨린다.** 여기에
+# `esc`를 감아 두는 것은 방어가 아니라 **검사되지 않는 죽은 코드다** - 오늘의
+# 값에서 `esc`는 한 바이트도 바꾸지 않아 지워도 어떤 테스트도 빨개지지 않는다
+# (실측: 변이 M13 생존). 그래서 리터럴로 두고, 두 문구가 이스케이프가 필요 없는
+# 값이라는 것을 `test_배지가_붙는_칸도_원문을_이스케이프한다`가 대신 잰다.
+# 이 자리를 사용자 문자열로 바꾸는 날 그 테스트가 먼저 빨개진다.
+_STT_BADGE_TEXT = "원문 검수 필요"
+_STT_BADGE_TITLE = "STT로 생성한 원문이다"
+_STT_BADGE = f'<span class="badge-stt" title="{_STT_BADGE_TITLE}">{_STT_BADGE_TEXT}</span>'
+
+
 def _summary_html(outcome: TriageOutcome) -> str:
     """요약 통계 (FR-7.4).
 
@@ -175,7 +190,13 @@ def _summary_html(outcome: TriageOutcome) -> str:
     예산을 우회하므로(FR-6.2) "예산 10% 요청"과 "실제 10% 검수"는 다르고,
     요청값을 그리면 README 배수의 분모가 화면에서 조용히 틀린다.
     """
+    # 행이 0개인 실행에서도 출처가 드러나야 한다 - `review.json`의
+    # `summary.source_from_stt`와 같은 이유이고, 같은 식으로 유도한다.
+    # **`outcome.selected`로 좁히면 안 된다.** 좁히면 한 건도 선별되지 않은
+    # STT 실행에서 화면 어디에도 원문의 출처가 남지 않는다(설계 D3).
+    origin = " · 원문 STT" if any(s.source_from_stt for s in outcome.segments) else ""
     return _SUMMARY.substitute(
+        origin=origin,
         total=outcome.total_segments,
         selected=outcome.selected_for_review,
         ratio=f"{outcome.review_ratio:.1%}",
@@ -254,8 +275,11 @@ def _highlighted(text: str, signals: list[Signal], side: str) -> str:
 def _row_html(risk: SegmentRisk, segment: Segment) -> str:
     """세그먼트 하나. `SegmentRisk`와 `Segment`를 조인한다 - `_segment_doc`의 형제다.
 
-    **`data-*` 둘은 JS가 읽는 계약이다.** 파이썬이 보장하는 것은 이 속성이
-    outcome과 일치한다는 것까지고, 필터 동작 자체는 live로 확인한다(설계 D3).
+    **`data-hardfail`·`data-signals` 둘은 JS가 읽는 계약이다.** 파이썬이 보장하는
+    것은 이 속성이 outcome과 일치한다는 것까지고, 필터 동작 자체는 live로
+    확인한다(설계 D3). **`data-stt`는 셋째지만 오늘 JS가 읽지 않는다** - 필터를
+    늘릴 때 쓰라고 내는 것이고, "둘"이라고 적힌 채 셋이 되면 다음 사람이
+    `_JS`에서 이 속성의 사용처를 찾다가 없는 것을 버그로 본다.
 
     `signals`를 정렬하는 것은 재현성(NFR-3)이다 - 정렬을 빼면 파이썬의 문자열
     해시 무작위화가 같은 입력에 다른 HTML을 내 diff가 무의미해진다.
@@ -268,6 +292,13 @@ def _row_html(risk: SegmentRisk, segment: Segment) -> str:
     return _ROW.substitute(
         hardfail="1" if risk.hard_fail else "0",
         signals=esc(" ".join(names)),
+        # **`data-*`는 JS가 읽는 계약이다.** 필터를 늘릴 때 쓰라고 내는 것이지
+        # 지금 필터가 이것을 보지는 않는다 - STT 입력에서는 전 행이 같은 값이라
+        # 필터로서 정보가 0이다(설계 D8이 점수에 넣지 않는 것과 같은 이유).
+        stt="1" if segment.source_from_stt else "0",
+        # **배지는 `id` 칸에 얹힌다.** 별도 칸으로 빼면 `_TABLE`의 `<thead>`도
+        # 같이 늘어나야 하는데, 자막 경로에서는 언제나 비어 있는 칸이 된다.
+        badge=_STT_BADGE if segment.source_from_stt else "",
         id=esc(segment.id),
         timecode=_timecode(segment.start_ms),
         score=f"{risk.risk_score:.2f}",

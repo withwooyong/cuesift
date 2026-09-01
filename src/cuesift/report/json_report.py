@@ -43,6 +43,18 @@ def build_review(outcome: TriageOutcome) -> dict[str, Any]:
             "review_ratio": outcome.review_ratio,
             "hard_fail_count": outcome.hard_fail_count,
             "signal_hits": outcome.signal_hits,
+            # 원문이 STT에서 왔는가 (FR-1.4). **`outcome.segments`에서 유도한다.**
+            #
+            # `TriageOutcome`에 필드를 새로 두면 세그먼트의 플래그와 요약의
+            # 플래그가 **서로 다른 경로로 채워져** 갈라질 수 있는데, 유도하면
+            # 갈라질 자리가 없다.
+            #
+            # **`outcome.selected`로 좁히면 안 된다.** `segments[]`는 선별된 것만
+            # 담으므로(설계 D3) 좁히는 순간 **한 건도 선별되지 않은 STT 실행에서
+            # 파일 어디에도 흔적이 남지 않는다** - 이 키를 두는 이유 자체가 그
+            # 실행이다. `any`인 것도 계약이다: 자막과 STT가 섞인 입력에서
+            # `all`이면 요약이 조용히 "STT 아님"이 된다.
+            "source_from_stt": any(seg.source_from_stt for seg in outcome.segments),
             "cost": {
                 "prompt_tokens": 0 if usage is None else usage.prompt_tokens,
                 "completion_tokens": 0 if usage is None else usage.completion_tokens,
@@ -170,6 +182,10 @@ def _segment_doc(risk: SegmentRisk, segment: Segment) -> dict[str, Any]:
         "end_ms": segment.end_ms,
         "source_text": segment.source_text,
         "target_text": segment.target_text,
+        # FR-1.4. **표시 전용이다** - `risk_score`에도 `hard_fail`에도
+        # 반영되지 않는다(설계 D8). 반영하면 STT 입력에서 전량이 예산을
+        # 우회해 `review_ratio`가 1.0이 되고 README 배수가 산출 불가가 된다.
+        "source_from_stt": segment.source_from_stt,
         "risk_score": risk.risk_score,
         "hard_fail": risk.hard_fail,
         "reasons": list(risk.reasons),

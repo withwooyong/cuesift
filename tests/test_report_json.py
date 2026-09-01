@@ -870,3 +870,80 @@ def test_cost의_키_집합이_고정돼_있다() -> None:
         "basis",
         "tokens_reported",
     }
+
+
+def _outcome_with(
+    *, source_from_stt: bool, selected: int, stt_count: int | None = None
+) -> TriageOutcome:
+    """STT 플래그를 켠/끈 세그먼트 2개짜리 outcome (FR-1.4 · 설계 D3).
+
+    **세그먼트는 언제나 2개이고 `selected`만 바꾼다.** 요약이
+    `outcome.selected`(선별분)에서 유도되는 변이를 죽이려면 **선별 0건인데
+    플래그가 켜진** 실행이 필요하기 때문이다 - 세그먼트 수를 `selected`에
+    맞추면 그 실행에 세그먼트가 하나도 없어 변이가 생존한다.
+
+    `stt_count`는 **몇 개에 플래그를 켤지**다. 기본은 `source_from_stt`가
+    True면 전부, False면 0개다 - 섞인 경우를 만들 수 있어야 `any`를 `all`로
+    바꾸는 변이가 죽는다.
+    """
+    n = 2
+    on = (n if source_from_stt else 0) if stt_count is None else stt_count
+    segments = tuple(
+        Segment(
+            id=f"{i:05d}",
+            index=i,
+            start_ms=12000 + i * 1000,
+            end_ms=14500 + i * 1000,
+            source_text=f"원문 {i}",
+            target_text=f"translated text {i}",
+            source_from_stt=i < on,
+        )
+        for i in range(n)
+    )
+    risks = tuple(_risk(f"{i:05d}", selected=i < selected) for i in range(n))
+    return _outcome(risks=risks, segments=segments)
+
+
+def test_summary가_stt_여부를_낸다() -> None:
+    """`segments[]`는 선별된 것만 담으므로(D3) 요약에도 있어야 한다.
+
+    없으면 STT 원문이지만 한 건도 선별되지 않은 실행에서 **파일 어디에도
+    STT였다는 흔적이 남지 않는다.** 리포트 파일은 옮겨지고 첨부되고 며칠 뒤에
+    열린다 - 그때 원문의 출처를 물을 사람이 있다.
+    """
+    outcome = _outcome_with(source_from_stt=True, selected=0)
+    doc = build_review(outcome)
+    assert doc["segments"] == [], "선별 0건이어야 이 게이트가 D3를 잰다"
+    assert doc["summary"]["source_from_stt"] is True
+
+
+def test_summary의_값을_세그먼트에서_유도한다() -> None:
+    """`TriageOutcome`에 필드를 새로 두지 않는 이유를 고정한다.
+
+    두면 세그먼트의 플래그와 요약의 플래그가 서로 다른 경로로 채워져
+    갈라질 수 있다. 유도하면 갈라질 자리가 없다.
+    """
+    outcome = _outcome_with(source_from_stt=False, selected=1)
+    assert build_review(outcome)["summary"]["source_from_stt"] is False
+
+
+def test_일부만_stt여도_요약이_그것을_드러낸다() -> None:
+    """`any`를 `all`로 바꾸는 변이를 죽인다.
+
+    전부 켜진 실행과 전부 꺼진 실행만 있으면 두 함수의 값이 같아 변이가
+    생존한다 - 그러면 자막과 STT가 섞인 입력에서 요약이 조용히 "STT 아님"이
+    되어 **검수자가 원문의 출처를 잘못 안다.**
+    """
+    doc = build_review(_outcome_with(source_from_stt=True, selected=0, stt_count=1))
+    assert doc["summary"]["source_from_stt"] is True
+
+
+def test_세그먼트에도_플래그가_실린다() -> None:
+    doc = build_review(_outcome_with(source_from_stt=True, selected=1))
+    assert doc["segments"][0]["source_from_stt"] is True
+
+
+def test_자막_경로는_전부_False다() -> None:
+    doc = build_review(_outcome_with(source_from_stt=False, selected=1))
+    assert doc["summary"]["source_from_stt"] is False
+    assert doc["segments"][0]["source_from_stt"] is False

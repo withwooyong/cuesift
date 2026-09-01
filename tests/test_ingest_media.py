@@ -10,8 +10,13 @@ import pytest
 from tests.fakes.stt import FakeSttProvider
 
 from cuesift.ingest import IngestError, load_input, load_media, load_subtitle, write_subtitle
+from cuesift.risk import fuse
+from cuesift.segment import Signal
+from cuesift.signals import SignalContext, collect_all
+from cuesift.spec import load_builtin
 from cuesift.stt.provider import SttProvider
 from cuesift.translate.provider import FatalProviderError
+from cuesift.triage import review_ratio, select_by_budget
 
 # **이 데이터가 D5 게이트의 분해능이다.** 값이 전부 `.5` tie면 짝수 반올림이
 # 내림과 같은 값을 내서 `floor` 변이도, **`start`만 내리고 `end`는 반올림하는
@@ -32,6 +37,12 @@ CUES = [
     (3.7775, 5.0, "감사합니다"),
 ]
 TARGETS = ["Hello", "Nice to meet you", "Thank you", "Thanks"]
+
+# `tests/test_bench_measure.py`가 쓰는 것과 같은 조합이다 - 신호 수집이 실제
+# 파이프라인과 같은 컨텍스트에서 돌아야 D8 게이트가 실물을 잰다.
+CTX = SignalContext(
+    profile=load_builtin("ted-en"), glossary=None, source_lang="ko", target_lang="en"
+)
 
 
 def _media(tmp_path: Path) -> Path:
@@ -372,3 +383,58 @@ def test_source_lang이_양쪽_경로에_전달된다(tmp_path: Path) -> None:
     assert med.source_lang == "ja"
     # 선언 언어가 프로바이더까지 내려가야 힌트가 산다 (`load_media`의 계약).
     assert provider.languages == ["ja"]
+
+
+def test_STT_입력에서_실제_검수_비율이_1이_아니다(tmp_path: Path) -> None:
+    """**이 게이트가 프로젝트의 핵심 주장을 지킨다** (설계 D8 · §8.1).
+
+    STT 입력에서는 전 세그먼트가 `source_from_stt=True`다. 이 플래그가
+    hard fail로 새면 FR-6.2에 따라 **전량이 검수 예산을 우회**해
+    `review_ratio()`가 1.0이 되고, README 최상단의 무작위 베이스라인 대비
+    배수가 **산출 불가능**해진다. 그 숫자가 "AI 래퍼가 아니다"를 증명하는
+    유일한 자료다(요구사항정의서 §9.1 · §11 R4).
+
+    플래그가 점수에 들어가는 것도 여기서 걸린다 - 전체가 같은 양만큼
+    올라가면 순위에 정보를 하나도 주지 않으면서 상수만 더한다.
+    """
+    result = load_media(_media(tmp_path), FakeSttProvider(CUES))
+    for seg in result.segments:
+        seg.target_text = "a fine translation here"
+
+    by_id = collect_all(result.segments, CTX)
+    risks = [fuse(seg.id, by_id[seg.id]) for seg in result.segments]
+    scored = select_by_budget(risks, 0.34)
+
+    ratio = review_ratio(scored)
+    assert ratio < 1.0, "STT 플래그가 hard fail로 샜다 - README 배수가 산출 불가가 된다"
+    assert not all(r.hard_fail for r in scored)
+    # 플래그를 이름으로 삼은 신호가 하나도 수집되지 않아야 한다 (설계 D8).
+    # 점수에 상수를 더하는 유출은 위 비율만으로는 드러나지 않는다.
+    assert not any(sig.name == "source_from_stt" for r in scored for sig in r.signals)
+
+
+def test_STT_플래그를_hard_fail로_올리면_비율이_1이_된다(tmp_path: Path) -> None:
+    """**역가설을 고정한다** — 위 게이트가 실제로 무언가를 막고 있는가.
+
+    이 리포에서 길이비 회귀 테스트가 버그 버전에서도 통과해 데이터를 다시
+    짠 전례가 있다. 게이트를 만들면 반드시 실패시켜 봐야 하는데, 여기서는
+    **변이를 넣었다 되돌리는 대신 승격 경로 자체를 테스트로 재현한다** -
+    플래그가 hard fail이 될 수 있는 유일한 경로는 그것을 보는 수집기를
+    등록하는 것이고, 이 테스트가 그 경로를 실행해 1.0을 보인다.
+
+    위 테스트가 통과하고 이 테스트도 통과해야 게이트가 살아 있다는 뜻이다.
+    """
+    result = load_media(_media(tmp_path), FakeSttProvider(CUES))
+    for seg in result.segments:
+        seg.target_text = "a fine translation here"
+
+    # 누군가 D8을 어기고 만들 법한 수집기다. 전역 레지스트리를 건드리지
+    # 않으려고 등록하지 않고 신호만 직접 만든다.
+    risks = [
+        fuse(seg.id, [Signal(name="source_from_stt", tier=0, score=1.0, hard_fail=True)])
+        for seg in result.segments
+        if seg.source_from_stt
+    ]
+    assert len(risks) == len(result.segments), "전량이 플래그를 갖는다는 전제를 고정한다"
+    scored = select_by_budget(risks, 0.34)
+    assert review_ratio(scored) == 1.0
