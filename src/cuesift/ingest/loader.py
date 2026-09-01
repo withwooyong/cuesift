@@ -157,9 +157,13 @@ def load_input(
     `provider.calls == []`가 그 순서를 지키는 유일한 게이트다.
 
     **`source_lang`을 양쪽에 그대로 넘긴다.** 한쪽에서만 빠지면 그 경로의
-    `IngestResult.source_lang`이 기본값 `"ko"`로 굳어 `signals/structural.py`의
-    `_SCRIPT_RANGES` 조회가 틀린 자모 범위를 잡는다 - 크래시가 아니라
-    미번역 신호가 조용히 틀리는 부류다 (`load_media` 독스트링 참조).
+    `IngestResult.source_lang`이 호출자의 선언이 아니라 기본값 `"ko"`가 되어
+    **두 경로의 값 도메인이 갈린다.** 지금 이 필드를 읽는 소비처가 없다는 것이
+    (실측: `grep -rn "[.]source_lang" src/cuesift` - 신호도 리포트도 CLI가 따로
+    넘긴 값을 쓴다) 안전이 아니라 **위험**이다: 틀린 값이 증상 없이 기록돼 있다가
+    WP6이 이 필드를 배선하는 순간 `signals/structural.py`의 `_SCRIPT_RANGES`가
+    `ja` 원문에 한글 패턴을 물려 미번역 신호가 미탐으로 굳는다 - 크래시가
+    아니라 Recall@Budget이 조용히 내려가는 부류다 (`load_media` 독스트링 참조).
 
     **영상을 무시했다는 사실을 사용자에게 알리는 것은 CLI(WP6)의 몫이다.**
     라이브러리에 경고 채널을 새로 파면 이번 범위에서 쓸 곳이 없는 표면이 생긴다.
