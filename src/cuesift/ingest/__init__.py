@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from cuesift.ingest.loader import IngestError, IngestResult, load_media, load_subtitle
+from cuesift.ingest.loader import IngestError, IngestResult, load_input, load_media, load_subtitle
 from cuesift.ingest.writer import write_subtitle
 
-__all__ = ["IngestError", "IngestResult", "load_media", "load_subtitle", "write_subtitle"]
+__all__ = [
+    "IngestError",
+    "IngestResult",
+    "load_input",
+    "load_media",
+    "load_subtitle",
+    "write_subtitle",
+]

@@ -138,6 +138,54 @@ def load_media(path: Path, provider: SttProvider, *, source_lang: str = "ko") ->
     )
 
 
+def load_input(
+    *,
+    subtitle: Path | None = None,
+    media: Path | None = None,
+    provider: SttProvider | None = None,
+    source_lang: str = "ko",
+) -> IngestResult:
+    """자막과 영상 중에서 고른다 (FR-1.3).
+
+    **둘 다 주어지면 자막을 채택하고 STT를 부르지 않는다.** 부르고 버리면
+    사용자가 쓰지도 않을 전사에 돈과 시간을 낸다. 요구사항정의서 §11 R1
+    ("원문이 틀리면 N개 언어로 복제된다")의 대응이 바로 이 우선순위다 -
+    사람이 만든 자막이 STT보다 신뢰도가 높다.
+
+    **분기 순서가 계약이다.** `media` 분기를 먼저 두면 자막이 있어도 전사가
+    먼저 일어나고, 결과를 버려도 요금과 대기 시간은 이미 나갔다. 테스트의
+    `provider.calls == []`가 그 순서를 지키는 유일한 게이트다.
+
+    **`source_lang`을 양쪽에 그대로 넘긴다.** 한쪽에서만 빠지면 그 경로의
+    `IngestResult.source_lang`이 기본값 `"ko"`로 굳어 `signals/structural.py`의
+    `_SCRIPT_RANGES` 조회가 틀린 자모 범위를 잡는다 - 크래시가 아니라
+    미번역 신호가 조용히 틀리는 부류다 (`load_media` 독스트링 참조).
+
+    **영상을 무시했다는 사실을 사용자에게 알리는 것은 CLI(WP6)의 몫이다.**
+    라이브러리에 경고 채널을 새로 파면 이번 범위에서 쓸 곳이 없는 표면이 생긴다.
+
+    **이 함수를 부르는 것은 지금 테스트뿐이다.** CLI 배선이 FR-8.3(WP6)이라
+    그렇고, 그럼에도 만드는 것은 FR-1.3을 반쪽으로 남기지 않기 위해서다.
+    """
+    if subtitle is not None:
+        return load_subtitle(subtitle, source_lang=source_lang)
+    if media is not None:
+        if provider is None:
+            # `_reject_non_subtitle`과 **같은 reason을 쓴다.** `reason`은
+            # 계약이고 메시지는 사람용이다(`IngestError` 독스트링) - 지금
+            # `cli.py`는 `str(exc)`만 찍고 reason으로 분기하지 않으므로(실측),
+            # 새 reason을 만들면 **소비처 없는 계약 항목**이 하나 늘 뿐이다.
+            # 같은 상황(영상을 자막 자리에 넣었다)에 두 이름이 붙으면 나중에
+            # reason으로 분기하는 호출부가 한쪽만 처리하고 다른 쪽을 흘린다.
+            raise IngestError(
+                "video_input",
+                f"{media}: 영상 입력에는 STT 프로바이더가 필요하다. "
+                "--base-url과 --model을 주거나 자막 파일을 입력하라.",
+            )
+        return load_media(media, provider, source_lang=source_lang)
+    raise IngestError("no_input", "자막 파일이나 영상 파일 중 하나는 주어야 한다")
+
+
 def _from_transcript(
     transcript: Transcript, path: Path
 ) -> tuple[list[Segment], pysubs2.SSAFile, dict[str, int]]:
@@ -307,9 +355,11 @@ def _load(path: Path) -> pysubs2.SSAFile:
 def _reject_non_subtitle(path: Path) -> None:
     """읽기 전에 걸러야 하는 입력 (FR-1.3).
 
-    FR-1.3의 문구는 "자막과 영상이 모두 주어지면 자막 우선"이지만 v0.1의 CLI는
-    입력을 하나만 받는다(설계 §7.1). 여기서는 **입력이 영상이면 자막 경로가
-    아님을 알린다**로 구현하고, 진짜 "둘 다 주어짐"은 WP9에서 다시 본다.
+    FR-1.3의 문구는 "자막과 영상이 모두 주어지면 자막 우선"이고, 그 판정은
+    이제 `load_input`이 한다. 이 함수는 **자막 경로에 영상이 들어온 경우**만
+    막는다 - `load_subtitle`이 자막 전용이라는 이름값을 지키게 하는 것이
+    여기 남은 역할이다. FR-1.3과 무관한 존재 검사(`not_found`)가 함께 있는 것은
+    읽기 전에 걸러야 할 입력이 그 둘뿐이기 때문이다.
     """
     if not path.is_file():
         raise IngestError("not_found", f"{path}: 파일이 없다")

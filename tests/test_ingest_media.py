@@ -9,7 +9,7 @@ import pysubs2
 import pytest
 from tests.fakes.stt import FakeSttProvider
 
-from cuesift.ingest import IngestError, load_media, load_subtitle, write_subtitle
+from cuesift.ingest import IngestError, load_input, load_media, load_subtitle, write_subtitle
 from cuesift.stt.provider import SttProvider
 from cuesift.translate.provider import FatalProviderError
 
@@ -289,3 +289,69 @@ def test_밀리초로_변환되지_않는_타임코드는_입력_오류다(tmp_p
     with pytest.raises(IngestError) as exc:
         load_media(_media(tmp_path), FakeSttProvider([(0.0, 1e308, "가")]))
     assert exc.value.reason == "bad_timecode"
+
+
+def _subtitle(tmp_path: Path) -> Path:
+    p = tmp_path / "talk.srt"
+    p.write_text("1\n00:00:00,000 --> 00:00:02,000\n자막에서 왔다\n\n", encoding="utf-8")
+    return p
+
+
+def test_둘_다_주어지면_자막을_채택한다(tmp_path: Path) -> None:
+    """FR-1.3. **STT를 부르지 않는 것까지가 계약이다.**
+
+    부르고 버리면 사용자가 쓰지도 않을 전사에 돈과 시간을 낸다.
+    **`provider.calls == []`가 그 계약의 유일한 게이트다** - 이 줄을 지우면
+    "부르고 나서 버리는" 구현이 나머지 두 단언을 그대로 통과한다(실측).
+    """
+    provider = FakeSttProvider(CUES)
+    result = load_input(subtitle=_subtitle(tmp_path), media=_media(tmp_path), provider=provider)
+    assert result.segments[0].source_text == "자막에서 왔다"
+    assert provider.calls == []
+    assert not any(seg.source_from_stt for seg in result.segments)
+
+
+def test_자막만_주어지면_자막을_읽는다(tmp_path: Path) -> None:
+    result = load_input(subtitle=_subtitle(tmp_path))
+    assert result.segments[0].source_text == "자막에서 왔다"
+
+
+def test_영상만_주어지면_전사한다(tmp_path: Path) -> None:
+    result = load_input(media=_media(tmp_path), provider=FakeSttProvider(CUES))
+    assert all(seg.source_from_stt for seg in result.segments)
+    assert [s.source_text for s in result.segments] == [
+        "안녕하세요",
+        "반갑습니다",
+        "고맙습니다",
+        "감사합니다",
+    ]
+
+
+def test_영상만_주어졌는데_프로바이더가_없으면_거부한다(tmp_path: Path) -> None:
+    # 기존 `_reject_non_subtitle`과 같은 reason을 쓴다 - CLI가 이미 그것으로
+    # 메시지를 고르고 있어, 새 reason을 만들면 그 분기가 안내 없이 샌다.
+    with pytest.raises(IngestError) as exc:
+        load_input(media=_media(tmp_path))
+    assert exc.value.reason == "video_input"
+
+
+def test_아무것도_주어지지_않으면_거부한다() -> None:
+    with pytest.raises(IngestError) as exc:
+        load_input()
+    assert exc.value.reason == "no_input"
+
+
+def test_source_lang이_양쪽_경로에_전달된다(tmp_path: Path) -> None:
+    """두 경로가 `source_lang`에서 갈리지 않는지 본다 (FR-1.5).
+
+    영상 쪽 프로바이더에 `language=None`을 준 것은 **`transcript.language`로
+    덮는 변이를 죽이기 위해서다** - 덮으면 `source_lang`이 `None`이 되어
+    `_SCRIPT_RANGES.get(None)`이 구조 신호를 통째로 끈다.
+    """
+    sub = load_input(subtitle=_subtitle(tmp_path), source_lang="ja")
+    assert sub.source_lang == "ja"
+    provider = FakeSttProvider(CUES, language=None)
+    med = load_input(media=_media(tmp_path), provider=provider, source_lang="ja")
+    assert med.source_lang == "ja"
+    # 선언 언어가 프로바이더까지 내려가야 힌트가 산다 (`load_media`의 계약).
+    assert provider.languages == ["ja"]
