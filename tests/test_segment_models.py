@@ -24,6 +24,35 @@ def test_segment_target_text_defaults_to_none():
     assert seg.meta == {}
 
 
+def test_source_from_stt의_기본값은_False다() -> None:
+    """자막 경로가 한 줄도 안 바뀌는 것이 D7의 근거다.
+
+    기본값이 없으면 `Segment(...)`를 부르는 기존 호출 **전부**가 깨진다.
+    """
+    seg = Segment(id="00000", index=0, start_ms=0, end_ms=1000, source_text="가")
+    assert seg.source_from_stt is False
+
+
+def test_source_from_stt를_켤_수_있다() -> None:
+    seg = Segment(
+        id="00000", index=0, start_ms=0, end_ms=1000, source_text="가", source_from_stt=True
+    )
+    assert seg.source_from_stt is True
+
+
+def test_source_from_stt는_meta와_별개다() -> None:
+    """`meta` 딕셔너리로 대신하지 않는 이유를 고정한다 (D7).
+
+    딕셔너리는 키 오타를 런타임에 못 막는다 — `meta["source_from_stt"]`를
+    `meta["from_stt"]`로 잘못 쓰면 플래그가 **예외 없이 사라지고** 리포트는
+    "STT 아님"으로 보고한다. 전용 필드는 그 오타가 `TypeError`가 된다.
+    """
+    seg = Segment(id="00000", index=0, start_ms=0, end_ms=1000, source_text="가")
+    assert "source_from_stt" not in seg.meta
+    with pytest.raises(TypeError):
+        Segment(id="x", index=0, start_ms=0, end_ms=1, source_text="가", from_stt=True)  # type: ignore[call-arg]
+
+
 def test_signal_score_must_be_normalized():
     """FR-6.1은 신호를 0~1로 정규화한다고 규정한다. 범위를 벗어난 값이
     들어오면 가중합이 조용히 왜곡되므로 생성 시점에 막는다."""
