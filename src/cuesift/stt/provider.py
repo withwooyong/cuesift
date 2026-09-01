@@ -27,11 +27,20 @@ class TranscriptCue:
     | `nan` | `ValueError` | ❌ |
     | `inf` | `OverflowError` | ❌ |
     | `"1.5"` | `TypeError` | ❌ |
+    | `10**400` | `OverflowError` (`isfinite`가 낸다) | ❌ |
 
-    셋 다 호출부의 `except FatalProviderError`를 지나쳐 미처리 traceback이 되고
+    넷 다 호출부의 `except FatalProviderError`를 지나쳐 미처리 traceback이 되고
     종료 코드 1이 된다 - **이 저장소에서 1은 "규격 위반 발견"이라 STT 결함이
-    자막 결함으로 오보된다.** `translate/provider.py`의 `TokenUsage`가 같은
-    이유로 같은 방어를 갖고 있다.
+    자막 결함으로 오보된다.**
+
+    형제 방어가 `translate/provider.py`에 둘 있다. **같은 코드가 아니라 같은
+    이유다** - 무엇이 어디에 있는지 적어 둔다.
+
+    | 자리 | 검사 |
+    | --- | --- |
+    | `RetryableProviderError.__init__` | `retry_after_s`에 `isinstance` + `isfinite` |
+    | `ChatMessage.__post_init__` | `content`에 `isinstance(str)` (`bool` 하위 문제까지) |
+    | `TokenUsage.__post_init__` | 음수와 `calls == 0` 불변식 **(수 타입 검사는 없다)** |
     """
 
     start_s: float
@@ -48,8 +57,23 @@ class TranscriptCue:
             # 타입 검사만으로는 통과하고, `round(True * 1000)`은 1000이 되어
             # **1초짜리 큐가 예외 없이 생긴다.** 조용히 틀리는 부류다.
             if isinstance(value, bool) or not isinstance(value, int | float):
-                raise ValueError(f"{name}({value!r})이 유한한 수가 아니다")
-            if not math.isfinite(value):
+                raise ValueError(f"{name}({value!r})은 int 또는 float이 아니다")
+            try:
+                finite = math.isfinite(value)
+            except OverflowError as exc:
+                # **방어 자체가 예외를 새게 한 자리다** (리뷰 실측).
+                # `math.isfinite(10**400)`은 `OverflowError: int too large to
+                # convert to float`을 내는데, 그것이 바로 이 함수가 막으려는
+                # "`ProviderError` 밖 예외"다. JSON은 소수점 없는 리터럴을
+                # `int`로 파싱하므로 이 값은 서버 응답에서 실제로 도달한다 -
+                # `1e400`은 `inf`가 되어 아래 `isfinite`가 잡지만
+                # `999...`(400자리)는 여기서 터진다. 조립부가 잡는 것은
+                # `ValueError`뿐이라 번역하지 않으면 미처리 traceback이 된다.
+                raise ValueError(f"{name}({value!r})이 float로 변환되지 않을 만큼 크다") from exc
+            if not finite:
+                # **메시지가 위 타입 검사와 달라야 한다.** 같으면 한 줄을 지워도
+                # 다른 줄의 메시지로 테스트의 `match`가 통과해, 두 줄이 서로를
+                # 변이로부터 가린다.
                 raise ValueError(f"{name}({value!r})이 유한한 수가 아니다")
             if value < 0:
                 # 음수는 `Segment`도 안 본다 - `__post_init__`은 역전만 검사한다.
@@ -78,6 +102,14 @@ class Transcript:
     cues: tuple[TranscriptCue, ...]
     language: str | None
     model: str
+
+    def __post_init__(self) -> None:
+        # **`frozen=True`는 얕다.** 리스트를 담으면 이 객체는 동결돼 보이는데
+        # 큐 목록은 밖에서 계속 바뀐다 - 인제스트가 두 번 읽으면 다른 결과를
+        # 내고, 그 차이는 예외 없이 리포트 수치로만 드러난다.
+        # `TranscriptCue`가 같은 자리에서 방어하는 것과 형제다.
+        if not isinstance(self.cues, tuple):
+            raise ValueError(f"cues는 tuple이어야 한다: {type(self.cues).__name__}")
 
 
 class SttProvider(Protocol):
