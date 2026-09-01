@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from dataclasses import replace
 
 import pytest
 from tests.fakes.provider import EchoProvider, ScriptedProvider
@@ -1059,3 +1060,30 @@ def test_콜백을_주지_않으면_기존_호출부가_그대로다() -> None:
         _segs(3), provider=EchoProvider(), source_lang="ko", target_lang="en"
     )
     assert [s.target_text for s in result.segments] == ["EN:문장0", "EN:문장1", "EN:문장2"]
+
+
+def test_stt_출처_플래그가_번역_결과까지_실려_온다() -> None:
+    """`replace(s, target_text=...)`가 `source_from_stt`를 나르는 것이 **이
+    기능의 유일한 살아 있는 전달 경로**인데, 오늘 그 줄을 지나는 테스트가
+    하나도 없었다.
+
+    e2e는 `TranslationResult`를 손으로 만들어 이 줄을 우회하고,
+    `bench/track_io.py`가 이미 명시 조립으로 필드를 떨어뜨리는 전례다.
+    누군가 여기를 같은 형태로 바꾸면 `review.json`이 조용히
+    **"자막 파일이었다"**고 말한다 - 거짓이 예외 없이 나가는 부류다.
+    """
+    segments = [replace(s, source_from_stt=True) for s in _segs(2)]
+    result = translate_segments(
+        segments,
+        provider=EchoProvider(),
+        source_lang="ko",
+        target_lang="en",
+    )
+    assert all(s.source_from_stt for s in result.segments), (
+        "번역 결과가 STT 출처 플래그를 떨어뜨렸다"
+    )
+    # 반대 방향도 고정한다 - 무조건 True로 채우는 구현이면 이것이 빨개진다.
+    plain = translate_segments(
+        _segs(2), provider=EchoProvider(), source_lang="ko", target_lang="en"
+    )
+    assert not any(s.source_from_stt for s in plain.segments)
