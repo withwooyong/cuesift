@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from cuesift.stt.openai_compat import OpenAICompatibleSttProvider
 from cuesift.stt.provider import SttProvider, Transcript, TranscriptCue
 
 __all__ = [
+    "OpenAICompatibleSttProvider",
     "SttProvider",
     "Transcript",
     "TranscriptCue",
