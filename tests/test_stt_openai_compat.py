@@ -12,7 +12,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cuesift.stt.openai_compat import OpenAICompatibleSttProvider
+from cuesift.stt import openai_compat as stt_mod
+from cuesift.stt.openai_compat import _MAX_RESPONSE_BYTES, OpenAICompatibleSttProvider
 from cuesift.translate.provider import FatalProviderError, RetryableProviderError
 
 VERBOSE_BODY = {
@@ -290,19 +291,23 @@ def test_api_key가_없거나_비면_Authorization_헤더를_붙이지_않는다
 
 
 class _RecordingClient(httpx.Client):
-    """`post()`에 넘어간 `files`의 두 번째 원소를 붙잡아 둔다.
+    """`stream()`에 넘어간 `files`의 두 번째 원소를 붙잡아 둔다.
 
     I-4를 테스트하는 유일한 방법이다. **메모리로는 측정할 수 없다** -
     `MockTransport`가 본문을 통째로 실체화하므로 스트리밍의 이득이 목에서는
     나타나지 않는다. 그래서 "무엇이 넘어갔나"와 "닫혔나"를 본다.
+
+    **`post`가 아니라 `stream`을 가로챈다.** 응답 크기 상한을 넣으면서
+    어댑터가 `stream()`을 쓰게 됐다 - `post`를 계속 가로채면 이 훅이 죽은
+    코드가 되고 `sent`가 `None`인 채로 단언이 통과할 뻔했다.
     """
 
     sent: object = None
 
-    def post(self, *args: object, **kwargs: object) -> httpx.Response:
+    def stream(self, *args: object, **kwargs: object):  # type: ignore[override,no-untyped-def]
         files = kwargs["files"]
         self.sent = files["file"][1]  # type: ignore[index]
-        return super().post(*args, **kwargs)  # type: ignore[arg-type,misc]
+        return super().stream(*args, **kwargs)  # type: ignore[arg-type,misc]
 
 
 def _recording_provider(handler) -> OpenAICompatibleSttProvider:
@@ -463,7 +468,7 @@ def test_전송_도중_읽기_실패는_치명적_오류다(tmp_path: Path) -> N
     """
 
     class _ReadFailsClient(httpx.Client):
-        def post(self, *args: object, **kwargs: object) -> httpx.Response:
+        def stream(self, *args: object, **kwargs: object):  # type: ignore[override,no-untyped-def]
             raise OSError("device not ready")
 
     provider = OpenAICompatibleSttProvider(
@@ -471,3 +476,185 @@ def test_전송_도중_읽기_실패는_치명적_오류다(tmp_path: Path) -> N
     )
     with pytest.raises(FatalProviderError, match="읽을 수 없다"):
         provider.transcribe(_audio(tmp_path), language="ko")
+
+
+# --- 응답 크기·시간 상한 (최종 픽스 F1·F4) ---------------------------------
+
+
+def _oversized_response(request: httpx.Request) -> httpx.Response:
+    """상한을 **한 덩어리 넘기는** 본문을 흘린다.
+
+    `content=`에 이터레이터를 주면 httpx가 즉시 실체화하지 않으므로, 목에서도
+    "끊지 않으면 계속 들어온다"가 재현된다.
+    """
+    block = b"x" * (1024 * 1024)
+
+    def chunks():
+        for _ in range(_MAX_RESPONSE_BYTES // len(block) + 2):
+            yield block
+
+    return httpx.Response(200, headers={"Content-Type": "application/json"}, content=chunks())
+
+
+def test_상한을_넘는_본문은_치명적_오류다(tmp_path: Path) -> None:
+    """상한이 없으면 원격 응답 **한 번**이 프로세스를 죽인다.
+
+    `response.json()`은 본문 N바이트에 peak 3.00N을 쓴다(보안 리뷰 실측
+    64MB→201.3MB). 1GB를 흘리면 `MemoryError`인데 그것은 `transcribe()`의
+    어떤 `except`에도 없어 `ProviderError` 밖으로 샌다 - Typer에서 종료 코드
+    1이 되고, 이 저장소에서 1은 "규격 위반 발견"이다.
+    """
+    with pytest.raises(FatalProviderError, match="너무|넘는다"):
+        _provider(_oversized_response).transcribe(_audio(tmp_path), language="ko")
+
+
+def test_상한을_넘어도_본문_전체를_메모리에_올리지_않는다(tmp_path: Path) -> None:
+    """**끊는 것**이 상한의 전부다. 다 읽고 나서 재는 것은 사후 보고다."""
+    received: list[int] = []
+    block = b"x" * (1024 * 1024)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        def chunks():
+            # 상한의 4배를 흘린다. 끊지 않으면 전부 소비된다.
+            for i in range(_MAX_RESPONSE_BYTES // len(block) * 4):
+                received.append(i)
+                yield block
+
+        return httpx.Response(200, content=chunks())
+
+    with pytest.raises(FatalProviderError):
+        _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    consumed = len(received) * len(block)
+    assert consumed <= _MAX_RESPONSE_BYTES + len(block), f"{consumed}바이트나 읽었다"
+
+
+def test_상한을_넘는_오류_본문은_상태_코드로_먼저_갈린다(tmp_path: Path) -> None:
+    """순서가 뒤집히면 본문이 큰 503이 Fatal로 둔갑해 재시도 분류가 뒤집힌다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        block = b"x" * (1024 * 1024)
+
+        def chunks():
+            for _ in range(_MAX_RESPONSE_BYTES // len(block) + 2):
+                yield block
+
+        return httpx.Response(503, content=chunks())
+
+    with pytest.raises(RetryableProviderError):
+        _provider(handler).transcribe(_audio(tmp_path), language="ko")
+
+
+def test_정상_크기_응답은_그대로_통과한다(tmp_path: Path) -> None:
+    """상한이 정상 경로를 막으면 어댑터 전체가 죽는다 - 반대 방향의 게이트다."""
+    t = _provider(lambda r: httpx.Response(200, json=VERBOSE_BODY)).transcribe(
+        _audio(tmp_path), language="ko"
+    )
+    assert len(t.cues) == 2
+
+
+def test_오류_본문_절단_규약은_상한_뒤에도_그대로다(tmp_path: Path) -> None:
+    """`_raise_for_status`의 `response.text[:200]`이 살아 있어야 한다.
+
+    스트리밍으로 바꾸면서 응답을 새로 만들어 넘기므로, 헤더와 본문이 함께
+    옮겨지지 않으면 이 절단도 `Retry-After` 파싱도 조용히 죽는다.
+    """
+    body = "가" * 5000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text=body, headers={"Retry-After": "7"})
+
+    with pytest.raises(RetryableProviderError) as excinfo:
+        _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    assert len(str(excinfo.value)) < 400, "본문 절단이 살아 있지 않다"
+    assert excinfo.value.retry_after_s == 7.0, "헤더가 함께 옮겨지지 않았다"
+
+
+def test_수신_시간_예산을_넘기면_재시도_가능_오류다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """httpx의 `timeout`은 **연산 간 간격**이지 총 시간이 아니다.
+
+    실측(2026-09-01, httpx 0.28.1): `timeout=0.5`인 클라이언트가 0.2초마다
+    1바이트를 흘리는 서버에서 3.08초를 예외 없이 살아남았다. 그런 서버에
+    대해 요청은 무기한 살아 있고, 배치에서 파일 하나가 전체를 멈춘다.
+
+    예산을 음수로 바꿔 첫 덩어리에서 마감을 넘게 만든다 - 실제 대기 없이
+    같은 분기를 지난다.
+    """
+    monkeypatch.setattr(stt_mod, "_RESPONSE_READ_BUDGET_S", -1.0)
+    with pytest.raises(RetryableProviderError, match="수신"):
+        _provider(lambda r: httpx.Response(200, json=VERBOSE_BODY)).transcribe(
+            _audio(tmp_path), language="ko"
+        )
+
+
+# --- base_url userinfo (최종 픽스 F3) --------------------------------------
+
+
+def test_base_url에_자격증명이_있으면_생성_시점에_거부한다() -> None:
+    """실측: httpx가 `user:pass@`로 `BasicAuth`를 만들어 우리 헤더를 **덮는다**.
+
+    `api_key="KEYKEYKEY"`를 줘도 전송 헤더는
+    `Authorization: Basic YWxpY2U6czNjcjN0`였다. 사용자는 키를 줬다고 믿는데
+    서버는 다른 자격증명을 받고, 401은 Fatal이라 "키가 틀렸다"로 오독한다.
+    """
+    with pytest.raises(ValueError, match="자격증명"):
+        OpenAICompatibleSttProvider(
+            base_url="http://alice:s3cr3t@h/v1", model="m", api_key="KEYKEYKEY"
+        )
+
+
+def test_거부_메시지에_자격증명_값이_실리지_않는다() -> None:
+    """메시지에 실으면 로그와 실패 리포트에 비밀이 그대로 남는다."""
+    with pytest.raises(ValueError) as excinfo:
+        OpenAICompatibleSttProvider(base_url="http://alice:s3cr3t@h/v1", model="m")
+    msg = str(excinfo.value)
+    assert "s3cr3t" not in msg
+    assert "alice" not in msg
+
+
+def test_자격증명이_없는_base_url은_그대로_통과한다() -> None:
+    """반대 방향의 게이트 - 검사가 정상 URL을 막으면 어댑터가 못 쓰인다."""
+    OpenAICompatibleSttProvider(base_url="http://h:8080/v1", model="m").close()
+
+
+# --- 고립 서로게이트 (최종 픽스 F5) ----------------------------------------
+
+
+def test_고립_서로게이트가_예외_계층_밖으로_새지_않는다(tmp_path: Path) -> None:
+    """`\\ud800`은 `isinstance(str)`을 통과해 `write_subtitle`에서 터진다.
+
+    그것은 `UnicodeEncodeError`(=`ValueError`)라 `OSError` 그물에 걸리지 않고,
+    라이브러리로 직접 부르는 호출부에서는 예외 계층 밖으로 샌다.
+
+    **본문을 원시 바이트로 준다.** `json=`으로 주면 httpx가 직렬화하는
+    자리에서 먼저 터져(실측) 실제 경로를 재현하지 못한다 - 원격 백엔드는
+    JSON 이스케이프로 보내고 `json.loads`가 서로게이트를 만들어 낸다.
+    """
+    raw = b'{"segments":[{"start":0.0,"end":1.0,"text":"\\ud800 hello"}]}'
+    t = _provider(lambda r: httpx.Response(200, content=raw)).transcribe(
+        _audio(tmp_path), language="ko"
+    )
+    # 인코딩 가능해야 한다는 것이 이 테스트의 전부다.
+    t.cues[0].text.encode("utf-8")
+
+
+def test_한국어와_일본어는_한_글자도_바뀌지_않는다(tmp_path: Path) -> None:
+    """**채택 근거가 코덱이라는 것**이다 - 정규식이면 CJK가 통째로 깨진다.
+
+    이 저장소에서 제안된 `\b` 단어 경계가 CJK를 전부 깨뜨려 폐기된 전례가
+    있다. `encode/decode`는 UTF-8로 표현 가능한 코드포인트를 바꾸지 않는다.
+    """
+    ko = "안녕하세요 반갑습니다 — 「따옴표」 ①②③ 𝄞 🙂"
+    ja = "こんにちは、世界。ｱｲｳ 漢字 ひらがな カタカナ 😀"
+    body = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": ko},
+            {"start": 1.0, "end": 2.0, "text": ja},
+        ],
+    }
+    t = _provider(lambda r: httpx.Response(200, json=body)).transcribe(
+        _audio(tmp_path), language="ko"
+    )
+    assert t.cues[0].text == ko
+    assert t.cues[1].text == ja

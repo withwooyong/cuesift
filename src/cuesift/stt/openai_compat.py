@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import httpx
@@ -30,6 +31,35 @@ DEFAULT_TIMEOUT_S = 300.0
 """번역보다 길다. 오디오 업로드와 전사는 초 단위가 아니라 분 단위다 -
 `translate`의 60초를 그대로 쓰면 30분짜리 강연이 **정상 응답 전에** 타임아웃으로
 분류되고, 그것은 재시도 대상이라 같은 실패를 `max_retries+1`회 반복한다."""
+
+_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+"""응답 본문을 메모리에 올릴 **바이트 상한**. 넘으면 `FatalProviderError`다.
+
+**이 상한이 없으면 원격 응답 한 번이 프로세스를 죽인다**(보안 리뷰 실측):
+`response.json()`은 본문 N바이트에 대해 peak 3.00N을 쓴다 - 64MB 본문에서
+peak 201.3MB가 실측됐다. 악의적·오작동 엔드포인트가 1GB를 흘리면 약 3GB에서
+`MemoryError`가 나는데 **`MemoryError`는 `transcribe()`의 어떤 `except`에도
+없다.** 미처리 트레이스백은 Typer에서 **종료 코드 1**이 되고 이 저장소에서 1은
+"규격 위반 발견"이라, 백엔드 결함이 자막 결함으로 오보된다 - `RecursionError`·
+`OverflowError`를 잡은 것과 같은 부류의 넷째다.
+
+**너무 작게 잡으면 정상 응답이 죽는다.** `verbose_json`은 큐마다 텍스트와
+타임코드를 실으므로 몇 시간짜리 오디오도 수 MB에 그친다(관측). 32MB는 그
+정상 범위의 수십 배이면서 3배 증폭을 감안해도 100MB 아래에 머무는 값이다."""
+
+_RESPONSE_READ_BUDGET_S = 600.0
+"""본문 **수신 단계**에 허용하는 총 시간(초).
+
+`DEFAULT_TIMEOUT_S`는 httpx에서 **연산 하나의 상한**이지 총 시간이 아니다
+(실측 2026-09-01, httpx 0.28.1: `timeout=0.5`인 클라이언트가 0.2초마다
+1바이트를 흘리는 서버에서 3.08초를 예외 없이 살아남았다). 이 상한이 없으면
+`timeout`마다 1바이트씩 주는 서버에 대해 요청이 **무기한** 살아 있고,
+배치 전사에서 파일 하나가 실행 전체를 멈춘다.
+
+**`DEFAULT_TIMEOUT_S`보다 커야 한다.** 같거나 작으면 느린 백엔드의 정상
+응답이 마감에 걸려 재시도 대상으로 분류되고, 같은 실패가 반복된다.
+헤더가 오기까지의 대기는 이 예산 밖이다 - 그것은 httpx의 read 타임아웃이
+이미 덮으므로, 여기서 재는 것은 **첫 바이트 이후의 흘림**뿐이다."""
 
 _ERROR_KEYS_SHOWN = 10
 """`segments`가 없을 때 진단으로 보여 줄 응답 키의 **개수** 상한.
@@ -66,6 +96,19 @@ class OpenAICompatibleSttProvider:
             raise ValueError("client를 주면 timeout은 그 클라이언트의 것이다. 함께 줄 수 없다")
         self._base_url = base_url.rstrip("/")
         _require_http_url(self._base_url)
+        if httpx.URL(self._base_url).userinfo:
+            # **userinfo가 있으면 `api_key`가 조용히 폐기된다**(실측):
+            # httpx가 `user:pass@`로 `BasicAuth`를 만들어 우리가 넣은
+            # `headers["Authorization"]`을 **덮는다**. 사용자는 키를 줬다고
+            # 믿는데 서버는 다른 자격증명을 받고, 401이 나면 Fatal이라
+            # "키가 틀렸다"로 오독한다. 거부하지 않으면 그 오독이 정상 경로다.
+            #
+            # **값을 메시지에 싣지 않는다** - 그것이 비밀이다
+            # (`_require_ascii_api_key`가 키를 감추는 것과 같은 규약).
+            raise ValueError(
+                "base_url에 자격증명(user:pass@)을 넣을 수 없다. api_key로 준다. "
+                "값은 표시하지 않는다"
+            )
         _require_ascii_api_key(api_key)
         # 끝의 슬래시를 정리하지 않으면 `//audio/transcriptions`가 되고,
         # 경로를 정확히 매칭하는 게이트웨이가 404를 낸다 - 404는 Fatal이라
@@ -128,10 +171,19 @@ class OpenAICompatibleSttProvider:
             # `with`가 성공·예외 어느 쪽으로 빠져나가도 핸들을 닫는다. 닫지
             # 않으면 배치 전사에서 파일 디스크립터가 쌓여 `OSError: Too many
             # open files`가 나는데, 그것은 `ProviderError` 밖이다.
-            with handle:
-                response = self._client.post(
-                    self._endpoint, data=data, files=files, headers=headers
-                )
+            #
+            # **`post()`가 아니라 `stream()`이다.** `post()`는 본문을 통째로
+            # 실체화하므로 상한을 걸 자리가 없다 - 크기를 알았을 때는 이미
+            # 메모리에 올라와 있다. `_MAX_RESPONSE_BYTES` 참고.
+            # 업로드 쪽 스트리밍(P2)은 그대로다 - `files`에 넘기는 것이
+            # 핸들이므로 `stream()`도 같은 방식으로 인코딩한다.
+            with (
+                handle,
+                self._client.stream(
+                    "POST", self._endpoint, data=data, files=files, headers=headers
+                ) as streamed,
+            ):
+                response, overflowed = _read_capped(streamed)
         except httpx.TimeoutException as e:
             # TransportError의 자손이라 아래 절보다 **먼저** 와야 한다.
             # 순서가 뒤집히면 이 절이 죽은 코드가 되고 분류는 그대로라
@@ -151,7 +203,16 @@ class OpenAICompatibleSttProvider:
             # (실측) 이 절이 위 세 절의 분류를 가리지 않는다.
             raise FatalProviderError(f"{audio}: 오디오를 읽을 수 없다 - {e}") from None
 
+        # **상태 코드를 상한 초과보다 먼저 본다.** 순서가 뒤집히면 본문이 큰
+        # 503이 "본문이 너무 크다"(Fatal)로 둔갑해 재시도 분류가 통째로
+        # 뒤집힌다. `_read_capped`가 오류 본문도 상한까지만 실어 주므로
+        # `_raise_for_status`의 `response.text[:200]` 절단은 그대로 산다.
         _raise_for_status(response)
+        if overflowed:
+            raise FatalProviderError(
+                f"응답 본문이 {_MAX_RESPONSE_BYTES}바이트를 넘는다. "
+                "백엔드가 verbose_json이 아닌 것을 흘리고 있는지 확인한다"
+            )
         return self._to_transcript(response)
 
     def _to_transcript(self, response: httpx.Response) -> Transcript:
@@ -224,6 +285,42 @@ class OpenAICompatibleSttProvider:
             self._client.close()
 
 
+def _read_capped(response: httpx.Response) -> tuple[httpx.Response, bool]:
+    """스트리밍 응답을 **상한까지만** 읽어 실체화된 응답으로 되돌린다.
+
+    돌려주는 `bool`은 "상한을 넘어 잘렸다"이다. 여기서 바로 예외를 내지
+    않는 것은 **상태 코드 검사가 먼저여야** 하기 때문이다 - 호출부 주석 참고.
+
+    `httpx.Response`를 새로 만들어 돌려주는 이유는 `_raise_for_status`와
+    `_to_transcript`가 둘 다 `response.text`/`.json()`을 쓰는데, 스트림을
+    소비한 원본에서는 그것들이 `httpx.ResponseNotRead`를 내기 때문이다.
+    **헤더를 함께 옮긴다** - `_raise_for_status`가 `Retry-After`와
+    `Location`을 읽는다. 빠뜨리면 429의 대기 시간이 조용히 "모름"이 된다.
+    """
+    deadline = time.monotonic() + _RESPONSE_READ_BUDGET_S
+    body = bytearray()
+    overflowed = False
+    for chunk in response.iter_bytes():
+        if time.monotonic() > deadline:
+            # 재시도 가능이다. 서버가 느린 것과 죽은 것을 여기서 구분할 수
+            # 없고, Fatal로 올리면 일시적 혼잡이 배치 전체를 죽인다.
+            raise RetryableProviderError(f"응답 본문 수신이 {_RESPONSE_READ_BUDGET_S}초를 넘었다")
+        body += chunk
+        if len(body) > _MAX_RESPONSE_BYTES:
+            # **여기서 끊는 것이 이 함수의 전부다.** 계속 읽으면 상한이
+            # 사후 보고가 되고 메모리는 이미 다 쓴 뒤다.
+            overflowed = True
+            break
+    return (
+        httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            content=bytes(body[:_MAX_RESPONSE_BYTES]),
+        ),
+        overflowed,
+    )
+
+
 def _cue_text(raw: object) -> str:
     """세그먼트의 `text`를 원문 문자열로 바꾼다. **문자열이 아니면 버린다.**
 
@@ -247,8 +344,23 @@ def _cue_text(raw: object) -> str:
     `IngestError("empty")`) 예외는 전사 전체를 죽이기 때문이다.
 
     `strip()`은 **문자열일 때만** 건다. Whisper가 큐마다 선행 공백을 붙인다.
+
+    **고립 서로게이트를 UTF-8로 표현 가능한 것으로 바꾼다**(실측).
+    `{"text": "\\ud800 hello"}`는 `isinstance(str)`을 통과해 `Segment`까지
+    가지만, `write_subtitle`이 파일로 쓸 때 `UnicodeEncodeError`가 난다 -
+    그것은 `ValueError`라 `OSError`를 잡는 자리에 걸리지 않고, 라이브러리로
+    직접 부르는 호출부(`tests/test_stt_live.py`가 그 형태다)에서는 예외
+    계층 밖으로 그대로 샌다.
+
+    **코덱이지 정규식이 아니라는 것이 채택 근거다.** `encode/decode`는
+    UTF-8로 인코딩 가능한 코드포인트를 **한 글자도 바꾸지 않으므로**
+    이 저장소의 언어 조건(ko→en/ja)에 영향이 없다. 한국어·일본어가 그대로
+    통과하는 것을 테스트가 고정한다 - 여기서 문자 클래스나 `\\b` 같은
+    경계 규칙을 쓰면 CJK가 통째로 깨진다(이 저장소의 폐기 전례).
     """
-    return raw.strip() if isinstance(raw, str) else ""
+    if not isinstance(raw, str):
+        return ""
+    return raw.encode("utf-8", "replace").decode("utf-8").strip()
 
 
 def _diagnostic_keys(body: dict) -> list[str]:
