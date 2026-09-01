@@ -14,6 +14,7 @@ import pysubs2
 from pysubs2.exceptions import Pysubs2Error
 
 from cuesift.segment import Segment
+from cuesift.stt.provider import SttProvider, Transcript
 
 # 영상·오디오를 명시적으로 거른다 (FR-1.3, 설계 §7.2).
 # 이 목록이 없으면 mp4가 텍스트로 열려 UnicodeDecodeError가 나고,
@@ -80,6 +81,137 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
         subs=subs,
         event_index=event_index,
     )
+
+
+def load_media(path: Path, provider: SttProvider, *, source_lang: str = "ko") -> IngestResult:
+    """영상·오디오를 STT로 전사해 `IngestResult`로 만든다 (FR-1.2 · 설계 §4.4).
+
+    **`IngestResult`의 필수 필드 6개를 전부 채운다.** 셋이 실패 지점이고
+    그중 하나는 조용하다 (전부 실측):
+
+    | 안 채운 필드 | 결과 |
+    | --- | --- |
+    | `format` | `UnknownFileExtensionError: '.tmp'` - `writer.py`가 `save(format_=None)`을 부른다 |
+    | `event_index` | `writer.py`가 `KeyError`, `cli.py`의 큐 번호 폭이 **조용히** 1이 된다 |
+    | `subs` | 필수 필드라 `TypeError` |
+
+    **프로바이더의 예외를 `IngestError`로 감싸지 않는다.** 감싸면 CLI가
+    "자막 파일이 잘못됐다"로 보고하는데 실제 원인은 STT 백엔드다 - 호출부는
+    둘을 다른 종료 코드로 바꾼다.
+
+    `source_lang`은 응답의 `language`가 있으면 그것으로 덮는다(FR-1.5).
+    **자막 파일 입력에도 적용돼야 하는 요구라 이 경로만으로는 반쪽이다**(설계 §1.3).
+
+    `_reject_non_subtitle`을 부르지 않는다 - 그 함수는 영상 입력을 **거절**하는데
+    여기서는 영상이 정상 입력이다.
+    """
+    if not path.is_file():
+        raise IngestError("not_found", f"{path}: 파일이 없다")
+
+    transcript = provider.transcribe(path, language=source_lang)
+    segments, subs, event_index = _from_transcript(transcript, path)
+    if not segments:
+        raise IngestError(
+            "empty",
+            f"{path}: 표시할 큐가 0개다 (프로바이더 {provider.name}, 모델 {transcript.model}). "
+            "0개 수집은 통과가 아니라 입력 오류다.",
+        )
+    return IngestResult(
+        segments=segments,
+        source_path=path,
+        # **`subs.format`이 아니다.** 합성한 SSAFile의 `.format`은 이벤트를
+        # 넣어도 `None`으로 남는다(실측). 그 `None`이 `writer.py`의
+        # `save(format_=)`로 흘러가 `.tmp` 확장자 판별에서 죽는다.
+        format="srt",
+        source_lang=transcript.language or source_lang,
+        subs=subs,
+        event_index=event_index,
+    )
+
+
+def _from_transcript(
+    transcript: Transcript, path: Path
+) -> tuple[list[Segment], pysubs2.SSAFile, dict[str, int]]:
+    """전사 큐를 `Segment`·`SSAFile`·대응표 셋으로 동시에 만든다 (설계 D5·D6).
+
+    셋을 **한 루프에서** 만드는 것이 중요하다. 나눠서 만들면 빈 큐를 거른 뒤
+    한쪽만 index가 밀려 `event_index`가 엉뚱한 이벤트를 가리키는데,
+    그것은 예외가 아니라 **번역문이 다른 큐에 얹히는** 형태로 드러난다.
+
+    `TranscriptCue.__post_init__`이 `nan`·`inf`·역전·음수·비수치를 이미 막았으므로
+    이 함수는 그것을 다시 검사하지 않는다(결정 P3). 검사하면 아무도 실행하지
+    않는 분기가 생긴다. **`_to_ms`의 방어는 그 목록에 없는 것이다** - 곱셈이
+    만들어 내는 값이라 큐 하나만 봐서는 알 수 없다.
+    """
+    segments: list[Segment] = []
+    subs = pysubs2.SSAFile()
+    event_index: dict[str, int] = {}
+    for position, cue in enumerate(transcript.cues):
+        text = cue.text.strip()
+        if not text:
+            # 공백만 있는 큐는 화면에 아무것도 안 띄운다. 남기면 CPS가 0으로
+            # 계산돼 규격 검사가 무의미한 세그먼트가 검수 큐에 낀다.
+            # 자막 경로의 `_keep_displayed`와 같은 판단이다.
+            continue
+        start_ms = _to_ms(cue.start_s, field="start_s", position=position, path=path)
+        end_ms = _to_ms(cue.end_s, field="end_s", position=position, path=path)
+        index = len(segments)
+        seg_id = f"{index:05d}"
+        segments.append(
+            Segment(
+                id=seg_id,
+                index=index,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                source_text=text,
+                # FR-1.4. 이 경로로 들어온 원문은 **전부** 표시 대상이다.
+                source_from_stt=True,
+            )
+        )
+        subs.append(pysubs2.SSAEvent(start=start_ms, end=end_ms, text=text))
+        # 필터 뒤에도 순서가 곧 원본 위치다 - `subs`를 같은 루프에서 채우므로
+        # 걸러진 큐는 양쪽에서 함께 빠진다.
+        event_index[seg_id] = index
+    return segments, subs, event_index
+
+
+def _to_ms(seconds: float, *, field: str, position: int, path: Path) -> int:
+    """초를 밀리초 정수로 바꾼다 (설계 D5).
+
+    **양쪽 타임코드에 같은 함수를 쓴다.** 같은 방향으로 움직여야 인접 큐의
+    맞물린 경계가 그대로 붙어 있다 - 한쪽만 내리고 한쪽만 올리면 원본에 없던
+    겹침을 우리가 만든다. `round()`가 **half-up이 아니라 짝수 반올림**이라는
+    것은 여기서 중요하지 않다(양쪽이 같으면 되므로). 테스트의 기대값을 적을
+    때만 중요하다 - `1.2345 * 1000 = 1234.5`는 1235가 아니라 **1234**다.
+
+    **`try`가 없으면 `OverflowError`가 `IngestError` 밖으로 샌다**(실측).
+    `TranscriptCue`는 `1e308`을 통과시킨다 - 유한하고 음수가 아니며 역전도
+    아니다. 그런데 `1e308 * 1000`은 `inf`가 되고 `round(inf)`가
+    `OverflowError: cannot convert float infinity to integer`를 낸다.
+    호출부가 잡는 것은 `IngestError`와 `ProviderError`뿐이라 그 예외는
+    미처리 traceback이 되고 **종료 코드 1**이 되는데, 이 저장소에서 1은
+    "규격 위반 발견"이라 **STT 백엔드 결함이 자막 결함으로 오보된다.**
+    `TranscriptCue.__post_init__`이 `math.isfinite(10**400)`의 `OverflowError`를
+    `ValueError`로 번역한 것과 같은 부류다 - 방어의 다음 한 걸음이 새는 자리.
+
+    **`math.isfinite(seconds * 1000)`으로 대신하면 안 된다.** JSON은 소수점
+    없는 리터럴을 `int`로 파싱하는데, `10**306`은 `TranscriptCue`를 통과하고
+    `10**306 * 1000`은 `float`로 변환되지 않을 만큼 커서 `isfinite` **자신이**
+    `OverflowError`를 낸다(실측). 막으려던 예외를 방어가 다시 낸다.
+
+    **거대 정수는 여기서 걸리지 않는다.** `10**306`은 곱셈도 `round()`도 예외
+    없이 지나가 310자리 `start_ms`가 된다. 그 값은 `writer.py`의 저장 시점에
+    pysubs2가 `RuntimeWarning`과 함께 `99:59:59,999`로 클램프한다(실측) -
+    **조용하지 않으므로** 출처 없는 상한을 발명하지 않는다(§11 R8).
+    """
+    try:
+        return round(seconds * 1000)
+    except OverflowError as exc:
+        raise IngestError(
+            "bad_timecode",
+            f"{path}: {position + 1}번째 큐의 {field}({seconds!r})가 "
+            "밀리초 정수로 변환되지 않는다. 전사 응답의 타임코드를 확인한다.",
+        ) from exc
 
 
 def _load(path: Path) -> pysubs2.SSAFile:
