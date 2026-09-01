@@ -193,8 +193,13 @@ def load_input(
             # 호출부가 생기면 그때는 메시지가 아니라 reason을 쪼개야 한다.
             raise IngestError(
                 "video_input",
+                # **없는 플래그를 안내하지 않는다.** `--base-url`·`--model`은
+                # STT용으로 CLI에 아직 없다 - 안내대로 쳐 본 사용자는
+                # "알 수 없는 옵션"만 받고 무엇이 문제인지 모른다.
+                # 오늘 이 분기에 닿는 것은 라이브러리 호출자뿐이므로
+                # 그쪽이 할 수 있는 조치를 적는다.
                 f"{media}: 영상 입력에는 STT 프로바이더가 필요하다. "
-                "--base-url과 --model을 주거나 자막 파일을 입력하라.",
+                "load_input에 provider를 넘기거나 자막 파일을 입력하라.",
             )
         return load_media(media, provider, source_lang=source_lang)
     raise IngestError("no_input", "자막 파일이나 영상 파일 중 하나는 주어야 한다")
@@ -290,9 +295,20 @@ def _to_ms(seconds: float, *, field: str, position: int, path: Path) -> int:
     `OverflowError`를 낸다(실측). 막으려던 예외를 방어가 다시 낸다.
 
     **거대 정수는 여기서 걸리지 않는다.** `10**306`은 곱셈도 `round()`도 예외
-    없이 지나가 310자리 `start_ms`가 된다. 그 값은 `writer.py`의 저장 시점에
-    pysubs2가 `RuntimeWarning`과 함께 `99:59:59,999`로 클램프한다(실측) -
-    **조용하지 않으므로** 출처 없는 상한을 발명하지 않는다(§11 R8).
+    없이 지나가 310자리 `start_ms`가 된다. 그 값이 **어디까지 조용한지는
+    경로마다 다르다**(실측).
+
+    - **저장 경로(`writer.py`)**: pysubs2가 `RuntimeWarning`과 함께
+      `99:59:59,999`로 클램프한다 - 조용하지 않다.
+    - **HTML 리포트 경로**: **그 클램프가 없다.** `report/html_report.py`의
+      `_timecode()`가 자릿수를 그대로 내므로 303자짜리 문자열이
+      `td.tc`(`white-space: nowrap`)에 박혀 표 레이아웃이 무너진다.
+      예외도 경고도 나지 않는다.
+
+    **여기에 상한을 발명하지 않는 이유는 두 경로가 다 시끄러워서가 아니라
+    동작 변경이라 별도 판단이 필요하기 때문이다**(§11 R8). 앞선 서술은
+    저장 경로의 클램프만 보고 "조용하지 않다"고 적었는데, 그것이
+    "모든 경로가 시끄럽다"로 읽혔다.
     """
     try:
         return round(seconds * 1000)
@@ -380,7 +396,10 @@ def _reject_non_subtitle(path: Path) -> None:
     if path.suffix.lower() in _MEDIA_SUFFIXES:
         raise IngestError(
             "video_input",
-            f"{path}: 영상·오디오 입력이다. STT는 v0.1에 없다(WBS WP9). "
+            # **"STT는 v0.1에 없다"고 쓰면 안 된다.** WP9가 어댑터를 냈으므로
+            # 기능은 있고 CLI 배선만 없다 - 옛 문구는 사용자를 "이 도구는
+            # 영상을 다루지 못한다"로 오도한다.
+            f"{path}: 영상·오디오 입력이다. STT 입력은 아직 CLI에 배선되지 않았다. "
             "FR-1.3에 따라 자막 파일이 있으면 그것을 넣는다.",
         )
 
