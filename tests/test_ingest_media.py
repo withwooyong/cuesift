@@ -11,7 +11,7 @@ from tests.fakes.stt import FakeSttProvider
 
 from cuesift.ingest import IngestError, load_input, load_media, load_subtitle, write_subtitle
 from cuesift.risk import fuse
-from cuesift.segment import Signal
+from cuesift.segment import SegmentRisk, Signal
 from cuesift.signals import SignalContext, collect_all
 from cuesift.spec import load_builtin
 from cuesift.stt.provider import SttProvider
@@ -411,6 +411,25 @@ def test_STT_입력에서_실제_검수_비율이_1이_아니다(tmp_path: Path)
     # 플래그를 이름으로 삼은 신호가 하나도 수집되지 않아야 한다 (설계 D8).
     # 점수에 상수를 더하는 유출은 위 비율만으로는 드러나지 않는다.
     assert not any(sig.name == "source_from_stt" for r in scored for sig in r.signals)
+
+    # **여기부터가 이름과 무관한 점수 유출을 잡는 자리다.** 위 세 단언은
+    # `hard_fail=False`·`score=1.0`인 신호를 `stt_origin` 같은 다른 이름으로
+    # 흘리면 전부 통과한다(실측: ratio 0.5 · hard_fail 전무 · 이름 단언 미발화).
+    # 플래그만 끈 같은 트랙이 **같은 점수와 같은 신호 목록**을 내야 그 구멍이 닫힌다.
+    plain = load_media(_media(tmp_path), FakeSttProvider(CUES))
+    for seg in plain.segments:
+        seg.target_text = "a fine translation here"
+        # Tier 0는 결정론적이라 플래그 외에 달라지는 입력이 없다 - 두 트랙의
+        # id·타임코드·본문이 같으므로 값이 갈리면 그것이 곧 유출이다.
+        seg.source_from_stt = False
+    plain_by_id = collect_all(plain.segments, CTX)
+    plain_risks = [fuse(seg.id, plain_by_id[seg.id]) for seg in plain.segments]
+
+    def _shape(risk: SegmentRisk) -> list[tuple[str, int, float, bool]]:
+        return [(s.name, s.tier, s.score, s.hard_fail) for s in risk.signals]
+
+    assert [r.risk_score for r in plain_risks] == [r.risk_score for r in risks]
+    assert [_shape(r) for r in plain_risks] == [_shape(r) for r in risks]
 
 
 def test_STT_플래그를_hard_fail로_올리면_비율이_1이_된다(tmp_path: Path) -> None:

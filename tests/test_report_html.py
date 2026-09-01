@@ -870,6 +870,21 @@ def test_숨은_행을_감추는_CSS가_있다() -> None:
     assert "tr.seg[hidden] { display: none; }" in build_html(_outcome())
 
 
+def test_배지_CSS가_배경과_글자색을_함께_준다() -> None:
+    """이 문서는 `color-scheme: light dark`다 (FR-1.4 · 설계 D8).
+
+    한쪽만 주면 다크 모드에서 밝은 배경 위에 밝은 글자가 되어 **배지가
+    사라진다** - 나머지 표는 `currentColor`로만 그려 이 문제가 없어서 배지만
+    이 위험을 진다. 규칙을 통째로 지워도 배지 문자열은 마크업에 남으므로 다른
+    어떤 단언도 빨개지지 않는다(실측: `grep -rn "badge-stt" tests/` 0건이었다).
+    """
+    css = build_html(_outcome())
+
+    assert ".badge-stt {" in css
+    assert "background: #fef7e0;" in css
+    assert "color: #7a5900;" in css
+
+
 def _stt_pair(
     n: int = 2, *, selected: int = 0, stt: int = 0, ids: list[str] | None = None
 ) -> tuple[list[Segment], list[SegmentRisk]]:
