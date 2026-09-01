@@ -1,169 +1,203 @@
 # Session Handoff
 
-> Last updated: 2026-08-30 (KST)
-> **WP9(STT 어댑터)에 착수해 설계 스펙까지 냈다.** 코드는 한 줄도 쓰지 않았다 —
-> 브레인스토밍으로 결정 10개를 확정하고 `docs/superpowers/specs/2026-08-30-stt-adapter-design.md`를
-> 커밋한 것이 전부다. 다음 단계는 구현 계획이다.
-> **브랜치 `feat/stt-adapter`는 푸시되지 않았고 PR도 없다.**
-> 상태 값은 여기 적힌 숫자가 아니라 아래 "현재 상태 재는 법"의 명령으로 직접 재라.
+> Last updated: 2026-09-02 (KST)
+> **WP9(STT 어댑터)가 코드까지 끝났다.** 태스크 7개 · 커밋 25개(`0244e61`..`f038fc1`)로
+> `src/cuesift/stt/`가 생겼고 FR-1.2·1.3·1.4가 닫혔다. 최종 전체 리뷰·적대적 보안 리뷰·
+> 검증 5관문을 돌린 뒤 **최종 픽스 3라운드**로 HTTP 왕복을 스트리밍으로 다시 짰다.
+> **남은 것은 CLI 배선(FR-8.3)이고 그것은 WP6 소속이다** — `transcribe`는 지금 exit 70을 낸다.
+> **이 커밋 시점에 브랜치는 아직 푸시되지 않았다.** 아래 "현재 상태 재는 법" 첫 명령으로 확인하라.
+> 상태 값은 여기 적힌 숫자가 아니라 그 절의 명령으로 직접 재라.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
 ## Current Status
 
 | 단계 | 상태 | 산출물 |
 | --- | --- | --- |
-| 직전 세션 인수인계 PR [#18](https://github.com/withwooyong/cuesift/pull/18) | ✅ 머지됨 | `48bf9aa` |
-| 직전 세션 이월분 — README `--progress` 절 | ✅ **닫혔다** | PR [#19](https://github.com/withwooyong/cuesift/pull/19) · `3c46d93` |
-| WP9 착수 조사 | ✅ | 아래 "이번 세션이 배운 것" ⓐ·ⓑ |
-| WP9 설계 브레인스토밍 | ✅ | 결정 D1~D10 |
-| **WP9 설계 스펙** | ✅ 커밋 | `034f963` · 247줄 |
-| 사용자의 스펙 검토 | ⬜ **대기 중** | 세션이 여기서 끝났다 |
-| 구현 계획 | ⬜ 미착수 | `docs/superpowers/plans/` |
-| 구현 | ⬜ 미착수 | — |
-| 푸시·PR | ⬜ **하지 않았다** | `feat/stt-adapter`는 로컬에만 있다 |
+| WP9 설계 스펙 | ✅ | `034f963` · [설계 스펙](docs/superpowers/specs/2026-08-30-stt-adapter-design.md) |
+| WP9 구현 계획 | ✅ | `3e2fbe6` · [계획서](docs/superpowers/plans/2026-09-01-stt-adapter.md) |
+| **WP9 구현 — 태스크 7개** | ✅ **전부 완료** | `0244e61`..`c102edd` |
+| 최종 전체 리뷰(통합 축) | ✅ 승인 | Critical 0 · Important 1 · Minor 4 |
+| 적대적 보안 리뷰 | ✅ 닫힘 | High 1 · Medium 2 · Low 3 → 최종 픽스로 전부 대응 |
+| 검증 5관문 | ✅ 통과 | 빌드·ruff·pytest·bandit·pip-audit·CLI |
+| **최종 픽스 3라운드** | ✅ 승인 | `03ad01e`..`f038fc1` |
+| **푸시·PR** | ⬜ **이 커밋 다음에 열린다** | 번호를 여기 적지 않는다 — `gh pr list`로 확인하라 |
+| FR-8.3(`transcribe` CLI 배선) | ⬜ **WP9 아님** | WP6의 마지막 조각 |
 
-**FR 완료 개수는 움직이지 않았다 — 여전히 37이다.** 설계 문서는 FR을 닫지 않는다.
+**PR 행을 비워 둔 것은 실수가 아니다.** 인수인계 문서는 자기 자신이 들어갈 PR을 볼 수 없다 —
+이 커밋 뒤에 푸시와 PR 생성이 이어지므로 지금 번호를 적으면 그것은 추측이다.
 
 ## 현재 상태 재는 법
 
+**첫 일은 이 브랜치가 어디까지 갔는지 확인하는 것이다.**
+
 ```bash
-git branch --show-current        # feat/stt-adapter
-git status --short               # clean 이어야 한다
-git log --oneline -3             # 최상단이 이 문서의 커밋, 그 아래가 034f963
-git log --oneline main..HEAD     # 이 브랜치에만 있는 커밋
-gh pr list --state open          # 열린 PR이 없어야 한다
+gh pr list --state open           # PR 번호는 여기서 나온다. 비어 있으면 아직 안 열렸다
+gh pr checks --watch              # PR이 있으면 CI 5잡을 본다
+git branch --show-current         # feat/stt-adapter
+git status --short                # clean 이어야 한다
+git log --oneline main..HEAD      # 이 브랜치에만 있는 커밋
 ```
 
-## 이번 세션이 배운 것
+## WP9가 낸 것 — 태스크 7개
 
-### ⓐ `원문 검수 필요` 플래그는 문서 3곳에 있고 코드에는 0건이었다
-
-```text
-"원문 검수 필요"  →  docs/WBS.md:189
-                     docs/요구사항정의서.md:238  (용어 정의)
-                     docs/요구사항정의서.md:436  (FR-1.4)
-                     src/  tests/  ................ 0건
-```
-
-**FR-7.3의 `Span` 사건과 같은 구조다.** 문서 여러 곳에 같은 문장이 있는 것은 독립 확인이
-여러 번이라는 뜻이 아니라 한 번 쓰이고 복사됐다는 뜻이고, `CLAUDE.md`가 이미 그렇게 적어
-두었다. 이 발견이 WP9의 범위를 "어댑터 하나"에서 **모델·인제스트·리포트 3층**으로 바꿨다.
-
-**착수 조사에서 `grep`을 돌리지 않았다면 설계가 통째로 틀렸을 자리다.**
-
-### ⓑ 인제스트 공개 API는 `load_segments`가 아니라 `load_subtitle`이다
-
-브레인스토밍 중 사용자에게 던진 범위 질문에 **존재하지 않는 함수 이름**을 썼고, 코드를
-읽고서야 정정했다. `IngestResult.subs`가 `pysubs2.SSAFile` **필수 필드**라는 것도 같은
-자리에서 나왔고, 그것이 설계 D6(SSAFile 합성)의 존재 이유다.
-
-기억으로 API를 부르면 **설계 문서가 존재하지 않는 함수를 가리킨 채 굳는다.**
-
-### ⓒ 인수인계에 적힌 게이트 수치는 이미 낡아 있었다
-
-직전 HANDOFF는 테스트 1547건을 적고 있었으나 실측은 **1582**였다. PR #16~#19가 그 사이에
-올려 놓은 것이다. 스펙에 수치를 적기 전에 `pytest`를 직접 돌려 `collected`가 아니라
-`passed`를 읽었다 — **`1582/1585 collected`와 `1582 passed`는 다른 문장이다.**
-
-## 게이트 실행 기록
-
-이 세션은 문서만 바꿨다. 코드 게이트는 **기준선 확인용**으로 돌렸고 값이 움직이지 않았다.
-
-| 게이트 | 결과 |
-| --- | --- |
-| `pytest` | **1582 passed · 3 deselected** (코드 변경 없음) |
-| `scripts/check_links.py` | 마크다운 **40개** · 상대 링크 **197개** · 깨진 링크 **0** |
-| `npx markdownlint-cli2` | **Linting: 40 files** · **0 issues** |
-| `ruff` | 코드 변경이 없어 돌리지 않았다 |
-
-**두 문서 도구의 파일 개수가 40개로 일치한다.** 직전 세션의 39개에서 하나 늘었고 그것이
-이번 스펙이다. 새 문서를 `git add`한 **뒤에** 링크 체커를 돌렸다 — 추적되기 전이었다면
-링크 검사를 아예 받지 않고도 "깨진 링크 없음"으로 보였을 자리다.
-
-## README/문서 갱신 필요 — **구현 PR에서 함께 고칠 것**
-
-| 무엇 | 왜 낡았나 | 확인할 진실원 |
+| 태스크 | 무엇 | 커밋 |
 | --- | --- | --- |
-| **WBS §189의 "Whisper 계열 어댑터"** | 설계 D1이 백엔드를 **OpenAI 호환 HTTP 어댑터**로 확정했다. `faster-whisper` 같은 파이썬 패키지를 넣지 않으므로 "Whisper 계열 어댑터"는 구현과 어긋난 서술이 된다 | [설계 스펙](docs/superpowers/specs/2026-08-30-stt-adapter-design.md) D1 · `docs/WBS.md:189` |
+| 1 | `stt/provider.py` — 계약(`Transcript`·`TranscriptCue`)과 타임코드 방어 | `0244e61`·`7e1c88b` |
+| 2 | `stt/openai_compat.py` — OpenAI 호환 어댑터 | `b1cd545`·`7ce9b3a`·`546ebc7` |
+| 3 | `Segment.source_from_stt` 전용 필드 (FR-1.4) | `d16976e` |
+| 4 | `ingest/loader.py::load_media` (FR-1.2) | `bad70a1`·`f13b30f`·`a7fb3a5` |
+| 5 | `load_input` — 자막·영상 동시 입력 (FR-1.3) | `8dc584e`·`a852b0c` |
+| 6 | 리포트 파급 — `review.json`·`report.html` (FR-1.4) | `d596621`..`95317d7` |
+| 7 | live 테스트 + 문서 정정 | `d390dc1`·`c102edd` |
+| 최종 픽스 | 스트리밍·헤더 필터·마감·userinfo·서로게이트 | `03ad01e`..`f038fc1` |
 
-**지금 고치지 않은 이유는 순서다.** 구현이 없는 상태에서 WBS만 앞서 가면 "무엇이 되어
-있는가"를 WBS가 잘못 말한다. 이 리포는 WBS 행에 커밋 해시와 함께 완료를 기록하는 관행이므로,
-구현 PR이 그 행을 통째로 갱신할 때 문구도 같이 고친다.
-
-**직전 세션의 이월분(README `--progress`)은 닫혔다.** PR #19가 절을 신설했고
-`grep -c "progress|진행 표시" README.md`가 **10건**이다(이번 세션 실측). 두 세션 연속으로
-이월됐던 항목이라 여기에 명시해 둔다.
-
-## 확정된 설계 결정 — 스펙 전문을 읽기 전에 이것부터
-
-| # | 결정 | 이것이 아니면 |
-| --- | --- | --- |
-| **D1** | OpenAI 호환 `/v1/audio/transcriptions`를 `httpx`로 호출 | 런타임 의존성 4개 고정 규율이 깨진다 |
-| **D2** | 예외 계층은 `translate/provider.py`의 것을 재사용 | CLI가 `except`를 두 벌 갖고, 빠뜨린 쪽은 재시도도 폴백도 없이 샌다 |
-| **D3** | 프로바이더는 `Transcript`를 내고 `Segment`는 인제스트가 만든다 | 프로바이더가 인제스트 정책(id·index·플래그)을 알게 된다 |
-| **D4** | `verbose_json` 미지원은 `FatalProviderError`로 즉시 실패 | 전 세그먼트가 `0ms~0ms`가 되어 CPS 검사가 무의미해진다 |
-| **D5** | 초 → 밀리초는 양쪽 다 `round()` | 한쪽만 내리고 한쪽만 올리면 원본에 없던 겹침을 우리가 만든다 |
-| **D6** | `IngestResult.subs`를 합성한다 (`format="srt"`) | `\| None` 완화가 WP5 전역에 죽은 분기를 만든다 |
-| **D7** | `Segment.source_from_stt: bool = False` 전용 필드 | `meta` 딕셔너리는 키 오타를 런타임에 못 막는다 |
-| **D8** | **점수에도 hard fail에도 넣지 않는다** | 전량이 예산을 우회해 `review_ratio()`가 1.0이 되고 README 배수가 죽는다 |
-| **D9** | 오디오 분할을 넣지 않는다 | 겹침 병합·오프셋 보정은 별도 작업 단위다 |
-| **D10** | live 오디오는 `CUESIFT_LIVE_AUDIO`로 받는다 | 리포에 바이너리가 들어오고 어떤 게이트도 그것을 보지 않는다 |
-
-**D8이 이 설계에서 가장 되돌리기 어려운 결정이다.** 스펙 §5가 세 갈래를 표로 비교해 두었다.
-
-## 다음 작업
+일곱 태스크가 낸 것은 **어댑터 하나가 아니라 계약(1) → 어댑터(2) → 값(3) → 인제스트(4·5) →
+산출물(6)의 한 줄**이고, 최종 픽스는 그중 어댑터의 HTTP 왕복만 다시 짰다.
 
 ```mermaid
 flowchart LR
-    A["스펙 검토<br/>(사용자)"] --> B["구현 계획<br/>writing-plans"]
-    B --> C["구현<br/>TDD"]
-    C --> D["PR · CI · 머지"]
-    D --> E["FR-8.3 transcribe 배선<br/>(WP6 마지막 조각)"]
-    style A fill:#fef7e0,stroke:#f9ab00
-    style B fill:#f1f3f4,stroke:#5f6368
-    style E fill:#e8eaed,stroke:#5f6368
+  A[영상 파일] --> B["stt/openai_compat.py<br/>/v1/audio/transcriptions"]
+  B --> C["Transcript<br/>(stt/provider.py)"]
+  C --> D["ingest/loader.py::load_media<br/>SSAFile 합성 · format=srt"]
+  D --> E["Segment.source_from_stt=True"]
+  E --> F["review.json summary·segments[]<br/>report.html 요약줄·행 배지"]
+  G["cli.py transcribe"] -. "배선 없음 · exit 70" .-> B
+  style G stroke-dasharray: 5 5
 ```
 
-| 순위 | 작업 | 규모 |
-| --- | --- | --- |
-| **1** | 사용자의 스펙 검토를 받는다. 고칠 것이 있으면 반영한다 | S |
-| **2** | 구현 계획을 `docs/superpowers/plans/2026-08-30-stt-adapter.md`에 쓴다 | M |
-| **3** | 구현 — `stt/` 신규 · `Segment` 필드 · 인제스트 통합 · 리포트 2종 | L |
-| **4** | FR-8.3(`transcribe` CLI 배선). **WP6의 마지막 조각이고 WP9가 아니다** | M |
+점선 하나가 이 패키지의 남은 구멍이다 — **어댑터부터 산출물까지는 이어져 있고 CLI만 끊겨 있다.**
 
-### 구현에서 가장 먼저 확인할 것
+## 게이트 실행 기록 (2026-09-02, HEAD `f038fc1` + 이 문서 커밋)
 
-**`write_subtitle`이 합성 `SSAFile`을 받는지 실행해서 확인하라.** 설계 D6은
-`format="srt"`를 규약으로 정했지만 `ingest/writer.py`를 읽지 않은 채 정한 것이다.
-스펙 §9 R3에 위험으로 적어 두었다 — **확인하지 않은 것을 확인했다고 적지 않는다.**
+| 게이트 | 결과 |
+| --- | --- |
+| `pytest -q` | **1700 passed · 5 deselected** |
+| `pytest --cov` | TOTAL **99%** · `stt/openai_compat.py` **105 stmts · 0 miss · 100%** |
+| `ruff check .` / `ruff format --check .` | 통과 · **123 files** |
+| `scripts/check_links.py` | 마크다운 **41개** · 상대 링크 **211개** · 깨진 링크 **0** |
+| `npx markdownlint-cli2` | **Linting: 41 files** |
+| CLI `transcribe <더미>` | **70**(미구현) · 영상을 `run`에 주면 **66** |
+| bandit / pip-audit | Low 1건은 `translate/engine.py:537`(이 브랜치 아님) · pip 자체 취약점 |
 
-### 구현 시 반드시 실패시켜 볼 게이트
+**두 도구의 파일 개수가 같은지를 본다** — 41개 / 41 files. 갈리면 새 문서가 `git add`되지
+않아 링크 검사를 아예 받지 않은 것이다.
 
-스펙 §8.1의 표가 여섯 개를 지정한다. 그중 하나가 다른 다섯보다 중요하다.
+## FR 완료 개수 — 37 → **39**
 
-> **STT 입력에서 `review_ratio()`가 1.0이 아니다.**
+WP9는 FR-1.2·1.3·1.4 셋을 닫았지만 완료 개수는 **둘만 오른다.**
+**FR-1.3은 WP4에서 이미 완료로 세어져 있었고**(영상 확장자 거부가 그 반쪽이었다)
+WP9가 나머지 반쪽(자막·영상 동시 입력 시 자막 채택)을 채운 것이라 개수가 움직이지 않는다.
 
-플래그가 hard fail로 새면 이것이 조용히 1.0이 되고, README 최상단의 배수가 산출 불가가
-된다. **버그 버전을 만들어 빨간 것을 본 뒤에 초록으로 만든다** — 이 리포에서 길이비 회귀
-테스트가 버그 버전에서도 통과해 데이터를 다시 짠 전례가 있다.
-
-## 파킹된 finding
+## 다음 작업 패키지로 넘어간 항목 — 이월 트리아지 8건
 
 | # | 무엇 | 왜 지금 안 했나 | 다시 열 조건 |
 | --- | --- | --- | --- |
-| 2 | **권장 모델 `qwen2.5:3b`가 3큐 중 2큐 실패** | 모델 품질 문제라 코드로 닫을 수 없다 | README 권장을 바꾸거나 프롬프트를 손볼 때. **WP9의 live 테스트에서 STT 모델을 고를 때 같은 종류의 판단이 필요하다** |
-| 4 | **`COLUMNS=88` 아래에서 옵션 이름이 잘린다** | rich의 표 렌더링이라 범위 밖이다. 대신 폭 88을 게이트로 못 박았다 | 옵션을 더 붙여 88이 깨지는 날 |
+| **1** | 🔴 **`_output_path`가 `talk.en.mp4`를 만들고 그 안에 SRT를 넣는다** — 조용한 실패 | WP6(`--media` 배선) 범위 | **`--media` 배선 커밋이 반드시 함께 고쳐야 한다.** 아래 참조 |
+| 2 | `bench/track_io.py`의 `_FIELDS`가 `source_from_stt`를 모른다 — 왕복에서 **조용히 `False`로 리셋** | 도달 경로가 없다(벤치 코퍼스는 자막). 고치면 벤치 직렬화 포맷이 바뀐다 | STT 트랙을 벤치에 넣을 때. `tests/test_bench_track_io.py`의 왕복 동등성이 그 순간 실패한다 |
+| 3 | `pyproject.toml`에 **`filterwarnings`가 없어 경고가 게이트를 통과한다** | `["error"]`는 스위트 전체에 영향 — WP9 범위 밖 | 별도 과제. **"검사하지 않고 통과하는 게이트" 규율에 직접 걸린다** |
+| 4 | `translate/provider.py`의 `RetryableProviderError.__init__`도 `isinstance`+`isfinite`를 쓴다 — 거대 정수에서 같은 `OverflowError` 누출이 있는지 **미확인** | 기존 코드. 이번 변경과 무관 | `translate`를 손대는 다음 패키지. STT 경로에는 도달 경로가 없음을 확인했다 |
+| 5 | `Transcript.__post_init__`이 `cues`의 **컨테이너 타입만** 보고 원소 타입은 안 본다 | Task 1 범위 밖 | 프로바이더를 하나 더 붙일 때 |
+| 6 | `pyproject.toml:69`의 **죽은 `stt` extra** | 의존성 고정 규율상 채울 것이 없다 | 패키징을 손볼 때 |
+| 7 | **STT에 재시도 루프가 없다** — `RetryableProviderError`를 받을 호출부가 리포에 0건 | 호출부(CLI)가 아직 없다 | **아래 별도 절 참조 — 다음 패키지가 반드시 알아야 한다** |
+| 8 | FR-1.5(원문 언어 자동 감지)가 반쪽 — STT 응답의 `language`를 **기록만** 한다 | `IngestResult.source_lang`은 선언값을 쓴다(값 도메인이 백엔드마다 다르다) | 자막 파일 입력까지 함께 닫을 때 |
 
-## 남은 관측 하나 — FR-8.5의 R3 (승계)
+여덟 건 모두 "다음 패키지"로 판정됐지만 **1번만 성격이 다르다** — 나머지는 미루면 그대로 있고,
+1번은 **미루면 조용히 깨진다.**
 
-설계 스펙 §9 R3(Windows 콘솔의 `\r`)은 **구조는 확인됐고 육안 관측이 남아 있다.**
-`!`로 돌린 실행은 stderr가 파이프라 `plain` 경로를 탔다. 대화형 갱신은 **진짜 콘솔 창**이
-있어야 한다.
+### 🔴 1번은 `--media` 배선 커밋과 **같은 커밋**에서 고쳐야 한다
 
-```powershell
-cd C:\Users\aeby\vscode\cuesift
-.venv\Scripts\python.exe -m cuesift translate tests\fixtures\ingest\ten_cues.srt --to en --out . --base-url http://h/v1 --model m1 --progress
-```
+`load_media`가 `IngestResult.format`을 **`"srt"`로 하드코딩**했고(설계 D6),
+`writer.py`가 `format_=result.format`으로 확장자를 덮는다. 그런데 `_output_path`는
+**입력 파일명에서 확장자를 상속**한다. 그래서 `--media talk.mp4`를 배선하는 순간
+출력이 **`talk.en.mp4`라는 이름의 SRT 파일**이 된다.
+
+**지금은 도달 경로가 없어 아무 게이트도 빨개지지 않는다.** 배선 커밋이 이것을 빼면
+그때부터 조용히 깨지고, 고칠 재료(`format="srt"` 확정)는 **이미 있다.**
+스펙 §9.1 C1과 `docs/WBS.md`에도 같은 문장을 남겨 두었다.
+
+## STT는 코드가 있고 CLI 배선만 없다
+
+| 부르는 쪽 | 오늘 동작 |
+| --- | --- |
+| `cuesift transcribe <파일>` | **exit 70**(미구현) — `EX_SOFTWARE` |
+| `cuesift run/check`에 영상을 준다 | **exit 66** — `_reject_non_subtitle`이 확장자로 거부 |
+| `cuesift.stt.transcribe_media(...)` (파이썬) | **동작한다.** 100% 커버리지 |
+
+**"STT가 없다"가 아니라 "STT를 부르는 CLI가 없다"이다.** FR-8.3은 §5.8(CLI) 소속이라
+WP9가 아니라 **WP6의 마지막 조각**이고, 그래서 WP6은 ✅가 아니라 🟡로 남아 있다.
+
+### 다음 패키지가 반드시 알아야 할 것 — STT에 재시도 루프가 없다
+
+`stt/openai_compat.py`는 429·5xx·전송 오류에서 **`RetryableProviderError`를 던지고 끝난다.**
+`Retry-After`를 파싱해 `retry_after_s`에 실어 주지만 **그것을 받아 다시 부르는 코드가
+리포 전체에 0건이다**(`translate` 쪽 재시도 루프는 STT를 모른다).
+
+**배선 커밋은 재시도 루프를 함께 넣어야 한다.** 넣지 않으면 사용자는 전사 한 번에 몇 분을
+기다린 뒤 429 하나로 전부 잃는다 — 그리고 어댑터는 **이미 재시도 가능이라고 말하고 있으므로**
+그 정보가 버려지는 것이 코드 어디에도 드러나지 않는다.
+
+## 이번 세션이 배운 것
+
+### ⓐ 예외가 계층 밖으로 새는 부류를 **네 번** 연속 찾았다
+
+| # | 어디 | 무엇이 샜나 | 종료 코드가 뜻하게 되는 것 |
+| --- | --- | --- | --- |
+| 1 | `stt/provider.py` 타임코드 방어 | `OverflowError`(거대 정수) | 1 = "규격 위반 발견"으로 **오보** |
+| 2 | `stt/openai_compat.py` JSON 파싱 | `RecursionError`(20만 겹 중첩) | 〃 |
+| 3 | `ingest/loader.py::_to_ms` | `OverflowError`(`round(1e308*1000)`) | 〃 |
+| 4 | `stt/openai_compat.py` 응답 수신 | **`MemoryError`**(상한 없는 본문) | 〃 |
+
+넷이 같은 모양이다 — **신뢰 경계 밖 입력이 종료 코드의 의미를 바꾼다.**
+셋을 고친 뒤에도 넷째가 남아 있었다는 것이 요점이다: **같은 부류를 한 번 고쳤다고
+다 고친 것이 아니다.** 다음에 프로바이더를 붙일 때는 이 표를 체크리스트로 쓰라.
+
+### ⓑ 목이 한 번도 만들지 않는 조건은 게이트가 통과시킨다
+
+`Content-Encoding` 회귀가 **1693건을 통과했다.** STT 목이 압축 응답을 한 번도 돌려주지
+않았기 때문이고, **형제 모듈에는 그 회귀 테스트가 이미 있었다**
+(`tests/test_translate_openai_compat.py:548` — *"129개 테스트가 한 번도 압축 응답을
+돌려주지 않아서 `DecodingError` 누수가 가려져 있었다"*). **같은 부류의 다섯째다.**
+
+새 어댑터를 만들 때는 **형제 어댑터의 회귀 테스트 목록을 먼저 훑어라** — 거기 있는 것은
+전부 한 번 실제로 깨졌던 것이다.
+
+### ⓒ 실측값은 "무엇을 측정했나"까지 적어야 한다
+
+`_MAX_RESPONSE_BYTES` 주석의 "3.37배"가 **큐 10개짜리 비현실 페이로드에서만 나온 값**이었다.
+모양별로 다시 재니 같은 16MB라도 큐 1.4k면 2.35배, 132k면 4.82배다 —
+**증폭을 정하는 것은 본문 크기가 아니라 큐 개수였다.**
+그래서 배수 하나를 박지 않고 범위와 그 이유를 적었다.
+
+### ⓓ 리뷰어가 인용한 코드 조각은 원본이 아니다
+
+두 번 걸렸다. ① 리뷰어 인용문만 보고 "원본에 `strip()`이 없다"고 판단해 구현자에게
+틀린 지시를 냈다(구현자가 지적해 정정). ② 리뷰어가 제안한 `_to_ms` 자릿수 **310**이
+틀렸고 구현자가 측정한 **309**가 옳았다(310은 `start_ms` 자릿수, 문자열은 309자).
+
+**리뷰 지적은 옳아도 그 안의 수치와 코드 인용은 따로 확인한다.**
+
+### ⓔ 간헐 실패하는 게이트는 넣지 않는다 — 다만 대안을 먼저 찾는다
+
+N3(상한 검사 위치) 회귀 테스트가 **이전 원형을 죽이지 못했다.** 원형도 최종 슬라이스로
+같은 길이를 내므로 `len(content) == cap`을 통과한다. 다른 것은 **그 사이에 쓴 메모리뿐**이라
+`tracemalloc` peak로 고정했고, 임계값을 지금의 57배·원형의 1/4 자리(8MB)에 두어
+흔들림 여지를 남겼다. **빡빡하게 잡으면 CI가 간헐 실패하고 무시되는 게이트는 없는 게이트와 같다.**
+
+## 확정된 설계 결정 — 전문은 스펙에 있다
+
+D1~D10은 [설계 스펙](docs/superpowers/specs/2026-08-30-stt-adapter-design.md)에 있고
+**구현이 뒤집은 결정 5건은 [계획서](docs/superpowers/plans/2026-09-01-stt-adapter.md)의
+"구현 중 바뀐 결정" 절에 있다** — 이 리포의 규약상 그 절이 본문 코드 블록보다 최신이다.
+배선할 때 특히 걸리는 셋만 옮겨 둔다.
+
+| # | 결정 | 이것이 아니면 |
+| --- | --- | --- |
+| **D2** | 예외 계층은 `translate/provider.py`의 것을 재사용 | CLI가 `except`를 두 벌 갖고, 빠뜨린 쪽은 재시도도 폴백도 없이 샌다 |
+| **D6** | `IngestResult.subs`를 합성한다 (`format="srt"`) | `\| None` 완화가 WP5 전역에 죽은 분기를 만든다. **이월 1번의 원인이기도 하다** |
+| **D8** | `source_from_stt`를 **점수에도 hard fail에도 넣지 않는다** | 전량이 예산을 우회해 `review_ratio()`가 1.0이 되고 **README 배수가 산출 불가**가 된다 |
+
+D8을 어기면 무엇이 깨지는지는 `tests/test_ingest_media.py:439`가 **반사실 형태로**
+고정하고 있다 — 어기면 비율이 1.0이 된다는 것을 테스트가 직접 보여 준다.
 
 ## 승계 항목 — 아무도 건드리지 않았다
 
@@ -171,10 +205,11 @@ cd C:\Users\aeby\vscode\cuesift
 | --- | --- |
 | **Q4**(자가일관성 유사도 측정 수단) | 여전히 열려 있다. 판정은 벤치마크에 Tier 1을 태우는 별도 작업의 몫 |
 | **FR-4.2**(역번역) | 구현 안 함. 문자 단위 유사도로는 `llm.retranslation_gap`이 **역방향으로 작동**한다 |
-| **FR-1.5**(원문 언어 자동 감지) | STT 응답의 `language`를 기록만 한다. 자막 파일 입력에도 적용돼야 하는 요구라 STT 경로만 닫으면 반쪽이다 (스펙 §1.3) |
-| **FR-8.3**(`transcribe`) | STT 어댑터(WP9)가 선행이지만 **FR-8.3 자신은 WP6에 남는다** — §5.8("CLI") 소속이다 |
+| **FR-8.5 R3**(Windows 콘솔의 `\r`) | 구조는 확인됐고 **육안 관측이 남아 있다.** 진짜 콘솔 창이 필요하다 |
 | **`engine.py::_run_single`의 전역 index** | 확인됐고 안 고쳤다. `main`에 있다 |
 | `segments[].reasons`의 순서 미검증 | NFR-3 재현성 문제. 열려 있다 |
+| 파킹 2 — 권장 모델 `qwen2.5:3b`가 3큐 중 2큐 실패 | 모델 품질 문제라 코드로 닫을 수 없다 |
+| 파킹 4 — `COLUMNS=88` 아래에서 옵션 이름이 잘린다 | rich의 표 렌더링. 폭 88을 게이트로 못 박았다 |
 
 ## 개발 환경 메모 (승계)
 
@@ -189,14 +224,15 @@ CI가 5회 연속 실패한 전례가 있다).
 사본을 가려 "생존" 오탐을 낸다. 리포에서 직접 할 때는 **파일 복사본으로 복원하라** —
 `git checkout --`가 미커밋 작업을 날린 전례가 있다.
 
+**보안 스캐너는 리포 밖 스크래치 가상환경에 설치한다.** `.venv`나 `pyproject.toml`에 넣으면
+의존성 고정 규율(런타임 4개·dev 3개)이 깨진다.
+
 **콘솔에서 한글 출력이 깨져 보이는 것은 표시 문제이지 버그가 아니다.** 판정이 필요하면
-파일로 받아 `read_bytes()` 후 utf-8·cp949 순으로 디코드해 읽는다 — 실행 로그가
-**cp949로 떨어진다**(스모크 실측). 이번 세션에도 `scripts/check_links.py`와 삽입 스크립트의
-콘솔 출력이 깨져 보였으나 파일 내용으로 결과를 확인했다.
+파일로 받아 `read_bytes()` 후 utf-8·cp949 순으로 디코드해 읽는다.
 
 **파이썬 스크립트로 문서를 고칠 때 `newline=""`을 준다.** `Path.write_text`의 기본값이
 `newline=None`이라 Windows에서 `\n`을 `\r\n`으로 번역해 **2줄 수정이 1967줄 변경으로** 찍힌다.
-이번 세션의 CHANGELOG 삽입은 `splitlines(keepends=True)`로 원본 줄바꿈을 보존해 피했다.
+`CHANGELOG.md`는 CRLF, `HANDOFF.md`는 LF다 — 섞으면 diff가 통째로 뒤집힌다.
 
 **긴 한글 문서는 heredoc이 아니라 `Write` 도구로 쓴다.** 여러 줄 커밋 메시지는
 `git commit -F <파일>`로 넘긴다 — heredoc은 조용히 깨진다.
@@ -204,24 +240,13 @@ CI가 5회 연속 실패한 전례가 있다).
 **Bash heredoc 안의 파이썬에 Windows 경로를 넣지 마라.** 역슬래시가 한 겹 먹혀
 `tests\\fixtures`가 `tests\fixtures`(폼피드)로 바뀐다. 경로가 섞인 편집은 `Edit` 도구로 한다.
 
-Ollama는 트레이 앱 겸 백그라운드 서비스로 자동 기동해 `127.0.0.1:11434`를 듣는다.
-PATH에 없으면 `$env:LOCALAPPDATA\Programs\Ollama\ollama.exe`를 직접 부른다.
+### live 테스트
 
-| 모델 | 크기 | 용도 |
-| --- | --- | --- |
-| `qwen2.5:3b` | 1.9GB | 번역·Tier 1 신호용. **실측: 3큐 중 2큐 실패**(파킹 2번) |
-| `qwen2.5:1.5b` | 986MB | 폴백 관찰용. 번역기로는 못 쓴다(실측 5/15) |
+STT live 테스트는 `-m live` · `CUESIFT_LIVE_STT_*` 환경변수로 돌고
+**오디오는 리포에 넣지 않는다**(D10, `CUESIFT_LIVE_AUDIO`로 받는다).
 
-**STT 백엔드는 아직 정하지 않았다.** WP9 live 테스트를 돌리려면 OpenAI 호환
-`/v1/audio/transcriptions`를 내는 서버가 필요하고, **Ollama는 그것을 제공하지 않는다.**
-`verbose_json`을 내는지가 관문이다(설계 D4) — 후보를 고를 때 그것부터 확인하라.
-
-**결정론이 필요하면 스텁 서버를 쓴다.** OpenAI 호환 `/v1/chat/completions`에
-`{"translations":[{"id":N,"text":…}]}`를 돌려주면 되고, 지시를 어긴 응답을 만들려면
-아무 문자열이나 `choices[0].message.content`에 담으면 된다.
-**리포 밖에 두어야 게이트를 오염시키지 않는다.**
-
-live 실행 명령:
+**STT 백엔드는 아직 정하지 않았다.** OpenAI 호환 `/v1/audio/transcriptions`를 내는 서버가
+필요하고 **Ollama는 그것을 제공하지 않는다.** `verbose_json`을 내는지가 관문이다(D4).
 
 ```powershell
 $env:CUESIFT_LIVE_BASE_URL="http://localhost:11434/v1"
@@ -231,19 +256,17 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 
 ## 다음 세션 시작 절차
 
-**첫 일은 이 브랜치가 어디까지 갔는지 확인하는 것이다.** 이번 세션은 푸시도 PR도 하지
-않았으므로 `feat/stt-adapter`는 로컬에만 있다.
-
 ```bash
-gh pr list --state open                  # 비어 있어야 한다
+gh pr list --state open                  # PR 번호를 여기서 얻는다
+gh pr checks --watch                     # CI 5잡(test 3.11~3.14 · docs)
 git branch --show-current                # feat/stt-adapter
-git log --oneline main..HEAD             # 034f963 + 이 문서의 커밋
 git status --short                       # clean
-
-# 스펙을 읽고 구현 계획으로 넘어간다
-cat docs/superpowers/specs/2026-08-30-stt-adapter-design.md
+git log --oneline main..HEAD             # 커밋 30개(이 문서 커밋 포함)
 ```
 
 **`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거가 `branches: [main]`뿐이라
 직접 푸시하면 머지된 **뒤에야** CI가 돈다 — 게이트가 아니라 사후 통보다.
 PR 절차는 [CLAUDE.md](CLAUDE.md)의 "PR 절차"에 있다.
+
+**PR이 머지되면 다음 작업은 WP6의 `--media` 배선이다.** 그 커밋은 이월 1번(`_output_path`)과
+7번(재시도 루프)을 **함께** 닫아야 한다 — 둘 다 배선하는 순간에만 도달 가능해진다.
