@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import gc
 import gzip
 import inspect
 import json
+import tracemalloc
 import zlib
 from pathlib import Path
 
@@ -512,7 +514,13 @@ def test_상한을_넘는_본문은_치명적_오류다(tmp_path: Path) -> None:
 
 
 def test_상한을_넘어도_본문_전체를_메모리에_올리지_않는다(tmp_path: Path) -> None:
-    """**끊는 것**이 상한의 전부다. 다 읽고 나서 재는 것은 사후 보고다."""
+    """**끊는 것**이 상한의 전부다. 다 읽고 나서 재는 것은 사후 보고다.
+
+    **이 테스트가 재는 것은 스트림에서 꺼낸 양이지 메모리가 아니다.**
+    초과를 알려면 그 청크를 꺼내 봐야 하므로 `cap + 청크 하나`를 허용한다.
+    꺼낸 청크가 `body`에 **실리지** 않는 것은
+    `test_상한을_넘긴_청크가_메모리에_실리지_않는다`가 본다.
+    """
     received: list[int] = []
     block = b"x" * (1024 * 1024)
 
@@ -826,3 +834,49 @@ def test_재조립_응답이_본문_길이를_거짓말하지_않는다(monkeypa
         f"헤더가 {declared}바이트라는데 본문은 {len(out.content)}바이트다"
     )
     assert out.headers["X-Trace"] == "keep", "거르지 않아야 할 헤더까지 사라졌다"
+
+
+def test_상한을_넘긴_청크가_메모리에_실리지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**`len(content)`만 보는 단언으로는 이 회귀를 못 잡는다.**
+
+    N3 이전 원형(누적한 **뒤에** 길이를 재고, 반환할 때 `bytes(body[:상한])`으로
+    자르기)은 결과 길이가 지금과 **똑같다** - 실측으로 둘 다 65536바이트다.
+    다른 것은 그 사이에 쓴 메모리뿐이므로, 그것을 재지 않으면 게이트가 아니다.
+    gzip 폭탄이면 64KB 청크가 66MB로 팽창하니 이 차이가 곧 위협의 크기다.
+
+    실측(2026-09-02, `tracemalloc`, 32MB 청크 하나 · 상한 64KB):
+
+    | 코드 | peak |
+    | --- | --- |
+    | 지금 (싣기 전에 검사) | **0.14MB** |
+    | N3 이전 원형 (싣고 나서 검사) | **32.14MB** |
+
+    임계값 8MB는 지금 코드의 **57배**이고 원형의 **1/4**이다. 여유를 이만큼
+    두는 이유는 빡빡한 임계값이 CI에서 간헐 실패하고 **무시되는 게이트는 없는
+    게이트와 같기** 때문이다 - 인터프리터·플랫폼 차이로 수 MB가 흔들려도
+    양쪽 판정은 바뀌지 않는다.
+
+    **청크는 측정창 밖에서 만든다.** 안에서 만들면 32MB 할당이 그대로 peak에
+    실려 두 코드가 구분되지 않는다.
+    """
+    cap = 64 * 1024
+    chunk_bytes = 32 * 1024 * 1024
+    monkeypatch.setattr(stt_mod, "_MAX_RESPONSE_BYTES", cap)
+    blob = b"y" * chunk_bytes
+
+    def chunks():
+        yield blob
+
+    source = httpx.Response(200, content=chunks())
+    gc.collect()
+    tracemalloc.start()
+    try:
+        response, overflowed = stt_mod._read_capped(source)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert overflowed
+    # 길이는 원형도 통과한다 - 아래 한 줄이 이 테스트의 전부다.
+    assert len(response.content) == cap
+    assert peak < chunk_bytes // 4, f"peak {peak / 1048576:.1f}MB - 청크가 통째로 실렸다"
