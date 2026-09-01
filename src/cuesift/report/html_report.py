@@ -38,6 +38,9 @@ h1 { font-size: 1.25rem; margin: 0 0 1rem; }
 .summary dt { font-size: 0.8rem; opacity: 0.7; }
 .summary dd { margin: 0; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
 .meta { margin: 0.75rem 0 0; font-size: 0.85rem; opacity: 0.7; }
+/* 배경과 글자색을 **함께** 지정한다. 이 문서는 `color-scheme: light dark`라
+   한쪽만 주면 다크 모드에서 밝은 배경 위에 밝은 글자가 되어 배지가 사라진다 -
+   나머지 표는 `currentColor`로만 그려 이 문제가 없다. */
 .badge-stt { margin-left: 0.4em; padding: 0 0.35em; border-radius: 3px;
              background: #fef7e0; color: #7a5900; font-size: 0.8em; white-space: nowrap; }
 table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
@@ -292,9 +295,10 @@ def _row_html(risk: SegmentRisk, segment: Segment) -> str:
     return _ROW.substitute(
         hardfail="1" if risk.hard_fail else "0",
         signals=esc(" ".join(names)),
-        # **`data-*`는 JS가 읽는 계약이다.** 필터를 늘릴 때 쓰라고 내는 것이지
-        # 지금 필터가 이것을 보지는 않는다 - STT 입력에서는 전 행이 같은 값이라
-        # 필터로서 정보가 0이다(설계 D8이 점수에 넣지 않는 것과 같은 이유).
+        # **`data-stt`는 위 둘과 달리 오늘 `_JS`가 읽지 않는다.** 필터를 늘릴 때
+        # 쓰라고 내는 자리다 - STT 입력에서는 전 행이 같은 값이라 필터로서
+        # 정보가 0이고(설계 D8이 점수에 넣지 않는 것과 같은 이유), 그래서
+        # `_JS`를 훑어 속성 사용처를 세는 테스트도 이것을 세지 않는다.
         stt="1" if segment.source_from_stt else "0",
         # **배지는 `id` 칸에 얹힌다.** 별도 칸으로 빼면 `_TABLE`의 `<thead>`도
         # 같이 늘어나야 하는데, 자막 경로에서는 언제나 비어 있는 칸이 된다.
