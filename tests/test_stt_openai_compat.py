@@ -658,3 +658,39 @@ def test_한국어와_일본어는_한_글자도_바뀌지_않는다(tmp_path: P
     )
     assert t.cues[0].text == ko
     assert t.cues[1].text == ja
+
+
+# --- 검사받지 않던 방어 3줄 (최종 픽스 F2) ---------------------------------
+
+
+def test_응답이_객체가_아니면_치명적_오류다(tmp_path: Path) -> None:
+    """지우면 `body.get`이 `AttributeError` - 계층 밖으로 새어 종료 코드 1이 된다.
+
+    이 저장소에서 1은 "규격 위반 발견"이라, 백엔드 결함이 자막 결함으로
+    **오보**된다.
+    """
+    with pytest.raises(FatalProviderError, match="객체가 아니다"):
+        _provider(lambda r: httpx.Response(200, json=[1, 2])).transcribe(
+            _audio(tmp_path), language="ko"
+        )
+
+
+def test_segment_원소가_객체가_아니면_치명적_오류다(tmp_path: Path) -> None:
+    """지우면 `item.get`이 `AttributeError`로 같은 결과가 된다."""
+    with pytest.raises(FatalProviderError, match="객체가 아니다"):
+        _provider(lambda r: httpx.Response(200, json={"segments": [1]})).transcribe(
+            _audio(tmp_path), language="ko"
+        )
+
+
+def test_DecodingError는_재시도_가능_오류다(tmp_path: Path) -> None:
+    """`TransportError`로 좁히면 이것이 샌다 - 실측으로 `RequestError`지만
+    `TransportError`는 **아니다**. 그 절이 없으면 `httpx.DecodingError`가
+    `ProviderError` 밖으로 나간다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.DecodingError("gzip이 깨졌다", request=request)
+
+    with pytest.raises(RetryableProviderError, match="응답 처리 실패"):
+        _provider(handler).transcribe(_audio(tmp_path), language="ko")
