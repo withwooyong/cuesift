@@ -18,8 +18,16 @@ def _outcome(
     segments: list[Segment] | None = None,
     **kwargs: object,
 ) -> TriageOutcome:
-    """테스트용 TriageOutcome. 기본은 선별 0건이다."""
+    """테스트용 TriageOutcome. 기본은 선별 0건이다.
+
+    **`source_from_stt`의 기본은 세그먼트에서 유도한다.** `TriageOutcome`의
+    불변식이 "세그먼트가 있으면 둘이 같다"를 요구하므로 맞춰 두지 않으면 STT
+    세그먼트를 넘기는 호출자가 전부 `ValueError`를 맞는다. `kwargs`로 덮을 수
+    있고, **전량 실패 회귀 테스트가 `segments=()`와 함께 그 길로 온다** -
+    유도가 닿지 않는 유일한 자리다.
+    """
     defaults: dict[str, object] = {
+        "source_from_stt": any(s.source_from_stt for s in (segments or ())),
         "source_lang": "ko",
         "target_lang": "en",
         "profile_name": "netflix-en",
@@ -955,7 +963,23 @@ def test_배지가_붙는_칸도_원문을_이스케이프한다() -> None:
     assert '<td class="id">&lt;script&gt;' in html
     assert '<td class="id"><script>' not in html
     # 배지 상수는 이스케이프를 거치지 않고 그대로 얹힌다. **그것이 안전한 것은
-    # 오늘의 문구에 특수문자가 없기 때문이지 구조 덕분이 아니다** - 이 단언이
-    # 그 전제를 잰다. 문구를 사용자 문자열로 바꾸는 순간 여기서 걸린다.
+    # 오늘의 문구에 특수문자가 없기 때문이지 구조 덕분이 아니다** - 아래 두 줄이
+    # 재는 것은 **그 전제뿐이다.** 상수의 문자열이 특수문자를 얻을 때만 빨개지고,
+    # `_STT_BADGE`를 함수로 바꿔 사용자 문자열을 슬롯에 넣는 변경은 상수를
+    # 깨끗한 채 남기므로 여기서 걸리지 않는다.
     assert esc(_STT_BADGE_TEXT) == _STT_BADGE_TEXT
     assert esc(_STT_BADGE_TITLE) == _STT_BADGE_TITLE
+
+
+def test_전량_번역_실패한_stt_실행도_화면에_출처를_남긴다() -> None:
+    """`review.json`의 같은 회귀와 짝이다 (FR-1.4 · 설계 D8).
+
+    `outcome.segments`에서 유도하면 전량 실패 실행에서 그 집합이 비어
+    `any`가 `False`를 내고 **HTML 어디에도 "STT"가 남지 않는다**(실측).
+    화면은 "볼 것이 없다"와 "판정 자체를 못 했다"를 구별해 말해야 하는데,
+    원문이 STT였다는 사실이 사라지면 재실행 대상이 무엇인지도 사라진다.
+    """
+    html = build_html(_outcome(risks=[], segments=[], excluded_failures=4, source_from_stt=True))
+    assert "원문 STT" in html
+    # 전제 고정 - 행이 한 건도 없는 실행이 맞는지 본다.
+    assert '<tr class="seg"' not in html

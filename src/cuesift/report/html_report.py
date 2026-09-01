@@ -194,10 +194,13 @@ def _summary_html(outcome: TriageOutcome) -> str:
     요청값을 그리면 README 배수의 분모가 화면에서 조용히 틀린다.
     """
     # 행이 0개인 실행에서도 출처가 드러나야 한다 - `review.json`의
-    # `summary.source_from_stt`와 같은 이유이고, 같은 식으로 유도한다.
-    # **`outcome.selected`로 좁히면 안 된다.** 좁히면 한 건도 선별되지 않은
-    # STT 실행에서 화면 어디에도 원문의 출처가 남지 않는다(설계 D3).
-    origin = " · 원문 STT" if any(s.source_from_stt for s in outcome.segments) else ""
+    # `summary.source_from_stt`와 같은 이유이고, 같은 원천에서 읽는다.
+    #
+    # **`outcome.segments`에서 유도하면 안 된다.** 그 집합에는 번역 실패분이
+    # 빠져 있어 전량 실패 실행에서 비고, 빈 이터러블 위의 `any`는 `False`를 내
+    # **HTML 어디에도 "STT"가 남지 않는다**(실측: 4건 전량 실패에서 origin 사라짐).
+    # `outcome.selected`로 좁히는 것도 같은 이유로 금지다(설계 D3).
+    origin = " · 원문 STT" if outcome.source_from_stt else ""
     return _SUMMARY.substitute(
         origin=origin,
         total=outcome.total_segments,

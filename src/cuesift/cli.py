@@ -2584,6 +2584,14 @@ def _run_triage(
         # 읽혀 미배선을 정상으로 오인한다.
         raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
 
+    # **`kept`가 아니라 `translated.segments`에서 읽는다** (FR-1.4 · 설계 D8).
+    # `kept`는 번역 실패분이 빠진 집합이라 전량 실패 실행에서 비고, 빈 이터러블
+    # 위의 `any`는 `False`를 낸다 - 그러면 `total_segments`가 4인데
+    # `source_from_stt`가 `false`인 산출물이 나가 **"자막 파일이었다"**로 읽힌다.
+    # 실패해도 세그먼트 자체는 `translated.segments`에 남으므로 여기가 유일하게
+    # 전량 실패에서도 살아 있는 유도원이다.
+    source_from_stt = any(seg.source_from_stt for seg in translated.segments)
+
     def _outcome(
         risks: tuple[SegmentRisk, ...],
         segments: tuple[Segment, ...],
@@ -2634,6 +2642,7 @@ def _run_triage(
             usage=scope.usage,
             cost_includes=scope.includes,
             cost_unreported=scope.unreported,
+            source_from_stt=source_from_stt,
         )
 
     if not kept:

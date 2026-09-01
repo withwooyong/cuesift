@@ -43,18 +43,18 @@ def build_review(outcome: TriageOutcome) -> dict[str, Any]:
             "review_ratio": outcome.review_ratio,
             "hard_fail_count": outcome.hard_fail_count,
             "signal_hits": outcome.signal_hits,
-            # 원문이 STT에서 왔는가 (FR-1.4). **`outcome.segments`에서 유도한다.**
+            # 원문이 STT에서 왔는가 (FR-1.4). **`outcome`의 필드를 그대로 싣는다.**
             #
-            # `TriageOutcome`에 필드를 새로 두면 세그먼트의 플래그와 요약의
-            # 플래그가 **서로 다른 경로로 채워져** 갈라질 수 있는데, 유도하면
-            # 갈라질 자리가 없다.
+            # **`outcome.segments`에서 유도하면 안 된다.** 그 집합에는 번역
+            # 실패분이 빠져 있어 전량 실패 실행에서 비고, 빈 이터러블 위의 `any`는
+            # `False`를 낸다 - `total_segments: 4`인데 `source_from_stt: false`인
+            # 문서가 나가고 `false`는 "모름"이 아니라 **"자막 파일이었다"**로 읽힌다.
+            # 이 키를 두는 이유 자체가 **행이 한 건도 남지 않은 실행**인데 가장 심하게
+            # 남지 않는 실행에서 거짓 단언을 내게 된다. `outcome.selected`로 좁히는
+            # 것도 같은 이유로 금지다(설계 D3).
             #
-            # **`outcome.selected`로 좁히면 안 된다.** `segments[]`는 선별된 것만
-            # 담으므로(설계 D3) 좁히는 순간 **한 건도 선별되지 않은 STT 실행에서
-            # 파일 어디에도 흔적이 남지 않는다** - 이 키를 두는 이유 자체가 그
-            # 실행이다. `any`인 것도 계약이다: 자막과 STT가 섞인 입력에서
-            # `all`이면 요약이 조용히 "STT 아님"이 된다.
-            "source_from_stt": any(seg.source_from_stt for seg in outcome.segments),
+            # 세그먼트와 갈라질 걱정은 `TriageOutcome.__post_init__`의 불변식이 맡는다.
+            "source_from_stt": outcome.source_from_stt,
             "cost": {
                 "prompt_tokens": 0 if usage is None else usage.prompt_tokens,
                 "completion_tokens": 0 if usage is None else usage.completion_tokens,
