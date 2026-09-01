@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import gzip
 import inspect
+import json
+import zlib
 from pathlib import Path
 
 import httpx
@@ -694,3 +697,132 @@ def test_DecodingError는_재시도_가능_오류다(tmp_path: Path) -> None:
 
     with pytest.raises(RetryableProviderError, match="응답 처리 실패"):
         _provider(handler).transcribe(_audio(tmp_path), language="ko")
+
+
+# --- 압축 응답 (재리뷰 N1) -------------------------------------------------
+
+
+def test_정상_gzip_응답을_읽는다(tmp_path: Path) -> None:
+    """**목이 광고한 능력을 한 번은 행사해야 한다.**
+
+    이 파일의 46개 테스트가 한 번도 `Content-Encoding`을 붙이지 않아서,
+    스트리밍 전환이 압축 응답을 통째로 죽인 것이 1693 passed를 그대로
+    통과했다. httpx는 요청에 `Accept-Encoding: gzip, deflate`를 기본으로
+    붙이므로 **압축 응답은 예외가 아니라 정상 경로다** - 진짜 서버(OpenAI,
+    nginx·Cloudflare 뒤의 vLLM)는 대부분 gzip으로 돌려준다.
+
+    형제 `tests/test_translate_openai_compat.py`의 같은 이름 테스트와 짝이다.
+    거기서 한 번 잡힌 결함이 여기서 재발했다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = gzip.compress(json.dumps(VERBOSE_BODY).encode())
+        return httpx.Response(200, headers={"content-encoding": "gzip"}, content=body)
+
+    t = _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    assert len(t.cues) == 2
+    assert t.cues[0].text == "안녕하세요"
+
+
+def test_정상_deflate_응답을_읽는다(tmp_path: Path) -> None:
+    """`Accept-Encoding`이 광고하는 둘째 코덱이다. gzip만 고치면 절반만 닫힌다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = zlib.compress(json.dumps(VERBOSE_BODY).encode())
+        return httpx.Response(200, headers={"content-encoding": "deflate"}, content=body)
+
+    t = _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    assert len(t.cues) == 2
+
+
+def test_gzip_401은_치명적_오류로_남는다(tmp_path: Path) -> None:
+    """**이 결함의 진짜 피해가 여기다.**
+
+    재조립 응답에 `Content-Encoding`을 그대로 옮기면 httpx가 이미 풀린
+    본문을 다시 풀려다 `DecodingError`를 내고, 그것은 `_raise_for_status`에
+    **닿기 전에** 터진다. 실측으로 401이 `RetryableProviderError`가 됐다 -
+    인증 실패가 재시도 대상이 되어 같은 401을 `max_retries+1`회 반복한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            headers={"content-encoding": "gzip"},
+            content=gzip.compress(b'{"error":"bad key"}'),
+        )
+
+    with pytest.raises(FatalProviderError) as excinfo:
+        _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    msg = str(excinfo.value)
+    assert msg.startswith("401"), msg
+    # 본문이 읽히는 것까지 본다 - 헤더만 걷어내고 본문을 못 실으면
+    # 사용자는 "401"만 보고 원인을 모른다.
+    assert "bad key" in msg
+
+
+def test_gzip_429의_Retry_After가_보존된다(tmp_path: Path) -> None:
+    """헤더를 **둘만** 거른다는 것이 이 테스트다.
+
+    전부 거르면 429의 대기 시간이 조용히 "모름"이 되고 리다이렉트 진단이
+    사라진다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"content-encoding": "gzip", "Retry-After": "7"},
+            content=gzip.compress(b"slow down"),
+        )
+
+    with pytest.raises(RetryableProviderError) as excinfo:
+        _provider(handler).transcribe(_audio(tmp_path), language="ko")
+    assert excinfo.value.retry_after_s == 7.0
+
+
+# --- 큰 덩어리 하나의 초과분 (재리뷰 N3) -----------------------------------
+
+
+def test_팽창한_큰_청크에서도_상한이_지켜진다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """상한 검사가 누적 **뒤에** 있으면 청크 하나만큼 초과분이 그대로 실린다.
+
+    gzip 폭탄이면 64KB 청크가 최대 66MB로 팽창하므로, 검사 **위치**가 곧
+    메모리 상한이다. 상한을 작게 바꿔 같은 산술을 실제 32MB 할당 없이 본다 -
+    비율이 그대로이므로 검사 위치가 뒤로 돌아가면 이 단언이 깨진다.
+    """
+    cap = 1024
+    monkeypatch.setattr(stt_mod, "_MAX_RESPONSE_BYTES", cap)
+
+    def chunks():
+        yield b"y" * (cap * 64)  # 팽창한 한 덩어리
+        raise AssertionError("상한을 넘긴 뒤에도 스트림을 계속 읽었다")
+
+    response, overflowed = stt_mod._read_capped(httpx.Response(200, content=chunks()))
+    assert overflowed
+    assert len(response.content) == cap, f"{len(response.content)}바이트를 실었다"
+
+
+def test_재조립_응답이_본문_길이를_거짓말하지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`Content-Length`도 함께 걸러야 하는 이유다.
+
+    우리가 싣는 본문은 압축이 풀렸거나 상한에서 **잘려** 원래 길이와 다르다.
+    원래 헤더를 그대로 옮기면 헤더가 본문에 대해 거짓말을 하고, 그 응답을
+    읽는 다음 사람은 **본문이 잘린 것을 헤더로는 알 수 없다.**
+
+    **`Content-Encoding` 하나만 거르면 이 단언이 깨진다** - 변이로 확인했다.
+    나머지 헤더가 그대로 오는 것(`X-Trace`)을 함께 본다: 둘만 거른다는 것이
+    이 함수의 계약이고, 전부 거르면 429의 `Retry-After`가 사라진다.
+    """
+    monkeypatch.setattr(stt_mod, "_MAX_RESPONSE_BYTES", 1024)
+    payload = b"z" * 4096
+    source = httpx.Response(
+        200,
+        headers={"Content-Length": str(len(payload)), "X-Trace": "keep"},
+        content=iter([payload]),
+    )
+    out, overflowed = stt_mod._read_capped(source)
+    assert overflowed
+    declared = out.headers.get("Content-Length")
+    assert declared is not None and int(declared) == len(out.content), (
+        f"헤더가 {declared}바이트라는데 본문은 {len(out.content)}바이트다"
+    )
+    assert out.headers["X-Trace"] == "keep", "거르지 않아야 할 헤더까지 사라졌다"

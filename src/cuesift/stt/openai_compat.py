@@ -45,7 +45,14 @@ peak 201.3MB가 실측됐다. 악의적·오작동 엔드포인트가 1GB를 흘
 
 **너무 작게 잡으면 정상 응답이 죽는다.** `verbose_json`은 큐마다 텍스트와
 타임코드를 실으므로 몇 시간짜리 오디오도 수 MB에 그친다(관측). 32MB는 그
-정상 범위의 수십 배이면서 3배 증폭을 감안해도 100MB 아래에 머무는 값이다."""
+정상 범위의 수십 배다.
+
+**peak는 32MB가 아니다.** 실측(2026-09-02, `tracemalloc`, 전체 `transcribe`
+경로)으로 정상 경로가 본문의 **3.37배**(16.5MB 본문 -> peak 55.6MB),
+상한 초과 경로가 상한의 **2.06배**(peak 66.0MB)였다. 상한을 가득 채운
+정상 응답이면 peak가 100MB를 넘는다. **중요한 것은 작다는 것이 아니라
+유계라는 것이다** - 상한이 없으면 1GB 본문이 3GB가 되고 그때의
+`MemoryError`는 어떤 `except`에도 걸리지 않는다."""
 
 _RESPONSE_READ_BUDGET_S = 600.0
 """본문 **수신 단계**에 허용하는 총 시간(초).
@@ -285,6 +292,27 @@ class OpenAICompatibleSttProvider:
             self._client.close()
 
 
+_STRIPPED_HEADERS = (b"content-encoding", b"content-length")
+"""재조립 응답에 **옮기면 안 되는** 헤더.
+
+`iter_bytes()`가 돌려주는 것은 **이미 압축이 풀린 본문**이다. 그것을
+`Content-Encoding: gzip`과 함께 다시 실으면 httpx가 **한 번 더 풀려고 해서**
+`DecodingError`가 난다(실측). 그러면 `_raise_for_status`에 **닿기도 전에**
+터지므로 "상태 코드를 먼저 본다"는 보장이 통째로 무력화된다 - 실측으로
+`401 + gzip`이 `RetryableProviderError`가 됐다. **Fatal이어야 할 인증 실패가
+재시도 대상이 되어 같은 401을 `max_retries+1`회 반복한다.**
+httpx는 요청에 `Accept-Encoding: gzip, deflate`를 기본으로 붙이므로
+**압축 응답은 예외가 아니라 정상 경로다**(OpenAI·nginx·Cloudflare 뒤의 vLLM).
+형제 모듈의 `test_정상_gzip_응답을_읽는다`가 같은 결함을 이미 한 번 잡았다.
+
+`Content-Length`도 함께 거른다 - 우리가 실은 본문은 압축이 풀렸거나
+상한에서 잘려 원래 길이와 다르다. 남기면 헤더가 본문에 대해 거짓말한다.
+
+**나머지는 전부 옮긴다.** `_raise_for_status`가 `Retry-After`와 `Location`을
+읽으므로, 빠뜨리면 429의 대기 시간이 조용히 "모름"이 되고 리다이렉트 진단이
+사라진다."""
+
+
 def _read_capped(response: httpx.Response) -> tuple[httpx.Response, bool]:
     """스트리밍 응답을 **상한까지만** 읽어 실체화된 응답으로 되돌린다.
 
@@ -294,8 +322,15 @@ def _read_capped(response: httpx.Response) -> tuple[httpx.Response, bool]:
     `httpx.Response`를 새로 만들어 돌려주는 이유는 `_raise_for_status`와
     `_to_transcript`가 둘 다 `response.text`/`.json()`을 쓰는데, 스트림을
     소비한 원본에서는 그것들이 `httpx.ResponseNotRead`를 내기 때문이다.
-    **헤더를 함께 옮긴다** - `_raise_for_status`가 `Retry-After`와
-    `Location`을 읽는다. 빠뜨리면 429의 대기 시간이 조용히 "모름"이 된다.
+
+    **무엇을 옮기고 무엇을 거르는가**가 이 함수에서 가장 조용한 부분이다.
+    본문은 `iter_bytes()`가 **압축을 푼 뒤**의 바이트이고, 헤더는
+    `_STRIPPED_HEADERS`(`Content-Encoding`·`Content-Length`) 둘만 빼고 전부
+    옮긴다. 그 둘을 빼지 않으면 압축 응답이 통째로 죽는다 - 상수 주석 참고.
+
+    **상한은 `body`에 싣기 전에 본다.** 뒤에서 보면 큰 덩어리 하나의 초과분이
+    그대로 실린다 - gzip 폭탄이면 64KB 청크가 66MB로 팽창하므로, 검사 위치가
+    곧 메모리 상한이다.
     """
     deadline = time.monotonic() + _RESPONSE_READ_BUDGET_S
     body = bytearray()
@@ -305,17 +340,22 @@ def _read_capped(response: httpx.Response) -> tuple[httpx.Response, bool]:
             # 재시도 가능이다. 서버가 느린 것과 죽은 것을 여기서 구분할 수
             # 없고, Fatal로 올리면 일시적 혼잡이 배치 전체를 죽인다.
             raise RetryableProviderError(f"응답 본문 수신이 {_RESPONSE_READ_BUDGET_S}초를 넘었다")
-        body += chunk
-        if len(body) > _MAX_RESPONSE_BYTES:
-            # **여기서 끊는 것이 이 함수의 전부다.** 계속 읽으면 상한이
-            # 사후 보고가 되고 메모리는 이미 다 쓴 뒤다.
+        room = _MAX_RESPONSE_BYTES - len(body)
+        if len(chunk) > room:
+            # **여유만큼만 싣고 끊는다.** 통째로 실은 뒤 길이를 재면
+            # 상한이 사후 보고가 되고 메모리는 이미 청크 하나만큼 초과했다.
+            body += chunk[:room]
             overflowed = True
             break
+        body += chunk
+    filtered = httpx.Headers(
+        [(k, v) for k, v in response.headers.raw if k.lower() not in _STRIPPED_HEADERS]
+    )
     return (
         httpx.Response(
             status_code=response.status_code,
-            headers=response.headers,
-            content=bytes(body[:_MAX_RESPONSE_BYTES]),
+            headers=filtered,
+            content=bytes(body),
         ),
         overflowed,
     )

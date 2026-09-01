@@ -301,7 +301,7 @@ def _to_ms(seconds: float, *, field: str, position: int, path: Path) -> int:
     - **저장 경로(`writer.py`)**: pysubs2가 `RuntimeWarning`과 함께
       `99:59:59,999`로 클램프한다 - 조용하지 않다.
     - **HTML 리포트 경로**: **그 클램프가 없다.** `report/html_report.py`의
-      `_timecode()`가 자릿수를 그대로 내므로 303자짜리 문자열이
+      `_timecode()`가 자릿수를 그대로 내므로 309자짜리 문자열이
       `td.tc`(`white-space: nowrap`)에 박혀 표 레이아웃이 무너진다.
       예외도 경고도 나지 않는다.
 
