@@ -231,6 +231,17 @@ class TriageOutcome:
     # 판정만 여기로 올리면 **1토큰이 999회 무음 호출을 가리는 것**이 막히면서
     # `review.json`의 키 개수는 그대로다.
     cost_unreported: tuple[str, ...] = ()
+    # 원문이 STT에서 왔는가 (FR-1.4 · 설계 D8). **표시 전용이다** - 점수에도
+    # hard fail에도 들어가지 않는다.
+    #
+    # **`any(seg.source_from_stt for seg in segments)`로 유도하면 안 된다.**
+    # `segments`는 번역 실패분이 빠진 집합이라 전량 실패 실행에서 비고, 빈
+    # 이터러블 위의 `any`는 `False`를 낸다 - 그러면 `total_segments`가 4인데
+    # `source_from_stt`가 `false`인 문서가 나가고, `false`는 "모름"이 아니라
+    # **"자막 파일이었다"**로 읽힌다. 예외도 경고도 없고 파일은 며칠 뒤에 열린다.
+    # 이 키를 만든 이유가 "행이 한 건도 남지 않은 실행에서도 출처를 남기는 것"이라
+    # 유도원은 실패분에도 남는 것이어야 한다(CLI는 `translated.segments`에서 읽는다).
+    source_from_stt: bool = False
 
     def __post_init__(self) -> None:
         # 형제 모델 넷(`Span`·`Segment`·`Signal`·`SegmentRisk`)과 같은 자리의 방어다.
@@ -260,6 +271,21 @@ class TriageOutcome:
                 f"segments와 risks의 segment_id 집합이 다르다 - "
                 f"segments에만: {sorted(seg_ids - risk_ids)} · "
                 f"risks에만: {sorted(risk_ids - seg_ids)}"
+            )
+        # **필드와 세그먼트별 플래그가 갈라지는 것을 여기서 막는다.**
+        # `source_from_stt`를 유도가 아니라 필드로 둔 대가로 요약과 세그먼트가
+        # **서로 다른 경로로 채워질** 수 있게 됐다. 입력 하나는 자막이거나 STT이지
+        # 섞이지 않으므로(설계 D3 인제스트 구조) 세그먼트가 있는 실행에서 둘은 반드시
+        # 같다 - 다르면 배선이 틀린 것이고, 조용히 나가면 `review.json`의 요약과
+        # `segments[]`가 같은 파일 안에서 서로 다른 출처를 말한다.
+        #
+        # **비어 있을 때는 제약하지 않는다.** 전량 번역 실패 경로가 정확히 그 자리이고,
+        # 거기서 `any(())`와 같기를 요구하면 필드를 둔 이유가 통째로 사라진다.
+        if self.segments and self.source_from_stt != any(s.source_from_stt for s in self.segments):
+            on = sum(1 for s in self.segments if s.source_from_stt)
+            raise ValueError(
+                f"source_from_stt({self.source_from_stt})가 segments의 플래그와 다르다 - "
+                f"segments {len(self.segments)}건 중 {on}건이 STT다"
             )
         # 음수면 `total_segments`가 `triaged_segments`보다 작아져 화면이 "2개 중
         # 5개 검수"라는 불가능한 요약을 낸다. 프로그램은 정상 종료하고 종료 코드도

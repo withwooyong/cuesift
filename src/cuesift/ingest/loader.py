@@ -14,6 +14,7 @@ import pysubs2
 from pysubs2.exceptions import Pysubs2Error
 
 from cuesift.segment import Segment
+from cuesift.stt.provider import SttProvider, Transcript
 
 # 영상·오디오를 명시적으로 거른다 (FR-1.3, 설계 §7.2).
 # 이 목록이 없으면 mp4가 텍스트로 열려 UnicodeDecodeError가 나고,
@@ -82,6 +83,243 @@ def load_subtitle(path: Path, *, source_lang: str = "ko") -> IngestResult:
     )
 
 
+def load_media(path: Path, provider: SttProvider, *, source_lang: str = "ko") -> IngestResult:
+    """영상·오디오를 STT로 전사해 `IngestResult`로 만든다 (FR-1.2 · 설계 §4.4).
+
+    **`IngestResult`의 필수 필드 6개를 전부 채운다.** 셋이 실패 지점이고
+    그중 하나는 조용하다 (전부 실측):
+
+    | 안 채운 필드 | 결과 |
+    | --- | --- |
+    | `format` | `UnknownFileExtensionError: '.tmp'` - `writer.py`가 `save(format_=None)`을 부른다 |
+    | `event_index` | `writer.py`가 `KeyError`, `cli.py`의 큐 번호 폭이 **조용히** 1이 된다 |
+    | `subs` | 필수 필드라 `TypeError` |
+
+    **프로바이더의 예외를 `IngestError`로 감싸지 않는다.** 감싸면 CLI가
+    "자막 파일이 잘못됐다"로 보고하는데 실제 원인은 STT 백엔드다 - 호출부는
+    둘을 다른 종료 코드로 바꾼다.
+
+    **`source_lang`은 호출자가 선언한 값을 그대로 쓴다** (FR-1.5). `transcript.language`로
+    덮으면 안 되는 이유는 그 값의 **도메인이 정의돼 있지 않기** 때문이다 - 백엔드는
+    `"korean"`·`"ko"`·`"Korean"`을 제각각 내고, §12 Q3가 "능력이 균일하지 않다"를
+    전제로 둔다. `signals/structural.py`의 `_SCRIPT_RANGES` 키는 정확히 `ko`·`ja`
+    둘뿐이라 `"korean"`이 들어오면 `.get()`이 `None`을 내고 그 자리의 `return None`이
+    **미번역 신호를 예외 없이 통째로 끈다**(실측). 미탐이 늘어 Recall@Budget이
+    조용히 내려간다 - 크래시가 아니라 지표가 틀리는 부류다.
+
+    `load_subtitle`의 같은 필드가 **"호출자가 선언한 ISO 코드"**를 불변식으로 갖고
+    있으므로 두 경로가 같아야 한다. 탐지된 언어가 필요해지면 `Transcript.language`에
+    그대로 남아 있으니 그때 별도 필드로 싣는다.
+
+    `_reject_non_subtitle`을 부르지 않는다 - 그 함수는 영상 입력을 **거절**하는데
+    여기서는 영상이 정상 입력이다.
+    """
+    if not path.is_file():
+        raise IngestError("not_found", f"{path}: 파일이 없다")
+
+    transcript = provider.transcribe(path, language=source_lang)
+    segments, subs, event_index = _from_transcript(transcript, path)
+    if not segments:
+        raise IngestError(
+            "empty",
+            f"{path}: 표시할 큐가 0개다 (프로바이더 {provider.name}, 모델 {transcript.model}). "
+            "0개 수집은 통과가 아니라 입력 오류다.",
+        )
+    return IngestResult(
+        segments=segments,
+        source_path=path,
+        # **`subs.format`이 아니다.** 합성한 SSAFile의 `.format`은 이벤트를
+        # 넣어도 `None`으로 남는다(실측). 그 `None`이 `writer.py`의
+        # `save(format_=)`로 흘러가 `.tmp` 확장자 판별에서 죽는다.
+        format="srt",
+        source_lang=source_lang,
+        subs=subs,
+        event_index=event_index,
+    )
+
+
+def load_input(
+    *,
+    subtitle: Path | None = None,
+    media: Path | None = None,
+    provider: SttProvider | None = None,
+    source_lang: str = "ko",
+) -> IngestResult:
+    """자막과 영상 중에서 고른다 (FR-1.3).
+
+    **둘 다 주어지면 자막을 채택하고 STT를 부르지 않는다.** 부르고 버리면
+    사용자가 쓰지도 않을 전사에 돈과 시간을 낸다. 요구사항정의서 §11 R1
+    ("원문이 틀리면 N개 언어로 복제된다")의 대응이 바로 이 우선순위다 -
+    사람이 만든 자막이 STT보다 신뢰도가 높다.
+
+    **분기 순서가 계약이다.** `media` 분기를 먼저 두면 자막이 있어도 전사가
+    먼저 일어나고, 결과를 버려도 요금과 대기 시간은 이미 나갔다. 테스트의
+    `provider.calls == []`가 그 순서를 지키는 유일한 게이트다.
+
+    **`source_lang`을 양쪽에 그대로 넘긴다.** 한쪽에서만 빠지면 그 경로의
+    `IngestResult.source_lang`이 호출자의 선언이 아니라 기본값 `"ko"`가 되어
+    **두 경로의 값 도메인이 갈린다.** 지금 이 필드를 읽는 소비처가 없다는 것이
+    (실측: `grep -rn "[.]source_lang" src/cuesift` - 신호도 리포트도 CLI가 따로
+    넘긴 값을 쓴다) 안전이 아니라 **위험**이다: 틀린 값이 증상 없이 기록돼 있다가
+    WP6이 이 필드를 배선하는 순간 `signals/structural.py`의 `_SCRIPT_RANGES`가
+    `ja` 원문에 한글 패턴을 물려 미번역 신호가 미탐으로 굳는다 - 크래시가
+    아니라 Recall@Budget이 조용히 내려가는 부류다 (`load_media` 독스트링 참조).
+
+    **자막을 명시했는데 그 파일이 없으면 영상으로 폴백하지 않는다.** `subtitle`이
+    주어진 순간 분기가 끝나고 `load_subtitle`의 `not_found`가 그대로 나간다.
+    폴백하면 경로 오타 하나로 사용자가 **모르는 사이에 STT 요금을 낸다** -
+    파일명을 잘못 친 사람이 원한 것은 전사가 아니라 오류 메시지다.
+
+    **영상을 무시했다는 사실을 사용자에게 알리는 것은 CLI(WP6)의 몫이다.**
+    라이브러리에 경고 채널을 새로 파면 이번 범위에서 쓸 곳이 없는 표면이 생긴다.
+
+    **이 함수를 부르는 것은 지금 테스트뿐이다.** CLI 배선이 FR-8.3(WP6)이라
+    그렇고, 그럼에도 만드는 것은 FR-1.3을 반쪽으로 남기지 않기 위해서다.
+    """
+    if subtitle is not None:
+        return load_subtitle(subtitle, source_lang=source_lang)
+    if media is not None:
+        if provider is None:
+            # `_reject_non_subtitle`과 **같은 reason을 쓴다.** 둘은 같은 부류다 -
+            # "영상을 자막처럼 처리할 수단이 없다"이고, 갈리는 것은 사용자 조치다
+            # (자막을 넣어라 / STT 설정을 넣어라). **그 차이는 메시지가 나른다** -
+            # `IngestError` 독스트링이 `reason`은 계약, 메시지는 사람용이라고
+            # 못 박았고 두 메시지가 실제로 다르다.
+            #
+            # **이 선택의 비용을 적어 둔다:** `reason`만 보는 호출자는 두 조치를
+            # 구분하지 못한다. 오늘은 그런 호출자가 없지만(실측:
+            # `grep -rn "[.]reason" src/cuesift/`의 유일한 히트 `cli.py:2404`는
+            # `SegmentFailure.reason`으로 **다른 타입**이다), 조치별로 분기하는
+            # 호출부가 생기면 그때는 메시지가 아니라 reason을 쪼개야 한다.
+            raise IngestError(
+                "video_input",
+                # **없는 플래그를 안내하지 않는다.** `--base-url`·`--model`은
+                # STT용으로 CLI에 아직 없다 - 안내대로 쳐 본 사용자는
+                # "알 수 없는 옵션"만 받고 무엇이 문제인지 모른다.
+                # 오늘 이 분기에 닿는 것은 라이브러리 호출자뿐이므로
+                # 그쪽이 할 수 있는 조치를 적는다.
+                f"{media}: 영상 입력에는 STT 프로바이더가 필요하다. "
+                "load_input에 provider를 넘기거나 자막 파일을 입력하라.",
+            )
+        return load_media(media, provider, source_lang=source_lang)
+    raise IngestError("no_input", "자막 파일이나 영상 파일 중 하나는 주어야 한다")
+
+
+def _from_transcript(
+    transcript: Transcript, path: Path
+) -> tuple[list[Segment], pysubs2.SSAFile, dict[str, int]]:
+    """전사 큐를 `Segment`·`SSAFile`·대응표 셋으로 동시에 만든다 (설계 D5·D6).
+
+    셋을 **한 루프에서** 만드는 것이 중요하다. 나눠서 만들면 빈 큐를 거른 뒤
+    한쪽만 index가 밀려 `event_index`가 엉뚱한 이벤트를 가리키는데,
+    그것은 예외가 아니라 **번역문이 다른 큐에 얹히는** 형태로 드러난다.
+
+    `TranscriptCue.__post_init__`이 `nan`·`inf`·역전·음수·비수치를 이미 막았으므로
+    이 함수는 그것을 다시 검사하지 않는다(결정 P3). 검사하면 아무도 실행하지
+    않는 분기가 생긴다. **`_to_ms`의 방어는 그 목록에 없는 것이다** - 곱셈이
+    만들어 내는 값이라 큐 하나만 봐서는 알 수 없다.
+    """
+    segments: list[Segment] = []
+    subs = pysubs2.SSAFile()
+    event_index: dict[str, int] = {}
+    for position, cue in enumerate(transcript.cues):
+        text = cue.text.strip()
+        if not text:
+            # 공백만 있는 큐는 화면에 아무것도 안 띄운다. 남기면 CPS가 0으로
+            # 계산돼 규격 검사가 무의미한 세그먼트가 검수 큐에 낀다.
+            # 자막 경로의 `_keep_displayed`와 같은 판단이다.
+            #
+            # **태그만 있는 큐(`{music}`)는 여기서 안 걸린다** - 아래 `plaintext`가
+            # 태그를 지우므로 `source_text`가 빈 채로 남는다. 자막 경로도 빈 큐를
+            # 남기고 FR-3.2가 hard fail로 잡는 것과 같다(`_keep_displayed`).
+            continue
+        start_ms = _to_ms(cue.start_s, field="start_s", position=position, path=path)
+        end_ms = _to_ms(cue.end_s, field="end_s", position=position, path=path)
+        index = len(segments)
+        seg_id = f"{index:05d}"
+        # **`text=`로 직접 넣지 않고 `plaintext` setter를 지난다.** 그래야 자막
+        # 경로와 **같은 함수**를 통과한다 - `load_subtitle`은 `source_text`를
+        # `event.plaintext`에서 받으므로 오버라이드 블록이 빠진 상태가 불변식이다.
+        # 직접 넣으면 셋이 갈린다 (전부 실측).
+        #
+        # 1. `{music}안녕`이 `source_text`에 그대로 남아 길이가 **9 vs 2**가 된다.
+        #    CPS가 4.5배로 부풀고 **그 오탐은 hard fail이라 FR-6.2에 따라 검수
+        #    예산을 우회해** 실제 검수 비율을 부풀린다 - Recall@Budget이 무너진다.
+        # 2. `writer.py`의 `_LEADING_OVERRIDES`가 그 `{music}`을 위치 태그로 오인해
+        #    번역문 앞에 다시 붙인다. SRT 저장 때 pysubs2가 지워 출력 파일은
+        #    멀쩡하므로 **예외도 경고도 없다.**
+        # 3. 실제 개행이 `SSAEvent.text`에 담긴다. SSA 규약은 `\N`이라 ass로
+        #    저장하면 `Dialogue:` 줄이 물리적으로 쪼개진다.
+        event = pysubs2.SSAEvent(start=start_ms, end=end_ms)
+        event.plaintext = text
+        subs.append(event)
+        segments.append(
+            Segment(
+                id=seg_id,
+                index=index,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                source_text=event.plaintext,
+                # FR-1.4. 이 경로로 들어온 원문은 **전부** 표시 대상이다.
+                source_from_stt=True,
+            )
+        )
+        # 필터 뒤에도 순서가 곧 원본 위치다 - `subs`를 같은 루프에서 채우므로
+        # 걸러진 큐는 양쪽에서 함께 빠진다.
+        event_index[seg_id] = index
+    return segments, subs, event_index
+
+
+def _to_ms(seconds: float, *, field: str, position: int, path: Path) -> int:
+    """초를 밀리초 정수로 바꾼다 (설계 D5).
+
+    **양쪽 타임코드에 같은 함수를 쓴다.** 같은 방향으로 움직여야 인접 큐의
+    맞물린 경계가 그대로 붙어 있다 - 한쪽만 내리고 한쪽만 올리면 원본에 없던
+    겹침을 우리가 만든다. `round()`가 **half-up이 아니라 짝수 반올림**이라는
+    것은 여기서 중요하지 않다(양쪽이 같으면 되므로). 테스트의 기대값을 적을
+    때만 중요하다 - `1.2345 * 1000 = 1234.5`는 1235가 아니라 **1234**다.
+
+    **`try`가 없으면 `OverflowError`가 `IngestError` 밖으로 샌다**(실측).
+    `TranscriptCue`는 `1e308`을 통과시킨다 - 유한하고 음수가 아니며 역전도
+    아니다. 그런데 `1e308 * 1000`은 `inf`가 되고 `round(inf)`가
+    `OverflowError: cannot convert float infinity to integer`를 낸다.
+    호출부가 잡는 것은 `IngestError`와 `ProviderError`뿐이라 그 예외는
+    미처리 traceback이 되고 **종료 코드 1**이 되는데, 이 저장소에서 1은
+    "규격 위반 발견"이라 **STT 백엔드 결함이 자막 결함으로 오보된다.**
+    `TranscriptCue.__post_init__`이 `math.isfinite(10**400)`의 `OverflowError`를
+    `ValueError`로 번역한 것과 같은 부류다 - 방어의 다음 한 걸음이 새는 자리.
+
+    **`math.isfinite(seconds * 1000)`으로 대신하면 안 된다.** JSON은 소수점
+    없는 리터럴을 `int`로 파싱하는데, `10**306`은 `TranscriptCue`를 통과하고
+    `10**306 * 1000`은 `float`로 변환되지 않을 만큼 커서 `isfinite` **자신이**
+    `OverflowError`를 낸다(실측). 막으려던 예외를 방어가 다시 낸다.
+
+    **거대 정수는 여기서 걸리지 않는다.** `10**306`은 곱셈도 `round()`도 예외
+    없이 지나가 310자리 `start_ms`가 된다. 그 값이 **어디까지 조용한지는
+    경로마다 다르다**(실측).
+
+    - **저장 경로(`writer.py`)**: pysubs2가 `RuntimeWarning`과 함께
+      `99:59:59,999`로 클램프한다 - 조용하지 않다.
+    - **HTML 리포트 경로**: **그 클램프가 없다.** `report/html_report.py`의
+      `_timecode()`가 자릿수를 그대로 내므로 309자짜리 문자열이
+      `td.tc`(`white-space: nowrap`)에 박혀 표 레이아웃이 무너진다.
+      예외도 경고도 나지 않는다.
+
+    **여기에 상한을 발명하지 않는 이유는 두 경로가 다 시끄러워서가 아니라
+    동작 변경이라 별도 판단이 필요하기 때문이다**(§11 R8). 앞선 서술은
+    저장 경로의 클램프만 보고 "조용하지 않다"고 적었는데, 그것이
+    "모든 경로가 시끄럽다"로 읽혔다.
+    """
+    try:
+        return round(seconds * 1000)
+    except OverflowError as exc:
+        raise IngestError(
+            "bad_timecode",
+            f"{path}: {position + 1}번째 큐의 {field}({seconds!r})가 "
+            "밀리초 정수로 변환되지 않는다. 전사 응답의 타임코드를 확인한다.",
+        ) from exc
+
+
 def _load(path: Path) -> pysubs2.SSAFile:
     """파일을 읽어 pysubs2 표현으로 만들고, 실패를 `IngestError`로 번역한다.
 
@@ -147,16 +385,21 @@ def _load(path: Path) -> pysubs2.SSAFile:
 def _reject_non_subtitle(path: Path) -> None:
     """읽기 전에 걸러야 하는 입력 (FR-1.3).
 
-    FR-1.3의 문구는 "자막과 영상이 모두 주어지면 자막 우선"이지만 v0.1의 CLI는
-    입력을 하나만 받는다(설계 §7.1). 여기서는 **입력이 영상이면 자막 경로가
-    아님을 알린다**로 구현하고, 진짜 "둘 다 주어짐"은 WP9에서 다시 본다.
+    FR-1.3의 문구는 "자막과 영상이 모두 주어지면 자막 우선"이고, 그 판정은
+    이제 `load_input`이 한다. 이 함수는 **자막 경로에 영상이 들어온 경우**만
+    막는다 - `load_subtitle`이 자막 전용이라는 이름값을 지키게 하는 것이
+    여기 남은 역할이다. FR-1.3과 무관한 존재 검사(`not_found`)가 함께 있는 것은
+    읽기 전에 걸러야 할 입력이 그 둘뿐이기 때문이다.
     """
     if not path.is_file():
         raise IngestError("not_found", f"{path}: 파일이 없다")
     if path.suffix.lower() in _MEDIA_SUFFIXES:
         raise IngestError(
             "video_input",
-            f"{path}: 영상·오디오 입력이다. STT는 v0.1에 없다(WBS WP9). "
+            # **"STT는 v0.1에 없다"고 쓰면 안 된다.** WP9가 어댑터를 냈으므로
+            # 기능은 있고 CLI 배선만 없다 - 옛 문구는 사용자를 "이 도구는
+            # 영상을 다루지 못한다"로 오도한다.
+            f"{path}: 영상·오디오 입력이다. STT 입력은 아직 CLI에 배선되지 않았다. "
             "FR-1.3에 따라 자막 파일이 있으면 그것을 넣는다.",
         )
 

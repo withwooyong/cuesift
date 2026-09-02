@@ -57,6 +57,7 @@ def _outcome(
     cost_includes: tuple[str, ...] | None = None,
     cost_unreported: tuple[str, ...] | None = None,
     usage: TokenUsage | None = None,
+    source_from_stt: bool | None = None,
 ) -> TriageOutcome:
     """기본값은 `segments`를 `risks`에서 파생해 불변식을 만족시킨다.
 
@@ -67,6 +68,8 @@ def _outcome(
     헬퍼가 언제나 명시하면 `TriageOutcome`의 기본값이 한 번도 실행되지 않는다.
     """
     extra: dict[str, object] = {}
+    if source_from_stt is not None:
+        extra["source_from_stt"] = source_from_stt
     if cost_includes is not None:
         extra["cost_includes"] = cost_includes
     if cost_unreported is not None:
@@ -259,6 +262,44 @@ def test_순서만_다른_것은_통과한다() -> None:
 
     assert outcome.triaged_segments == 2
     assert [r.segment_id for r in outcome.risks] == ["00001", "00000"]
+
+
+def test_source_from_stt가_세그먼트와_어긋나면_거부한다() -> None:
+    """**필드를 둔 대가를 여기서 갚는다** (FR-1.4 · 설계 D3·D8).
+
+    `source_from_stt`를 유도가 아니라 필드로 둔 것은 전량 번역 실패 실행에서도
+    출처를 남기기 위해서인데, 그 대가로 요약과 세그먼트가 **서로 다른 경로로
+    채워질** 수 있게 됐다. 입력 하나는 자막이거나 STT이지 섞이지 않으므로
+    (인제스트 구조) 세그먼트가 있는 실행에서 둘은 반드시 같다 - 어긋난 채
+    나가면 `review.json`의 요약과 `segments[]`가 **같은 파일 안에서 서로 다른
+    출처**를 말하고, 종료 코드는 0이다.
+    """
+    with pytest.raises(ValueError, match="segments의 플래그와 다르다"):
+        _outcome(risks=(_risk("00000"),), source_from_stt=True)
+
+
+def test_stt_세그먼트인데_필드가_꺼져_있어도_거부한다() -> None:
+    """**반대 방향도 막는다.** 한쪽만 검사하면 배선이 플래그를 떨어뜨리는 회귀가
+    통과하는데, 그 실행의 산출물은 STT였다는 사실을 요약에서 잃는다.
+    """
+    stt = Segment(
+        id="00000", index=0, start_ms=0, end_ms=1000, source_text="원문", source_from_stt=True
+    )
+    with pytest.raises(ValueError, match="segments의 플래그와 다르다"):
+        _outcome(risks=(_risk("00000"),), segments=(stt,), source_from_stt=False)
+
+
+def test_세그먼트가_비면_source_from_stt를_제약하지_않는다() -> None:
+    """**전량 번역 실패 경로가 정확히 이 자리다** (FR-1.4).
+
+    빈 `segments` 위의 `any`는 `False`라 여기서까지 일치를 요구하면 필드를 둔
+    이유가 통째로 사라진다 - 가장 심하게 행이 남지 않는 실행에서 산출물이
+    "자막 파일이었다"고 거짓 단언을 내게 된다.
+    """
+    outcome = _outcome(risks=(), segments=(), excluded_failures=4, source_from_stt=True)
+
+    assert outcome.source_from_stt is True
+    assert outcome.total_segments == 4
 
 
 def test_excluded_failures가_음수면_거부한다() -> None:

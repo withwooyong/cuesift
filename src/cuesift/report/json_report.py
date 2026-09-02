@@ -43,6 +43,18 @@ def build_review(outcome: TriageOutcome) -> dict[str, Any]:
             "review_ratio": outcome.review_ratio,
             "hard_fail_count": outcome.hard_fail_count,
             "signal_hits": outcome.signal_hits,
+            # 원문이 STT에서 왔는가 (FR-1.4). **`outcome`의 필드를 그대로 싣는다.**
+            #
+            # **`outcome.segments`에서 유도하면 안 된다.** 그 집합에는 번역
+            # 실패분이 빠져 있어 전량 실패 실행에서 비고, 빈 이터러블 위의 `any`는
+            # `False`를 낸다 - `total_segments: 4`인데 `source_from_stt: false`인
+            # 문서가 나가고 `false`는 "모름"이 아니라 **"자막 파일이었다"**로 읽힌다.
+            # 이 키를 두는 이유 자체가 **행이 한 건도 남지 않은 실행**인데 가장 심하게
+            # 남지 않는 실행에서 거짓 단언을 내게 된다. `outcome.selected`로 좁히는
+            # 것도 같은 이유로 금지다(설계 D3).
+            #
+            # 세그먼트와 갈라질 걱정은 `TriageOutcome.__post_init__`의 불변식이 맡는다.
+            "source_from_stt": outcome.source_from_stt,
             "cost": {
                 "prompt_tokens": 0 if usage is None else usage.prompt_tokens,
                 "completion_tokens": 0 if usage is None else usage.completion_tokens,
@@ -170,6 +182,10 @@ def _segment_doc(risk: SegmentRisk, segment: Segment) -> dict[str, Any]:
         "end_ms": segment.end_ms,
         "source_text": segment.source_text,
         "target_text": segment.target_text,
+        # FR-1.4. **표시 전용이다** - `risk_score`에도 `hard_fail`에도
+        # 반영되지 않는다(설계 D8). 반영하면 STT 입력에서 전량이 예산을
+        # 우회해 `review_ratio`가 1.0이 되고 README 배수가 산출 불가가 된다.
+        "source_from_stt": segment.source_from_stt,
         "risk_score": risk.risk_score,
         "hard_fail": risk.hard_fail,
         "reasons": list(risk.reasons),

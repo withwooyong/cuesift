@@ -51,6 +51,20 @@ class Segment:
     target_text: str | None = None
     speaker: str | None = None  # v0.2 화자분리용 자리
     meta: dict = field(default_factory=dict)
+    # STT로 생성한 원문인가 (FR-1.4). **점수에도 hard fail에도 들어가지 않는다.**
+    #
+    # 넣으면 무엇이 깨지는지가 이 필드의 존재 이유다. STT 입력에서는 **전** 세그먼트가
+    # True라, hard fail로 올리면 FR-6.2에 따라 전량이 검수 예산을 우회해
+    # `review_ratio()`가 1.0이 된다 — README 최상단의 무작위 베이스라인 대비 배수가
+    # **산출 불가능**해지고, 그 숫자가 "AI 래퍼가 아니다"를 증명하는 유일한 자료다.
+    # 점수에 가중치로 더해도 전체가 같은 양만큼 올라 **순위에 정보를 하나도 주지
+    # 않으면서** 상수만 더한다 (설계 §5의 세 갈래 비교).
+    #
+    # 기본값 `False`가 자막 경로를 한 줄도 바꾸지 않게 하는 장치다 — 없으면
+    # 키워드 인자로 `Segment(...)`를 부르는 기존 호출 전부가 `TypeError`가 된다.
+    # 소비처는 `report/json_report.py`와 `report/html_report.py` 둘로 예정돼 있고
+    # (WP9 Task 6), 이 커밋 시점에는 표시 소비처가 아직 없다.
+    source_from_stt: bool = False
 
     def __post_init__(self) -> None:
         # 음수 duration은 CPS를 음수로 만들어 규격 검사를 통째로 무의미하게 한다.

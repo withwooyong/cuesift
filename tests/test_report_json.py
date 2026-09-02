@@ -65,6 +65,7 @@ def _outcome(
     policy_value: float = 0.1,
     cost_includes: tuple[str, ...] | None = None,
     cost_unreported: tuple[str, ...] | None = None,
+    source_from_stt: bool | None = None,
 ) -> TriageOutcome:
     """**요약 필드를 전부 인자로 받는다. 기본값도 서로 구별되게 둔다.**
 
@@ -82,12 +83,23 @@ def _outcome(
     **`cost_includes`의 기본은 `None`이고 그때는 인자를 아예 넘기지 않는다.**
     헬퍼가 언제나 명시하면 `TriageOutcome`의 기본값이 한 번도 실행되지 않아
     "기본이 유지된다"는 테스트가 헬퍼의 기본값만 재게 된다.
+
+    **`source_from_stt`의 기본은 세그먼트에서 유도한다.** `TriageOutcome`의
+    불변식이 "세그먼트가 있으면 둘이 같다"를 요구하므로, 명시하지 않는 호출자가
+    전부 `ValueError`를 맞지 않게 하려면 헬퍼가 맞춰 줘야 한다. **전량 실패
+    회귀 테스트는 `segments=()`와 함께 이 값을 명시로 넘긴다** - 유도가 닿지
+    않는 유일한 자리가 거기다.
     """
     extra: dict[str, object] = {}
     if cost_includes is not None:
         extra["cost_includes"] = cost_includes
     if cost_unreported is not None:
         extra["cost_unreported"] = cost_unreported
+    segs = (
+        tuple(_segment(r.segment_id, index=i) for i, r in enumerate(risks))
+        if segments is None
+        else segments
+    )
     return TriageOutcome(
         source_lang=source_lang,
         target_lang=target_lang,
@@ -96,13 +108,12 @@ def _outcome(
         policy_kind=policy_kind,
         policy_value=policy_value,
         risks=risks,
-        segments=(
-            tuple(_segment(r.segment_id, index=i) for i, r in enumerate(risks))
-            if segments is None
-            else segments
-        ),
+        segments=segs,
         excluded_failures=excluded_failures,
         usage=usage,
+        source_from_stt=(
+            any(s.source_from_stt for s in segs) if source_from_stt is None else source_from_stt
+        ),
         **extra,
     )
 
@@ -870,3 +881,98 @@ def test_cost의_키_집합이_고정돼_있다() -> None:
         "basis",
         "tokens_reported",
     }
+
+
+def _outcome_with(
+    *, source_from_stt: bool, selected: int, stt_count: int | None = None
+) -> TriageOutcome:
+    """STT 플래그를 켠/끈 세그먼트 2개짜리 outcome (FR-1.4 · 설계 D3).
+
+    **세그먼트는 언제나 2개이고 `selected`만 바꾼다.** 요약이
+    `outcome.selected`(선별분)에서 유도되는 변이를 죽이려면 **선별 0건인데
+    플래그가 켜진** 실행이 필요하기 때문이다 - 세그먼트 수를 `selected`에
+    맞추면 그 실행에 세그먼트가 하나도 없어 변이가 생존한다.
+
+    `stt_count`는 **몇 개에 플래그를 켤지**다. 기본은 `source_from_stt`가
+    True면 전부, False면 0개다 - 섞인 경우를 만들 수 있어야 `any`를 `all`로
+    바꾸는 변이가 죽는다.
+    """
+    n = 2
+    on = (n if source_from_stt else 0) if stt_count is None else stt_count
+    segments = tuple(
+        Segment(
+            id=f"{i:05d}",
+            index=i,
+            start_ms=12000 + i * 1000,
+            end_ms=14500 + i * 1000,
+            source_text=f"원문 {i}",
+            target_text=f"translated text {i}",
+            source_from_stt=i < on,
+        )
+        for i in range(n)
+    )
+    risks = tuple(_risk(f"{i:05d}", selected=i < selected) for i in range(n))
+    return _outcome(risks=risks, segments=segments)
+
+
+def test_summary가_stt_여부를_낸다() -> None:
+    """`segments[]`는 선별된 것만 담으므로(D3) 요약에도 있어야 한다.
+
+    없으면 STT 원문이지만 한 건도 선별되지 않은 실행에서 **파일 어디에도
+    STT였다는 흔적이 남지 않는다.** 리포트 파일은 옮겨지고 첨부되고 며칠 뒤에
+    열린다 - 그때 원문의 출처를 물을 사람이 있다.
+    """
+    outcome = _outcome_with(source_from_stt=True, selected=0)
+    doc = build_review(outcome)
+    assert doc["segments"] == [], "선별 0건이어야 이 게이트가 D3를 잰다"
+    assert doc["summary"]["source_from_stt"] is True
+
+
+def test_summary의_값을_세그먼트에서_유도한다() -> None:
+    """`TriageOutcome`에 필드를 새로 두지 않는 이유를 고정한다.
+
+    두면 세그먼트의 플래그와 요약의 플래그가 서로 다른 경로로 채워져
+    갈라질 수 있다. 유도하면 갈라질 자리가 없다.
+    """
+    outcome = _outcome_with(source_from_stt=False, selected=1)
+    assert build_review(outcome)["summary"]["source_from_stt"] is False
+
+
+def test_일부만_stt여도_요약이_그것을_드러낸다() -> None:
+    """`any`를 `all`로 바꾸는 변이를 죽인다.
+
+    전부 켜진 실행과 전부 꺼진 실행만 있으면 두 함수의 값이 같아 변이가
+    생존한다 - 그러면 자막과 STT가 섞인 입력에서 요약이 조용히 "STT 아님"이
+    되어 **검수자가 원문의 출처를 잘못 안다.**
+    """
+    doc = build_review(_outcome_with(source_from_stt=True, selected=0, stt_count=1))
+    assert doc["summary"]["source_from_stt"] is True
+
+
+def test_세그먼트에도_플래그가_실린다() -> None:
+    doc = build_review(_outcome_with(source_from_stt=True, selected=1))
+    assert doc["segments"][0]["source_from_stt"] is True
+
+
+def test_자막_경로는_전부_False다() -> None:
+    doc = build_review(_outcome_with(source_from_stt=False, selected=1))
+    assert doc["summary"]["source_from_stt"] is False
+    assert doc["segments"][0]["source_from_stt"] is False
+
+
+def test_전량_번역_실패한_stt_실행도_출처를_남긴다() -> None:
+    """**행이 한 건도 남지 않은 실행이 이 키의 존재 이유다** (FR-1.4 · 설계 D8).
+
+    `TriageOutcome.segments`는 번역 실패분이 빠진 집합이라 전량 실패에서 빈다.
+    요약을 그 집합에서 유도하면 빈 이터러블 위의 `any`가 `False`를 내
+    `total_segments: 4`인데 `source_from_stt: false`인 문서가 나간다 - 예외도
+    경고도 없고, 며칠 뒤에 파일을 여는 사람에게 `false`는 "모름"이 아니라
+    **"자막 파일이었다"**로 읽힌다. 가장 심하게 남지 않는 실행에서 흔적 대신
+    거짓 단언을 내는 것이라 유도원은 실패분에도 남는 것이어야 한다.
+    """
+    doc = build_review(_outcome(risks=(), segments=(), excluded_failures=4, source_from_stt=True))
+    assert doc["summary"]["source_from_stt"] is True
+    # 전제 고정 - "세그먼트가 4건이었는데 하나도 안 남았다"인 실행이 맞는지 본다.
+    assert doc["summary"]["total_segments"] == 4
+    assert doc["summary"]["excluded_failures"] == 4
+    assert doc["segments"] == []

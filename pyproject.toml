@@ -33,7 +33,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# **`stt`는 쓰이지 않는다.** WP9(설계 D1)가 파이썬 STT 패키지 대신 OpenAI 호환
+# `/v1/audio/transcriptions`를 `httpx`로 치는 어댑터를 택했다 - `cuesift.stt`는
+# whisperx를 임포트하지 않는다. 남겨 두는 이유는 v0.2에서 로컬 추론 플러그인이
+# 생길 자리이기 때문이고, **지우지 않은 대가는 이 주석이 없으면 사용자가
+# 2GB짜리 torch를 아무 이유 없이 받는다는 것**이다.
 stt = ["whisperx>=3.1"]
+# v0.2 Tier 2(QE 모델) 자리. 현재 코드는 없다.
 qe = ["unbabel-comet>=2.2"]
 dev = [
     "pytest>=8.0",
@@ -72,7 +78,10 @@ testpaths = ["tests"]
 # 것을 눈치채지 못하므로 두 수를 같이 읽는다.
 addopts = '-ra --strict-markers -m "not live"'
 markers = [
-    "live: 실제 LLM 엔드포인트를 친다. 기본 제외이며 CUESIFT_LIVE_BASE_URL과 CUESIFT_LIVE_MODEL이 필요하다",
+    # 필요한 환경변수는 파일마다 다르다 - 여기에 이름을 다 적으면 파일이
+    # 늘 때마다 이 줄이 낡는다. 번역은 CUESIFT_LIVE_*, STT는 CUESIFT_LIVE_STT_*
+    # 이고 각 파일 독스트링이 자기 것을 적는다.
+    "live: 실제 엔드포인트(LLM·STT)를 친다. 기본 제외이며 해당 파일의 CUESIFT_LIVE_* 환경변수가 필요하다",
 ]
 # 이 설정이 어긋나면 `tests/conftest.py`의 `pytest_configure`가 수집 전에
 # 실행을 멈춘다. 테스트로 두지 않은 이유는 `-m live`를 덧붙이는 변이가

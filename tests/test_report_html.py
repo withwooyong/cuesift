@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from cuesift.report import build_html, write_html
-from cuesift.report.html_report import _JS
+from cuesift.report.html_report import _JS, _STT_BADGE, _STT_BADGE_TEXT, _STT_BADGE_TITLE, esc
 from cuesift.report.models import TriageOutcome
 from cuesift.segment import Segment, SegmentRisk, Signal, Span
 
@@ -18,8 +18,16 @@ def _outcome(
     segments: list[Segment] | None = None,
     **kwargs: object,
 ) -> TriageOutcome:
-    """테스트용 TriageOutcome. 기본은 선별 0건이다."""
+    """테스트용 TriageOutcome. 기본은 선별 0건이다.
+
+    **`source_from_stt`의 기본은 세그먼트에서 유도한다.** `TriageOutcome`의
+    불변식이 "세그먼트가 있으면 둘이 같다"를 요구하므로 맞춰 두지 않으면 STT
+    세그먼트를 넘기는 호출자가 전부 `ValueError`를 맞는다. `kwargs`로 덮을 수
+    있고, **전량 실패 회귀 테스트가 `segments=()`와 함께 그 길로 온다** -
+    유도가 닿지 않는 유일한 자리다.
+    """
     defaults: dict[str, object] = {
+        "source_from_stt": any(s.source_from_stt for s in (segments or ())),
         "source_lang": "ko",
         "target_lang": "en",
         "profile_name": "netflix-en",
@@ -860,3 +868,133 @@ def test_숨은_행을_감추는_CSS가_있다() -> None:
     한 줄이 빠지면 JS는 정상 동작하는데 화면에서는 아무것도 걸러지지 않는다.
     """
     assert "tr.seg[hidden] { display: none; }" in build_html(_outcome())
+
+
+def test_배지_CSS가_배경과_글자색을_함께_준다() -> None:
+    """이 문서는 `color-scheme: light dark`다 (FR-1.4 · 설계 D8).
+
+    한쪽만 주면 다크 모드에서 밝은 배경 위에 밝은 글자가 되어 **배지가
+    사라진다** - 나머지 표는 `currentColor`로만 그려 이 문제가 없어서 배지만
+    이 위험을 진다. 규칙을 통째로 지워도 배지 문자열은 마크업에 남으므로 다른
+    어떤 단언도 빨개지지 않는다(실측: `grep -rn "badge-stt" tests/` 0건이었다).
+    """
+    css = build_html(_outcome())
+
+    assert ".badge-stt {" in css
+    assert "background: #fef7e0;" in css
+    assert "color: #7a5900;" in css
+
+
+def _stt_pair(
+    n: int = 2, *, selected: int = 0, stt: int = 0, ids: list[str] | None = None
+) -> tuple[list[Segment], list[SegmentRisk]]:
+    """세그먼트 `n`개와 짝이 맞는 위험 `n`개. 앞 `stt`개에 STT 플래그를 켠다.
+
+    `_pair`를 그대로 쓰지 않는 이유는 **플래그를 세그먼트별로 다르게** 둬야
+    하기 때문이다. 섞인 입력을 만들 수 있어야 `any`를 `all`로 바꾸는 변이가
+    죽는다.
+    """
+    names = ids or [f"s{i}" for i in range(n)]
+    segments = [
+        Segment(
+            id=names[i],
+            index=i,
+            start_ms=i * 1000,
+            end_ms=(i + 1) * 1000,
+            source_text="가",
+            target_text="a",
+            source_from_stt=i < stt,
+        )
+        for i in range(n)
+    ]
+    risks = [
+        SegmentRisk(
+            segment_id=names[i],
+            signals=[],
+            risk_score=0.5,
+            hard_fail=False,
+            selected=i < selected,
+        )
+        for i in range(n)
+    ]
+    return segments, risks
+
+
+def _outcome_with(
+    *, source_from_stt: bool, selected: int, stt_count: int | None = None
+) -> TriageOutcome:
+    """STT 플래그를 켠/끈 세그먼트 2개짜리 outcome (FR-1.4 · 설계 D3).
+
+    **세그먼트 수를 `selected`에 맞추지 않는다.** 선별 0건인데 플래그가 켜진
+    실행이 있어야 요약이 `outcome.selected`(선별분)에서 유도되는 변이가
+    죽는다 - 맞추면 그 실행에 세그먼트가 없어 변이가 생존한다.
+    """
+    n = 2
+    on = (n if source_from_stt else 0) if stt_count is None else stt_count
+    segments, risks = _stt_pair(n, selected=selected, stt=on)
+    return _outcome(risks=risks, segments=segments)
+
+
+def test_stt_세그먼트_행에_배지가_붙는다() -> None:
+    html = build_html(_outcome_with(source_from_stt=True, selected=1))
+    assert 'data-stt="1"' in html
+    assert "원문 검수 필요" in html
+
+
+def test_자막_세그먼트_행에는_배지가_없다() -> None:
+    html = build_html(_outcome_with(source_from_stt=False, selected=1))
+    assert 'data-stt="0"' in html
+    assert "원문 검수 필요" not in html
+
+
+def test_요약에_stt_출처가_표시된다() -> None:
+    # 행이 0개인 실행에서도 출처가 드러나야 한다 (json 쪽과 같은 이유).
+    html = build_html(_outcome_with(source_from_stt=True, selected=0))
+    assert '<tr class="seg"' not in html, "행이 0개여야 이 게이트가 D3를 잰다"
+    assert "STT" in html
+
+
+def test_자막_경로_요약에는_stt_표시가_없다() -> None:
+    """상수 True 변이와 `any`→`all` 변이를 함께 죽인다.
+
+    둘째 단언(섞인 입력)이 없으면 `all`이 살아남아, 자막과 STT가 섞인
+    입력에서 화면이 조용히 "자막 원문"이라고 말한다.
+    """
+    assert "STT" not in build_html(_outcome_with(source_from_stt=False, selected=0))
+    assert "STT" in build_html(_outcome_with(source_from_stt=True, selected=0, stt_count=1))
+
+
+def test_배지가_붙는_칸도_원문을_이스케이프한다() -> None:
+    """배지가 `id` 칸에 얹히므로 그 칸의 이스케이프가 살아 있는지 잰다.
+
+    **브리프 원안(`"<script" not in html`)은 어떤 구현에서도 실패한다** -
+    셸이 `<script>$js</script>`를 언제나 포함하므로 배지와 무관하게 거짓이다.
+    여기서는 배지 옆에 실제 태그를 넣어 `esc`가 걷히는 변이를 잰다.
+    """
+    segments, risks = _stt_pair(1, selected=1, stt=1, ids=["<script>x</script>"])
+    html = build_html(_outcome(risks=risks, segments=segments))
+
+    assert _STT_BADGE in html
+    assert '<td class="id">&lt;script&gt;' in html
+    assert '<td class="id"><script>' not in html
+    # 배지 상수는 이스케이프를 거치지 않고 그대로 얹힌다. **그것이 안전한 것은
+    # 오늘의 문구에 특수문자가 없기 때문이지 구조 덕분이 아니다** - 아래 두 줄이
+    # 재는 것은 **그 전제뿐이다.** 상수의 문자열이 특수문자를 얻을 때만 빨개지고,
+    # `_STT_BADGE`를 함수로 바꿔 사용자 문자열을 슬롯에 넣는 변경은 상수를
+    # 깨끗한 채 남기므로 여기서 걸리지 않는다.
+    assert esc(_STT_BADGE_TEXT) == _STT_BADGE_TEXT
+    assert esc(_STT_BADGE_TITLE) == _STT_BADGE_TITLE
+
+
+def test_전량_번역_실패한_stt_실행도_화면에_출처를_남긴다() -> None:
+    """`review.json`의 같은 회귀와 짝이다 (FR-1.4 · 설계 D8).
+
+    `outcome.segments`에서 유도하면 전량 실패 실행에서 그 집합이 비어
+    `any`가 `False`를 내고 **HTML 어디에도 "STT"가 남지 않는다**(실측).
+    화면은 "볼 것이 없다"와 "판정 자체를 못 했다"를 구별해 말해야 하는데,
+    원문이 STT였다는 사실이 사라지면 재실행 대상이 무엇인지도 사라진다.
+    """
+    html = build_html(_outcome(risks=[], segments=[], excluded_failures=4, source_from_stt=True))
+    assert "원문 STT" in html
+    # 전제 고정 - 행이 한 건도 없는 실행이 맞는지 본다.
+    assert '<tr class="seg"' not in html
