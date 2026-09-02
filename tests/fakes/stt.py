@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from cuesift.stt.provider import Transcript, TranscriptCue
@@ -52,3 +53,32 @@ class FakeSttProvider:
             language=self._language,
             model=self._model,
         )
+
+
+class SequenceSttProvider:
+    """호출 순서대로 예외를 던지거나 전사를 낸다. `SttProvider`의 구현이다.
+
+    **`FakeSttProvider`로는 재시도 루프를 잴 수 없다.** 그쪽의 `error`는
+    매번 같은 예외를 던지므로 "429 한 번 뒤 성공"이라는 전이가 만들어지지
+    않고, 재시도 루프가 없는 구현과 있는 구현이 같은 결과를 낸다.
+
+    목록이 소진되면 **마지막 원소를 반복한다** - 재시도 소진 테스트가
+    `max_retries + 1`개를 손으로 세어 적지 않아도 된다.
+    """
+
+    name = "sequence-stt"
+
+    def __init__(self, outcomes: Sequence[Transcript | ProviderError]) -> None:
+        if not outcomes:
+            raise ValueError("outcomes가 비었다. 0개 수집은 통과가 아니라 설정 오류다")
+        self._outcomes = list(outcomes)
+        self.calls: list[Path] = []
+        self.languages: list[str | None] = []
+
+    def transcribe(self, audio: Path, *, language: str | None) -> Transcript:
+        self.calls.append(audio)
+        self.languages.append(language)
+        outcome = self._outcomes[min(len(self.calls) - 1, len(self._outcomes) - 1)]
+        if isinstance(outcome, ProviderError):
+            raise outcome
+        return outcome
