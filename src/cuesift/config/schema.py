@@ -62,7 +62,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("llm", "context_window"), (("translate", "context_window"),)),
     Binding(("glossary",), (("translate", "glossary"),)),
     Binding(("work_context",), (("translate", "work_context"),)),
-    Binding(("output", "dir"), (("translate", "out"),)),
+    Binding(("output", "dir"), (("translate", "out"), ("transcribe", "out"))),
     # **변환 함수가 없다.** `cache.enabled → --no-cache`가 `negate`를 거치는
     # 것과 달리 YAML의 `true`가 곧 `--progress`다 (FR-8.5).
     Binding(("output", "progress"), (("translate", "progress"),)),
@@ -80,6 +80,16 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("spec", "profile"), (("check", "spec"),)),
     Binding(("spec", "fail_on"), (("check", "fail_on"),)),
     Binding(("spec", "limit"), (("check", "limit"),)),
+    # **번역과 분리한 엔드포인트다**(설계 D7). Ollama는
+    # `/v1/audio/transcriptions`를 제공하지 않아(WP9 실측) `llm.base_url`과
+    # 하나로 묶으면 사용자가 번역과 전사 중 하나를 반드시 못 쓴다.
+    Binding(
+        ("stt", "base_url"),
+        (("transcribe", "stt_base_url"), ("translate", "stt_base_url")),
+    ),
+    Binding(("stt", "model"), (("transcribe", "stt_model"), ("translate", "stt_model"))),
+    # `translate`에만 간다 - `transcribe`는 영상이 위치 인자다.
+    Binding(("input", "media"), (("translate", "media"),)),
 )
 
 # 파라미터로 가지 않지만 허용해야 하는 키 (설계 §5 3행·17행).

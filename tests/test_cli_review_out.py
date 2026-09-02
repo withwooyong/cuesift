@@ -107,7 +107,7 @@ def test_stem_규칙이_자막_출력과_같다(stem: str, source_lang: str) -> 
     """
     src = Path(f"a/{stem}.srt")
 
-    subtitle = _output_path(src, Path("subs"), source_lang, "en")
+    subtitle = _output_path(src, Path("subs"), source_lang, "en", suffix=src.suffix)
     review = _review_path(src, Path("reports"), source_lang, "en")
 
     assert subtitle == Path("subs/ep01.en.srt")

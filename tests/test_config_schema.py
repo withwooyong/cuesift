@@ -27,11 +27,11 @@ def test_매핑표가_CLI_옵션_집합과_상등이다() -> None:
     assert mapped == _cli_options()
 
 
-def test_CLI_옵션은_24개다() -> None:
-    # translate 20 + check 3 + transcribe 1. 이 수가 바뀌면 위 상등도
+def test_CLI_옵션은_30개다() -> None:
+    # translate 23 + check 3 + transcribe 4. 이 수가 바뀌면 위 상등도
     # 깨지지만, 여기서 먼저 어긋난 쪽을 알려 준다(설계 §5).
-    # FR-8.5가 `--progress`를 더해 23에서 24가 됐다.
-    assert len(_cli_options()) == 24
+    # FR-8.3의 `--media`·`--stt-base-url`·`--stt-model`이 27에서 30으로 올렸다.
+    assert len(_cli_options()) == 30
 
 
 def test_허용_경로는_매핑표에서_파생된다() -> None:

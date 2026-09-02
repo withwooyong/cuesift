@@ -12,8 +12,8 @@ from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import strip_rich_decoration
-from cuesift import __version__
-from cuesift.cli import EXIT_NOT_IMPLEMENTED, FailOn, app, check
+from cuesift import __version__, cli
+from cuesift.cli import FailOn, app, check
 
 runner = CliRunner()
 
@@ -40,7 +40,7 @@ def test_translate_accepts_documented_flags(
 ) -> None:
     """요구사항정의서 §8.1 S1의 호출 형태가 파싱되는지 확인한다.
 
-    **Task 4에서 `translate`가 골격을 벗어난 뒤로는 EXIT_NOT_IMPLEMENTED를
+    **Task 4에서 `translate`가 골격을 벗어난 뒤로는 종료 코드 70을
     기대할 수 없다.** 이전 판은 `episode01.ko.srt`가 존재하지 않아도 골격이
     입력을 열어 보지 않아 항상 70으로 끝났는데, 지금은 `check`와 같은 이유로
     `exists=True`가 본문 전에 존재를 확인한다(그렇지 않으면
@@ -90,8 +90,18 @@ def test_check_accepts_documented_flags():
 
 
 def test_transcribe_accepts_documented_flags():
+    """**70을 기대하지 않는다**(G7). FR-8.3 배선으로 그 발신처가 사라졌다.
+
+    STT 설정을 주지 않았으므로 종료 코드 2다 - 플래그가 파싱된다는 것과
+    설정이 갖춰졌다는 것은 다르고, 이 테스트가 보는 것은 앞쪽이다.
+
+    **`episode02.mp4`는 존재하지 않으므로 typer의 `exists=True`가 먼저
+    잡는다.** 그것도 2라 단언은 참이지만 이유가 다르므로, 파싱 자체는
+    아래 한 줄이 본다.
+    """
     result = runner.invoke(app, ["transcribe", "episode02.mp4", "--source-lang", "ko"])
-    assert result.exit_code == EXIT_NOT_IMPLEMENTED
+    assert result.exit_code == 2
+    assert "No such option" not in result.output
 
 
 def test_unknown_flag_is_a_usage_error():
@@ -202,3 +212,31 @@ def test_fail_on_defaults_to_hard():
     """
     default = inspect.signature(check).parameters["fail_on"].default
     assert default is FailOn.hard
+
+
+def test_output_path는_suffix를_반드시_받는다() -> None:
+    """설계 D6. **기본값을 두면 위험한 쪽이 기본이 된다.**
+
+    이 게이트는 동작이 아니라 **시그니처**를 본다 - 기본값
+    (`suffix: str = ""` 또는 `input_path.suffix`)을 되돌려 넣는 변이는
+    기존 호출부의 출력이 같아 다른 어떤 테스트로도 죽지 않는다. 다음에 영상
+    경로를 하나 더 붙이는 사람이 값을 넘기지 않으면 `TypeError`를 받는다 -
+    조용한 실패가 시끄러운 실패가 된다.
+    """
+    with pytest.raises(TypeError):
+        cli._output_path(Path("talk.mp4"), None, "ko", "ko")  # type: ignore[call-arg]
+
+
+def test_output_path가_입력_확장자를_물려받지_않는다() -> None:
+    """C1. 예전 판은 `talk.ko.mp4`라는 이름의 SRT 파일을 만든다.
+
+    **확장자만 다르고 예외는 없다** - 플레이어가 열지 못하는 파일이 조용히
+    생기고 종료 코드는 0이다.
+    """
+    assert cli._output_path(Path("talk.mp4"), None, "ko", "ko", suffix=".srt") == Path(
+        "talk.ko.srt"
+    )
+    # 이미 태그가 붙은 입력도 같은 출력을 낸다 - 치환 규칙이 작동한다.
+    assert cli._output_path(Path("talk.ko.mp4"), None, "ko", "ko", suffix=".srt") == Path(
+        "talk.ko.srt"
+    )
