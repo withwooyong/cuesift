@@ -171,12 +171,23 @@ def test_설정이_필수_옵션을_만족시킨다(tmp_path: Path) -> None:
 
 
 def test_설정에_넣은_input은_무시된다(tmp_path: Path) -> None:
-    # 설계 D13 - 위치인자는 설정 대상이 아니다. `input`이 매핑표에 있으면
-    # 다른 파일을 검수하고도 통과한다. 매핑표에 없으므로 모르는 키가 된다.
+    """설계 D13 - 위치인자는 설정 대상이 아니다.
+
+    `input`이 매핑표에 있으면 다른 파일을 검수하고도 통과한다.
+
+    **FR-8.3이 `input.media`를 더해 진단 문구가 바뀌었다.** `input`은 이제
+    중간 노드라 "모르는 키"가 아니라 "값이 매핑이 아니다"로 거부된다 -
+    거부된다는 사실과 종료 코드 2는 그대로이고 안내가 더 정확해진 것이다.
+    **`input.media`가 `translate.media` 옵션으로 가는 것과 위치 인자
+    `input`은 다른 것이며, 후자는 여전히 설정으로 채울 수 없다.**
+    """
     cfg = _config(tmp_path, "spec:\n  profile: ko\ninput: 아무거나.srt\n")
     result = _check(cfg)
     assert result.exit_code == 2
-    assert normalize_rich_message("모르는 키 'input'") in normalize_rich_message(result.stderr)
+    stderr = normalize_rich_message(result.stderr)
+    assert normalize_rich_message("'input'의 값이 매핑이 아니다") in stderr
+    # 가능한 키가 `input.media` 하나뿐인 것이 "위치 인자는 없다"의 표현이다.
+    assert normalize_rich_message("input.media") in stderr
 
 
 def test_설정을_읽으면_출처가_stderr에_나간다(tmp_path: Path) -> None:

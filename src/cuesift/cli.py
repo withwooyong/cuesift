@@ -1016,13 +1016,34 @@ def translate(
     # 빼므로 `--help`도 매핑표 상등 게이트도 그대로다. `_resolve_llm`이
     # 값의 출처를 물어보려면 이것이 있어야 한다(FR-8.4 · 설계 D3).
     ctx: typer.Context,
-    input: Annotated[
-        Path,
-        # `readable=False`는 `check`와 같은 이유다 — 읽기 가능 판정을
-        # 인제스트 한 곳으로 모아 플랫폼마다 다른 코드가 나오지 않게 한다.
-        typer.Argument(exists=True, dir_okay=False, readable=False, help="번역할 자막 파일"),
-    ],
+    # **`to`가 `input` 앞에 온다.** `input`에 기본값 `None`을 주면 기본값
+    # 없는 파라미터가 뒤따를 수 없어 `SyntaxError`다. 위치 인자는 `input`
+    # 하나뿐이라 CLI 사용법(`translate [INPUT] --to ...`)은 바뀌지 않는다.
     to: Annotated[str, typer.Option("--to", help="대상 언어 (쉼표 구분, 예: en,ja)")],
+    input: Annotated[
+        Path | None,
+        # **`exists=True`를 뗀다**(설계 §5.2). `--media`만 준 경우 검증할
+        # 대상이 없기 때문이다. 존재 검사는 본문으로 내려가고 **종료 코드
+        # 2를 그대로 유지한다** - 66으로 흘리면 CI에서 경로 오타가
+        # "파일 사정"으로 보고되고 사용자는 멀쩡한 자막을 고치려 든다
+        # (`test_없는_자막_경로는_여전히_종료_코드_2다`가 고정한다).
+        # `readable=False`는 그대로다 - 읽기 가능 판정은 인제스트가 한다.
+        typer.Argument(
+            dir_okay=False, readable=False, help="번역할 자막 파일. --media와 함께 줄 수 없다"
+        ),
+    ] = None,
+    media: Annotated[
+        Path | None,
+        # `exists=True`를 **여기에는 건다.** 옵션이라 위와 사정이 다르다 -
+        # 값이 있으면 반드시 검사 대상이 있고, typer가 잡으면 종료 코드 2가
+        # 선언적으로 보장된다.
+        typer.Option(
+            "--media",
+            exists=True,
+            dir_okay=False,
+            help="번역 전에 전사할 영상·오디오. 자막 파일과 함께 줄 수 없다",
+        ),
+    ] = None,
     out: Annotated[
         Path | None,
         # `file_okay=False`는 `--out`이 이미 존재하는 **파일**을 가리키는 흔한
@@ -1189,6 +1210,14 @@ def translate(
             help="실행하지 않고 배치 수·캐시 히트·호출 필요 수를 추정합니다 (NFR-2).",
         ),
     ] = False,
+    stt_base_url: Annotated[
+        str | None,
+        typer.Option("--stt-base-url", help="STT 엔드포인트. 없으면 CUESIFT_STT_BASE_URL"),
+    ] = None,
+    stt_model: Annotated[
+        str | None,
+        typer.Option("--stt-model", help="STT 모델 이름. 없으면 CUESIFT_STT_MODEL"),
+    ] = None,
     progress: Annotated[
         bool | None,
         # **3상이다.** 기본값 `None`이 "지정 안 함"이고, 그때 자동 감지가
@@ -1229,6 +1258,43 @@ def translate(
             review_budget = None
         else:
             review_threshold = None
+    if input is not None and media is not None:
+        # **명령줄이 이긴다**(FR-8.4 후반절). `cuesift.yaml`의 `input.media`가
+        # 위치 인자와 부딪히면 설정 쪽을 버린다 - 위치 인자는 `default_map`에
+        # 실리지 않으므로 `_from_config`가 늘 거짓이고, 따라서 설정에서 온
+        # `media`만 양보 대상이 된다. 둘 다 명령줄이면 원래의 사용법 오류라
+        # `_resolve_exclusive`가 exit 2로 끝낸다.
+        if (
+            _resolve_exclusive(ctx, "자막 파일과 --media를 함께 줄 수 없다", "input", "media")
+            == "input"
+        ):
+            input = None
+        else:
+            media = None
+
+    if input is None and media is None:
+        _echo("번역할 자막 파일이나 --media 중 하나는 주어야 한다", err=True)
+        raise typer.Exit(2)
+
+    if media is not None and dry_run:
+        # **`--dry-run`이 네트워크를 타지 않는다는 계약에 예외를 두지
+        # 않는다**(NFR-2). 전사 없이는 세그먼트 수를 셀 수 없고, 전사하면
+        # dry-run이 돈을 쓴다 - 사용자가 무료라고 믿고 반복 호출하는 바로
+        # 그 명령이다. 막기만 하지 않고 대안을 적는다.
+        _echo(
+            "--dry-run과 --media를 함께 쓸 수 없다. 전사를 먼저 하고 그 자막으로 추정한다:\n"
+            f"  cuesift transcribe {media}\n"
+            f"  cuesift translate <전사된 자막> --to {to} --dry-run",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if input is not None and not input.is_file():
+        # typer의 `exists=True`를 본문으로 옮긴 자리다. **종료 코드가 2에서
+        # 움직이면 안 된다** - 디렉터리를 준 경우도 여기서 걸린다.
+        _echo(f"{input}: 파일이 없다", err=True)
+        raise typer.Exit(2)
+
     if review_threshold is not None and math.isnan(review_threshold):
         # **`min`/`max`는 NaN을 통과시킨다.** click의 범위 검사가
         # `lt(nan, 0.0)`·`gt(nan, 1.0)`으로 판정하는데 **둘 다 False**라
@@ -1480,6 +1546,23 @@ def translate(
             # 여기서는 사용법 오류로 다뤄 LLM을 부르기 전에 끝낸다.
             _echo("트리아지를 적용할 수 있는 대상 언어가 없다", err=True)
             raise typer.Exit(2)
+
+    if media is not None:
+        # **전사는 여기서 일어난다 - 더 앞이 아니다.** `--to`에 오타를 낸
+        # 사용자가 STT 요금을 낸 뒤 exit 2를 받으면 안 된다. 위의 targets
+        # 검증과 프로파일 검사가 이미 같은 이유로 LLM 호출 앞에 있다(설계 D13).
+        stt_base, stt_model_name, stt_key = _resolve_stt(ctx, stt_base_url, stt_model)
+        try:
+            stt_provider = _build_stt_provider(
+                base_url=stt_base, model=stt_model_name, api_key=stt_key
+            )
+        except ValueError as exc:
+            _echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+        # **`input`에 대입하는 것이 D5의 요점이다.** 아래 코드는 한 줄도
+        # 바뀌지 않는다 - 번역 경로가 STT를 전혀 모른 채 평소의 자막 입력을
+        # 받는다.
+        input = _transcribe_to_file(media, out, source_lang, stt_provider)
 
     try:
         result = load_subtitle(input, source_lang=source_lang)
