@@ -959,6 +959,12 @@ cuesift translate --media episode02.mp4 --to en
 | `--stt-base-url` | STT 엔드포인트 | 환경변수 `CUESIFT_STT_BASE_URL` |
 | `--stt-model` | STT 모델 이름 | 환경변수 `CUESIFT_STT_MODEL` |
 
+**API 키는 명령줄로 받지 않습니다.** 셸 히스토리와 `ps` 출력에 남기 때문입니다.
+`CUESIFT_STT_API_KEY`를 설정하고, 설정하지 않으면 번역용 `CUESIFT_API_KEY`로
+폴백합니다. **빈 문자열(`CUESIFT_STT_API_KEY=`)로 두면 폴백을 끕니다** - 키가
+필요 없는 로컬 whisper를 쓸 때 번역용 자격증명이 다른 호스트로 나가지 않게
+하는 탈출로입니다.
+
 **출력 자막이 이미 있으면 재사용하고 알립니다.** 덮어쓰면 손으로 고친 원문이
 예고 없이 사라지기 때문입니다. 다시 전사하려면 그 파일을 지웁니다.
 

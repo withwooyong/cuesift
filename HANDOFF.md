@@ -2,13 +2,15 @@
 
 > Last updated: 2026-09-02 (KST)
 > **WP6이 닫혔다 - `transcribe` 배선(FR-8.3)이 마지막 조각이었다.** `feat/media-wiring`에서
-> 태스크 6개 · 커밋 6개(`6131eec`..`a842b23`)로 `cuesift transcribe <영상>`과
+> 태스크 6개 · 커밋 8개(`6131eec`..`dd45fff`)로 `cuesift transcribe <영상>`과
 > `cuesift translate --media <영상>`이 동작한다. 같은 브랜치가 **이월 1번**(`_output_path`)과
 > **7번**(STT 재시도 루프)을 함께 닫았다 - 둘 다 배선하는 순간에만 도달 가능해지는 것이었다.
 > **v0.1 완료 개수 39 → 40 (42개 중, 95%).** 남은 것은 FR-6.3의 "상위 K개"(🟡)와
 > FR-4.2 역번역(⬜) 둘뿐이다.
 > 직전 세션의 WP9(STT 어댑터)는 PR [#20](https://github.com/withwooyong/cuesift/pull/20)으로
 > `main`에 들어갔다(`1741337`).
+> **이번 FR-8.3은 PR [#22](https://github.com/withwooyong/cuesift/pull/22)로 열려 있다** -
+> CI 5잡이 통과했으나 아직 머지되지 않았다. 사용자가 `main` merge를 승인하지 않았다.
 > 상태 값은 여기 적힌 숫자가 아니라 아래 "현재 상태 재는 법"의 명령으로 직접 재라.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
@@ -27,21 +29,23 @@
 | WP6 설계 스펙 (FR-8.3) | ✅ | `27e5d9b` · [설계 스펙](docs/superpowers/specs/2026-09-02-media-wiring-design.md) |
 | WP6 구현 계획 (FR-8.3) | ✅ | `4c1d585` · [계획서](docs/superpowers/plans/2026-09-02-media-wiring.md) |
 | **WP6 구현 - 태스크 6개** | ✅ **전부 완료** | `6131eec`..`a842b23` |
-| **FR-8.3 푸시·PR·merge** | ⬜ | `feat/media-wiring` · **PR 번호는 머지 후 채운다** |
+| **FR-8.3 푸시·PR** | ✅ | PR [#22](https://github.com/withwooyong/cuesift/pull/22) · CI 5잡 통과 |
+| **FR-8.3 merge** | ⬜ **미승인** | `main` merge는 사용자 승인 대기 중이다 |
 
-**PR 행은 두 커밋에 걸쳐 채워진다.** 인수인계 문서는 자기 자신이 들어갈 PR을 볼 수 없어
-지금은 비워 두고, 머지된 뒤 다음 커밋이 번호를 채운다. 추측해서 적지 않는 것이
-규칙이고, 그래서 아래 시작 절차의 첫 명령이 PR 상태 확인이다.
+**merge만 남았고 그것은 승인 사항이다.** PR을 여는 것과 `main`을 바꾸는 것은 되돌리는
+비용이 다르다 - PR은 닫으면 그만이지만 merge는 `main` 이력에 남는다. 그래서 이 문서는
+PR이 열린 상태에서 커밋된다. 인수인계 문서가 자기 자신의 PR을 못 보는 문제는 **PR을 먼저
+열고 번호를 넣어 커밋하는 것**으로 닫았고, 그래서 아래 시작 절차의 첫 명령이 PR 상태 확인이다.
 
 ## 현재 상태 재는 법
 
 **첫 일은 직전 작업이 어디까지 갔는지 확인하는 것이다.**
 
 ```bash
-gh pr list --state open           # 열린 PR. FR-8.3(feat/media-wiring)이 아직 머지 전이면 여기 있다
-git branch --show-current         # feat/media-wiring (머지 후에는 main)
-git status --short                # clean 이어야 한다
-git log --oneline -8              # 6131eec..a842b23 여섯 개가 FR-8.3이다
+gh pr view 22 --json state,mergeStateStatus   # OPEN 이면 머지가 아직 안 된 것이다
+git branch --show-current                     # feat/media-wiring (머지 후에는 main)
+git status --short                            # clean 이어야 한다
+git log --oneline -10                         # 6131eec..HEAD 여덟 개 + 이 문서가 FR-8.3이다
 ```
 
 ## WP9가 낸 것 — 태스크 7개
@@ -76,11 +80,12 @@ flowchart LR
 있었는데, FR-8.3이 `_transcribe_to_file` 하나로 그 자리를 이었다 - `transcribe`와
 `translate --media`가 **같은 함수를 부른다.**
 
-## 게이트 실행 기록 (2026-09-02, HEAD `a842b23` + 이 문서 커밋)
+## 게이트 실행 기록 (2026-09-02, HEAD `dd45fff` + 이 문서 커밋)
 
 | 게이트 | 착수 시점 | 지금 |
 | --- | --- | --- |
-| `pytest -q` | 1700 passed · 5 deselected | **1742 passed · 5 deselected** |
+| `pytest -q` | 1700 passed · 5 deselected | **1743 passed · 5 deselected** |
+| 커버리지 | - | **TOTAL 98%** (`retry.py` 100% · `stt/retry.py` 96% · `cli.py` 96%) |
 | `ruff check .` / `ruff format --check .` | 통과 · 123 files | 통과 · **129 files** |
 | CLI 옵션 개수 | 24 | **30** (`translate` 23 · `check` 3 · `transcribe` 4) |
 | YAML 허용 키 | 25 | **28** (`BINDINGS` 26 + `SPECIAL_PATHS` 2) |
@@ -280,12 +285,21 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 
 ## 다음 세션 시작 절차
 
+**첫 일은 새 작업이 아니라 PR [#22](https://github.com/withwooyong/cuesift/pull/22)를
+어떻게 할지 정하는 것이다.** 머지 승인을 받지 못한 채 세션이 끝났다.
+
 ```bash
-gh pr list --state open                  # 열린 PR. WP9는 #20으로 머지됐으니 비어 있는 것이 정상이다
-git branch --show-current                # main
+gh pr view 22 --json state,mergeStateStatus,statusCheckRollup   # OPEN · CI 5잡 통과 상태였다
+git branch --show-current                # feat/media-wiring
 git status --short                       # clean
-git log --oneline -3                     # 최상단이 WP9 squash 커밋 1741337
-git checkout -b feat/media-wiring        # 다음 작업은 여기서 시작한다
+git log --oneline -10                    # 6131eec..HEAD 아홉 개가 FR-8.3이다
+```
+
+머지하기로 하면 아래를 따르고, 그 뒤에야 새 브랜치를 판다.
+
+```bash
+gh pr merge 22 --squash                  # 사용자 승인을 받은 뒤에만
+git checkout main && git pull && git branch -d feat/media-wiring
 ```
 
 **`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거가 `branches: [main]`뿐이라
