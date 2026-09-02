@@ -1,8 +1,7 @@
 """cuesift CLI 진입점.
 
 요구사항정의서 §8.1(FR-8.1~8.5)의 커맨드 표면을 정의한다.
-`check`·`translate`는 배선이 끝나 실제로 동작한다. `transcribe`는 아직
-인자 스키마만 확정한 골격이라 EXIT_NOT_IMPLEMENTED로 종료한다.
+`check`·`translate`·`transcribe` 셋 다 배선이 끝나 실제로 동작한다.
 
 **종료 코드 일곱이 서로 겹치지 않는 것이 이 파일의 계약이다.**
 
@@ -69,6 +68,8 @@ from cuesift.spec import (
     load_profile,
 )
 from cuesift.store import CacheRequest, CachingProvider
+from cuesift.stt import OpenAICompatibleSttProvider, SttProvider
+from cuesift.stt.retry import STT_MAX_RETRIES, transcribe_with_retry
 from cuesift.tier1 import explain_zero_bound, triage_with_tier1
 from cuesift.translate import (
     DEFAULT_BATCH_SIZE,
@@ -78,6 +79,7 @@ from cuesift.translate import (
     OpenAICompatibleProvider,
     Provider,
     ProviderError,
+    RetryableProviderError,
     SegmentFailure,
     TokenUsage,
     TranslationResult,
@@ -329,24 +331,6 @@ class ReviewFormat(StrEnum):
     JSON = "json"
     HTML = "html"
     BOTH = "both"
-
-
-def _not_implemented(command: str) -> None:
-    # `typer.secho`는 `_echo`를 지나지 않는다. 진입점의 `_TolerantOutput`이 이 경로도
-    # 덮지만, 닫힌 파이프에서 여기서 예외가 새면 아래 `typer.Exit(70)`에 도달하지 못해
-    # **70이 조용한 0이 된다**(실측된 회귀). 방어를 쓰기 지점에 함께 둔다.
-    try:
-        typer.secho(
-            f"'{command}'는 아직 구현되지 않았습니다 (골격 단계). "
-            f"진행 상황: https://github.com/withwooyong/cuesift/issues",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
-    except OSError as exc:
-        if not _is_closed_output(exc):
-            raise
-        _discard_stream(sys.stderr)
-    raise typer.Exit(EXIT_NOT_IMPLEMENTED)
 
 
 def _version_callback(value: bool) -> None:
@@ -785,6 +769,55 @@ def _build_provider(*, base_url: str, model: str, api_key: str | None) -> Provid
     return OpenAICompatibleProvider(base_url=base_url, model=model, api_key=api_key)
 
 
+def _resolve_stt(
+    ctx: typer.Context | None, base_url: str | None, model: str | None
+) -> tuple[str, str, str | None]:
+    """STT 접속 설정을 해결한다 (FR-8.3 · 설계 D7).
+
+    우선순위는 위 `_resolve_llm`과 같다 - **CLI 옵션 > 환경변수 > 설정 파일**.
+
+    **번역과 분리한 엔드포인트인 것이 요점이다.** Ollama는
+    `/v1/audio/transcriptions`를 제공하지 않으므로(WP9 실측) 하나로 묶으면
+    사용자가 번역과 전사 중 **하나를 반드시 못 쓴다.**
+
+    API 키는 `CUESIFT_STT_API_KEY`를 읽고 없으면 `CUESIFT_API_KEY`로
+    폴백한다 - 같은 조직의 키를 쓰는 경우가 흔하고, 폴백이 없으면 사용자가
+    같은 값을 두 번 쓴다. `or`로 쓰는 것은 빈 문자열도 "없음"으로 봐야
+    하기 때문이다 - 빈 키를 헤더에 실으면 서버가 401을 내고, 그것은 Fatal이라
+    "키가 틀렸다"로 오독된다.
+    """
+    resolved_base = _prefer_env(ctx, "stt_base_url", base_url, "CUESIFT_STT_BASE_URL")
+    resolved_model = _prefer_env(ctx, "stt_model", model, "CUESIFT_STT_MODEL")
+    missing = [
+        name
+        for name, value in (("--stt-base-url", resolved_base), ("--stt-model", resolved_model))
+        if not value
+    ]
+    if missing:
+        # 두 통로를 모두 적는다(설계 R4). `_resolve_llm`의 메시지와 같은
+        # 형태라 사용자가 두 번째로 만났을 때 읽는 법을 새로 배우지 않는다.
+        _echo(
+            f"{', '.join(missing)}가 없다. 옵션으로 주거나 "
+            f"CUESIFT_STT_BASE_URL·CUESIFT_STT_MODEL 환경변수를 설정한다.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return (
+        resolved_base,
+        resolved_model,
+        os.environ.get("CUESIFT_STT_API_KEY") or os.environ.get("CUESIFT_API_KEY"),
+    )
+
+
+def _build_stt_provider(*, base_url: str, model: str, api_key: str | None) -> SttProvider:
+    """STT 프로바이더를 만든다. **테스트가 monkeypatch하는 지점이다.**
+
+    위 `_build_provider`의 형제다. 본문에서 직접 만들면 CLI 테스트가
+    네트워크를 타거나 `httpx` 내부를 패치해야 한다.
+    """
+    return OpenAICompatibleSttProvider(base_url=base_url, model=model, api_key=api_key)
+
+
 def _output_path(
     input_path: Path,
     out_dir: Path | None,
@@ -823,6 +856,82 @@ def _output_path(
         stem = stem[: -len(lang_tag)]
     directory = out_dir if out_dir is not None else input_path.parent
     return directory / f"{stem}.{target_lang}{suffix}"
+
+
+_TRANSCRIBE_SUFFIX = ".srt"
+# **`load_media`가 `format="srt"`로 고정하므로 이것이 유일하게 옳은 값이다**
+# (WP9 설계 D6). `.mp4`를 물려주면 SRT 내용이 든 `talk.ko.mp4`가 나가고
+# 예외는 없다 - 플레이어가 열지 못하는 파일이 조용히 생긴다.
+
+
+def _transcribe_to_file(
+    media: Path, out_dir: Path | None, source_lang: str, provider: SttProvider
+) -> Path:
+    """영상을 전사해 원문 자막 파일로 내고 **그 경로를** 낸다 (FR-8.3 · 설계 D5).
+
+    **`transcribe`와 `translate --media`가 이 함수 하나를 공유한다.** 재사용
+    판정과 출력 경로 규칙이 두 곳에 생기면 한쪽만 고쳤을 때 두 명령이 다른
+    파일을 내고, **그 갈림은 예외가 아니라 조용하다.**
+
+    **반환이 `IngestResult`가 아니라 `Path`인 것이 요점이다.** `translate`는
+    그 경로를 평소의 자막 입력처럼 다루므로 번역 경로가 STT를 전혀 모른다 -
+    `--media`가 번역 파이프라인 안쪽에 분기를 만들지 않는다.
+
+    `source_lang`을 `target_lang` 자리에도 넘긴다. `talk.mp4`도
+    `talk.ko.mp4`도 `talk.ko.srt`를 내므로 **두 입력이 같은 출력을 갖는다** -
+    `_output_path`의 치환 규칙이 그렇게 작동한다.
+    """
+    out = _output_path(media, out_dir, source_lang, source_lang, suffix=_TRANSCRIBE_SUFFIX)
+    if out.exists():
+        # **덮어쓰지 않는다**(설계 D2). 덮어쓰면 사용자가 손으로 고친 원문이
+        # 예고 없이 사라지고, 오류로 멈추면 같은 명령을 두 번 돌리는 흔한
+        # 행동이 오류가 된다. **알림 줄이 유일한 방어다** - 영상이 바뀌어도
+        # 자막 파일명이 같으면 낡은 것을 쓴다(설계 R2·§10). 오늘은 사용자가
+        # 파일을 지우는 것이 유일한 무효화 수단이다.
+        _echo(f"전사 자막이 이미 있어 재사용한다: {out}", err=True)
+        return out
+
+    # **진행 막대를 쓰지 않는다**(설계 D4). `ProgressUpdate`는 `(done, total)`
+    # 뿐이고 STT는 파일 하나에 요청 하나라 `(0,1)→(1,1)`밖에 못 낸다 -
+    # 0%에서 몇 분 멈췄다가 100%로 뛰는 **정보량 0인 막대**가 된다. 사용자가
+    # 알고 싶은 것은 진행률이 아니라 "멈춰 있는 것인가 기다리는 것인가"다.
+    _echo(f"전사 중: {media}", err=True)
+
+    def _on_retry(attempt: int, delay: float, exc: RetryableProviderError) -> None:
+        # **문구는 CLI가 만든다.** 라이브러리가 사용자 문구를 알면 다음에
+        # 다른 호출부가 생겼을 때 그쪽 문맥에 맞지 않는 문장이 나간다 -
+        # `ProgressUpdate`가 단계 이름을 싣지 않는 것(FR-8.5 설계 D2)과
+        # 같은 이유다. `attempt`는 방금 실패한 시도의 0-based 번호라
+        # 다음 시도는 `attempt + 2`번째다.
+        _echo(
+            f"재시도 대기 {delay:.1f}초 ({attempt + 2}/{STT_MAX_RETRIES + 1}): {exc}",
+            err=True,
+        )
+
+    try:
+        result = transcribe_with_retry(provider, media, language=source_lang, on_retry=_on_retry)
+    except ProviderError as exc:
+        # 재시도 소진·인증 실패·`verbose_json` 미지원이 전부 여기다.
+        # 69는 "외부 서비스가 요청을 거부함"이고 66(파일 사정)과 갈린다 -
+        # 사용자가 고쳐야 할 것이 다르다.
+        _echo(str(exc), err=True)
+        raise typer.Exit(EXIT_UNAVAILABLE) from exc
+    except IngestError as exc:
+        # 큐 0개. `load_media`가 "0개 수집은 통과가 아니라 입력 오류다"로
+        # 내는 것이고, 파일 없음은 typer의 `exists=True`가 먼저 잡는다.
+        _echo(str(exc), err=True)
+        raise typer.Exit(EXIT_BAD_INPUT) from exc
+
+    try:
+        write_subtitle(result, result.segments, out)
+    except OSError as exc:
+        # 디스크 사정이다. `write_subtitle`은 임시 파일에 쓰고 `os.replace`로
+        # 갈아 끼우므로 여기서 실패해도 잘린 자막이 남지 않는다.
+        _echo(f"{out}: 전사 자막을 쓰지 못했다 - {exc}", err=True)
+        raise typer.Exit(EXIT_BAD_INPUT) from exc
+
+    _echo(f"전사 자막: {out}", err=True)
+    return out
 
 
 def _review_path(input_path: Path, review_dir: Path, source_lang: str, target_lang: str) -> Path:
@@ -3099,11 +3208,48 @@ def check(
 
 @app.command()
 def transcribe(
-    input: Annotated[Path, typer.Argument(help="영상 또는 오디오 파일")],
-    source_lang: Annotated[str | None, typer.Option("--source-lang", help="원문 언어")] = None,
+    # **파라미터가 아니다.** typer가 `Context`를 알아보고 click 옵션 목록에서
+    # 빼므로 `--help`도 매핑표 상등 게이트도 그대로다. `_resolve_stt`가
+    # 값의 출처를 물어보려면 이것이 있어야 한다(FR-8.4 · 설계 D3).
+    ctx: typer.Context,
+    input: Annotated[
+        Path,
+        # `readable=False`는 `check`·`translate`와 같은 이유다 - 읽기 가능
+        # 판정을 인제스트 한 곳으로 모아 플랫폼마다 다른 코드가 나오지 않게 한다.
+        typer.Argument(exists=True, dir_okay=False, readable=False, help="영상 또는 오디오 파일"),
+    ],
+    out: Annotated[
+        Path | None,
+        # `file_okay=False`는 `translate --out`과 같은 이유다 - 디렉터리
+        # 자리에 파일 경로를 주는 흔한 사고를 본문 전에 exit 2로 거른다.
+        typer.Option("--out", file_okay=False, help="출력 디렉터리. 기본은 입력 파일과 같은 곳"),
+    ] = None,
+    source_lang: Annotated[str, typer.Option("--source-lang", help="원문 언어")] = "ko",
+    stt_base_url: Annotated[
+        str | None,
+        typer.Option("--stt-base-url", help="STT 엔드포인트. 없으면 CUESIFT_STT_BASE_URL"),
+    ] = None,
+    stt_model: Annotated[
+        str | None,
+        typer.Option("--stt-model", help="STT 모델 이름. 없으면 CUESIFT_STT_MODEL"),
+    ] = None,
 ) -> None:
     """FR-8.3: STT로 원문 자막만 생성합니다."""
-    _not_implemented("transcribe")
+    resolved_base, resolved_model, api_key = _resolve_stt(ctx, stt_base_url, stt_model)
+    try:
+        provider = _build_stt_provider(
+            base_url=resolved_base, model=resolved_model, api_key=api_key
+        )
+    except ValueError as exc:
+        # 생성자의 ValueError는 ProviderError가 **아니다** - 설정 오류이지
+        # 호출 실패가 아니다. 명령줄이 틀린 것이므로 2다(`translate`와 같다).
+        _echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    out_path = _transcribe_to_file(input, out, source_lang, provider)
+    # **경로만 stdout으로 낸다.** 나머지 안내는 전부 stderr라
+    # `cuesift transcribe talk.mp4 | xargs ...`가 성립한다.
+    _echo(str(out_path))
 
 
 def run() -> None:
@@ -3120,10 +3266,10 @@ def run() -> None:
     | 층 | 무엇 | 지키는 것 |
     | --- | --- | --- |
     | 1 | `_TolerantOutput` (여기서 설치) | 어느 코드 경로가 쓰든 쓰기가 실패하지 않는다 |
-    | 2 | `_echo`·`_not_implemented` (커맨드 본문) | `app()`을 직접 부르는 호출자용 **부분** 방어 |
+    | 2 | `_echo` (커맨드 본문) | `app()`을 직접 부르는 호출자용 **부분** 방어 |
     | 3 | 아래 `finally` | 종료 flush가 120을 만들지 못하게 한다 |
 
-    **2층은 0·1·66(`_echo`)과 70(`_not_implemented`)만 덮는다.** 종료 코드 2는 click의
+    **2층은 `_echo`를 지나는 코드만 덮는다.** 종료 코드 2는 click의
     `UsageError.show()`가 쓰므로 본문에 방어할 지점이 없다 — **1층 없이는 못 막는다.**
     `run()`을 거치는 배포 경로는 1층이 전부 덮으므로 실사용 위험은 없고,
     `app()`을 직접 부르는 테스트·라이브러리 호출자에게만 해당한다.

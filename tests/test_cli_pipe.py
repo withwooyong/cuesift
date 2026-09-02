@@ -89,7 +89,13 @@ _CONTRACT = [
     ("2 없는 파일", ["check", str(FIXTURES / "없는파일.srt"), "--spec", "ko"], 2),
     ("2 없는 프로파일", ["check", str(FIXTURES / "minimal.srt"), "--spec", "th"], 2),
     ("66 자막 아님", ["check", str(FIXTURES / "cp949.srt"), "--spec", "ko"], 66),
-    ("70 미구현", ["transcribe", str(FIXTURES / "minimal.srt")], 70),
+    # **70이 이 표에서 사라진다**(FR-8.3 배선). 미구현 발신처가 없어졌고
+    # 남은 70(산출물의 내용 결함)은 고립 서로게이트를 낸 프로바이더가
+    # 있어야 도달하므로 이 표의 정적 픽스처로는 만들 수 없다.
+    # 자리를 비우지 않고 같은 명령의 exit 2로 바꾼다 - 파이프 계약이
+    # 재는 것은 "종료 코드가 조용한 0이 되지 않는가"이고 그것은 값과
+    # 무관하다.
+    ("2 STT 설정 없음", ["transcribe", str(FIXTURES / "minimal.srt")], 2),
     (
         "0 --fail-on none",
         ["check", str(FIXTURES / "overlap.vtt"), "--spec", "ko", "--fail-on", "none"],
@@ -426,39 +432,6 @@ def test_tolerant_output_stops_touching_a_stream_it_gave_up_on():
     # 포기 후에는 원본 write를 부르지 않으므로 예외가 나지 않아야 한다.
     assert proxy.write("둘째 줄") == len("둘째 줄")
     proxy.flush()
-
-
-def test_not_implemented_survives_a_closed_stderr(monkeypatch):
-    """`typer.secho`가 터져도 **70에 도달해야 한다.**
-
-    실측된 회귀: 이 방어가 없고 진입점 프록시도 없으면 `transcribe ... 2>&1 | head -0`이
-    70이 아니라 **조용한 0**으로 나갔다. 프록시가 있으면 여기까지 오지 않지만,
-    `app()`을 직접 부르는 호출자는 프록시를 받지 못한다.
-    """
-    monkeypatch.setattr(sys, "stderr", io.StringIO())
-
-    def raise_epipe(*args, **kwargs):
-        raise BrokenPipeError(errno.EPIPE, "Broken pipe")
-
-    monkeypatch.setattr(cli.typer, "secho", raise_epipe)
-
-    # `typer.Exit`는 click 예외라 `SystemExit`이 아니다 — click이 나중에 종료 코드로 바꾼다.
-    with pytest.raises(cli.typer.Exit) as caught:
-        cli._not_implemented("transcribe")
-    assert caught.value.exit_code == cli.EXIT_NOT_IMPLEMENTED
-
-
-def test_not_implemented_reraises_a_full_disk(monkeypatch):
-    monkeypatch.setattr(sys, "stderr", io.StringIO())
-
-    def raise_enospc(*args, **kwargs):
-        raise OSError(errno.ENOSPC, "No space left on device")
-
-    monkeypatch.setattr(cli.typer, "secho", raise_enospc)
-
-    with pytest.raises(OSError) as caught:
-        cli._not_implemented("transcribe")
-    assert caught.value.errno == errno.ENOSPC
 
 
 def test_tolerant_output_proxies_feature_detection():

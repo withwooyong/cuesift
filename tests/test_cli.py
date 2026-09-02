@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from conftest import strip_rich_decoration
 from cuesift import __version__, cli
-from cuesift.cli import EXIT_NOT_IMPLEMENTED, FailOn, app, check
+from cuesift.cli import FailOn, app, check
 
 runner = CliRunner()
 
@@ -90,8 +90,18 @@ def test_check_accepts_documented_flags():
 
 
 def test_transcribe_accepts_documented_flags():
+    """**70을 기대하지 않는다**(G7). FR-8.3 배선으로 그 발신처가 사라졌다.
+
+    STT 설정을 주지 않았으므로 종료 코드 2다 - 플래그가 파싱된다는 것과
+    설정이 갖춰졌다는 것은 다르고, 이 테스트가 보는 것은 앞쪽이다.
+
+    **`episode02.mp4`는 존재하지 않으므로 typer의 `exists=True`가 먼저
+    잡는다.** 그것도 2라 단언은 참이지만 이유가 다르므로, 파싱 자체는
+    아래 한 줄이 본다.
+    """
     result = runner.invoke(app, ["transcribe", "episode02.mp4", "--source-lang", "ko"])
-    assert result.exit_code == EXIT_NOT_IMPLEMENTED
+    assert result.exit_code == 2
+    assert "No such option" not in result.output
 
 
 def test_unknown_flag_is_a_usage_error():
