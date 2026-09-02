@@ -12,6 +12,7 @@ import pytest
 from tests.fakes.stt import FakeSttProvider, SequenceSttProvider
 from typer.testing import CliRunner
 
+from cuesift import cli
 from cuesift.cli import app
 from cuesift.stt.provider import Transcript, TranscriptCue
 from cuesift.translate.provider import FatalProviderError, RetryableProviderError
@@ -192,3 +193,62 @@ def test_재시도_알림이_stderr로_나간다(monkeypatch: pytest.MonkeyPatch
     assert "전사 중" in result.stderr
     assert "5.0" in result.stderr
     assert "2/4" in result.stderr
+
+
+def test_STT_키를_빈_문자열로_두면_LLM_키가_폴백되지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """리뷰 지적(HIGH). **폴백을 끌 수 있어야 한다.**
+
+    `or`로 쓰면 `CUESIFT_STT_API_KEY=""`가 "없음"과 뭉뚱그려져 번역용 키가
+    **다른 호스트인** STT 엔드포인트의 `Authorization` 헤더에 실린다. 키가
+    필요 없는 로컬 whisper를 쓰려는 사용자에게 차단 수단이 없어진다.
+
+    빈 문자열을 헤더에 싣지 않는 것(원래의 근거)은 그대로다 - 반환이
+    `None`이어야 하고 `""`이면 안 된다.
+    """
+    monkeypatch.setenv("CUESIFT_STT_API_KEY", "")
+    monkeypatch.setenv("CUESIFT_API_KEY", "sk-llm-secret")
+    monkeypatch.setenv("CUESIFT_STT_BASE_URL", "http://localhost:9000/v1")
+    monkeypatch.setenv("CUESIFT_STT_MODEL", "whisper-1")
+
+    _, _, api_key = cli._resolve_stt(None, None, None)
+
+    assert api_key is None
+
+
+def test_STT_키가_없으면_LLM_키로_폴백한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """폴백 자체는 유지한다. 같은 조직의 키를 두 번 쓰게 하지 않는다."""
+    monkeypatch.delenv("CUESIFT_STT_API_KEY", raising=False)
+    monkeypatch.setenv("CUESIFT_API_KEY", "sk-shared")
+    monkeypatch.setenv("CUESIFT_STT_BASE_URL", "http://localhost:9000/v1")
+    monkeypatch.setenv("CUESIFT_STT_MODEL", "whisper-1")
+
+    _, _, api_key = cli._resolve_stt(None, None, None)
+
+    assert api_key == "sk-shared"
+
+
+def test_전사_자막_자리에_디렉터리가_있으면_재사용하지_않는다(
+    monkeypatch: pytest.MonkeyPatch, media: Path
+) -> None:
+    """리뷰 지적(MEDIUM). `exists()`는 디렉터리에도 참이다.
+
+    **전사를 한 번도 하지 않고 exit 0으로 디렉터리 경로를 stdout에 찍으면
+    파이프 계약이 깨진다** - `cuesift transcribe talk.mp4 | xargs ...`가
+    자막이 아닌 것을 받는다. 쓸 수 없는 자리라는 사실은 `write_subtitle`이
+    내는 66으로 드러나야 한다.
+    """
+    (media.parent / "talk.ko.srt").mkdir()
+    provider = FakeSttProvider([(0.0, 1.0, "안녕")])
+    _patch_stt(monkeypatch, provider)
+
+    result = runner.invoke(app, _args(media))
+
+    # 66은 "파일 사정"이다. 쓸 수 없는 자리라는 사실이 그것으로 드러난다.
+    assert result.exit_code == 66, result.output
+    # **전사는 실제로 일어나야 한다.** 재사용으로 건너뛰면 호출이 0회다.
+    assert len(provider.calls) == 1
+    # `tmp_path`가 이 테스트의 한글 이름을 품고 있어 "재사용" 두 글자만
+    # 보면 경로 문자열에 걸린다. 알림 줄을 통째로 본다.
+    assert "이미 있어 재사용한다" not in result.stderr

@@ -90,6 +90,30 @@ def test_video_input_raises_video_input(tmp_path):
     assert exc.value.reason == "video_input"
 
 
+def test_자막_자리의_영상_메시지가_현재_없는_것을_말하지_않는다(tmp_path) -> None:
+    """C2가 **두 번째로** 열렸다 (설계 §7.2).
+
+    "아직 배선되지 않았다" 형태의 문장은 그 기능이 생길 때마다 거짓이 되고,
+    실제로 두 번 거짓이 됐다. 뒤 문구는 **사용자의 조치**를 말하므로 배선
+    이후에도 참으로 남는다.
+
+    **`reason`이 아니라 메시지를 보는 예외적인 테스트다** - `IngestError`는
+    `reason`이 계약이고 메시지는 사람용이라고 못 박았지만, 여기서 회귀하는
+    것이 정확히 그 사람용 문구이기 때문이다.
+    """
+    media = tmp_path / "talk.mp4"
+    media.write_bytes(b"x")
+
+    with pytest.raises(IngestError) as caught:
+        load_subtitle(media)
+
+    message = str(caught.value)
+    assert "아직" not in message
+    # 사용자가 할 수 있는 조치 둘이 모두 있어야 한다.
+    assert "--media" in message
+    assert "FR-1.3" in message
+
+
 @pytest.mark.parametrize(
     "suffix", [".mkv", ".mov", ".webm", ".m4v", ".avi", ".mp3", ".m4a", ".wav"]
 )

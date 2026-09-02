@@ -235,3 +235,126 @@ def test_잘못된_대상_언어는_전사_전에_거부된다(
 
     assert result.exit_code == 2
     assert stt.calls == []
+
+
+def test_설정의_media가_없는_경로여도_명령줄_자막이_이긴다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """리뷰 지적(HIGH). FR-8.4 후반절이 typer 레이어로 우회당한다.
+
+    click은 `default_map`이 채운 값에도 `exists=True`를 적용한다. 그래서
+    설정에 적힌 영상이 없으면 **`--media`를 친 적도 없는 사용자가**
+    `Invalid value for '--media'`로 exit 2를 받는다 - 양보 로직이 돌기
+    전에 터지므로 "명령줄이 이긴다"가 발동하지 못한다.
+
+    `media`는 설계상 **버려질 수 있는 값**이라 `input`과 사정이 같다.
+    존재 검사는 양보가 끝난 뒤 본문에서 한다.
+    """
+    monkeypatch.setattr("cuesift.cli._build_provider", lambda **_: EchoProvider())
+    cfg = tmp_path / "cuesift.yaml"
+    cfg.write_text("input:\n  media: 없는영상.mp4\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(cfg),
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://localhost:11434/v1",
+            "--model",
+            "m",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "minimal.en.srt").is_file()
+
+
+def test_없는_media_경로는_종료_코드_2다(tmp_path: Path) -> None:
+    """`exists=True`를 본문으로 옮겨도 종료 코드는 2에서 움직이지 않는다.
+
+    **이 테스트는 그 이동의 게이트가 아니다**(재리뷰 지적). `exists=True`를
+    되돌리는 변이에서도 click이 exit 2를 내므로 통과한다. 이동을 고정하는
+    것은 `test_설정의_media가_없는_경로여도_명령줄_자막이_이긴다` 하나이고,
+    여기가 막는 것은 **종료 코드가 66이나 1로 흘러가는 회귀**다. 게이트가
+    무엇을 재는지 적어 두지 않으면 다음 사람이 이것을 근거로 안심한다.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "translate",
+            "--media",
+            str(tmp_path / "없다.mp4"),
+            "--to",
+            "en",
+            "--base-url",
+            "http://localhost:11434/v1",
+            "--model",
+            "m",
+            "--stt-base-url",
+            "http://localhost:9000/v1",
+            "--stt-model",
+            "whisper-1",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+
+
+def test_용어집_오타는_전사_전에_걸린다(monkeypatch: pytest.MonkeyPatch, media: Path) -> None:
+    """리뷰 지적(MEDIUM). 되돌릴 수 없는 비용이 앞서면 안 된다.
+
+    용어집 선검사가 `if dry_run:` 안에만 있었는데 `--media`는 `--dry-run`과
+    금지돼 있어 **그 선검사가 영원히 실행되지 않았다.** 그래서 용어집 경로에
+    오타를 낸 사용자가 전사 요금을 낸 뒤 exit 66을 받는다.
+    """
+    stt = FakeSttProvider([(0.0, 1.0, "안녕")])
+    _patch_both(monkeypatch, stt)
+
+    result = runner.invoke(app, _args(media, "--glossary", "없는용어집.yaml"))
+
+    assert result.exit_code == 66, result.output
+    assert stt.calls == []
+    assert "전사 중" not in result.stderr
+
+
+def test_설정의_media가_디렉터리여도_명령줄_자막이_이긴다(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """재리뷰 지적(LOW). `dir_okay=False`도 양보보다 먼저 터진다.
+
+    `exists=True`와 **같은 실패 모드의 좁은 잔재**다. 둘 다 typer 층에서
+    판정하므로 설정에서 온 값이 버려지기 전에 사용자를 막는다. 하나만
+    떼면 결함의 절반이 남는다.
+    """
+    monkeypatch.setattr("cuesift.cli._build_provider", lambda **_: EchoProvider())
+    (tmp_path / "영상디렉터리").mkdir()
+    cfg = tmp_path / "cuesift.yaml"
+    cfg.write_text(f"input:\n  media: {tmp_path / '영상디렉터리'}\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(cfg),
+            "translate",
+            str(_FIXTURES / "minimal.srt"),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://localhost:11434/v1",
+            "--model",
+            "m",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "minimal.en.srt").is_file()

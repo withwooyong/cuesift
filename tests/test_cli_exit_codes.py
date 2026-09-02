@@ -10,7 +10,7 @@ import pytest
 
 from cuesift.cli import (
     EXIT_BAD_INPUT,
-    EXIT_NOT_IMPLEMENTED,
+    EXIT_SOFTWARE,
     EXIT_TRANSLATION_FAILURE,
     EXIT_UNAVAILABLE,
     _combine_exit_codes,
@@ -41,7 +41,7 @@ def test_일곱_코드가_서로_겹치지_않는다() -> None:
         EXIT_TRANSLATION_FAILURE,
         EXIT_BAD_INPUT,
         EXIT_UNAVAILABLE,
-        EXIT_NOT_IMPLEMENTED,
+        EXIT_SOFTWARE,
     ]
     assert len(set(codes)) == 7
 
@@ -57,16 +57,16 @@ def test_일곱_코드가_서로_겹치지_않는다() -> None:
         # "`max`와 다르다"가 아니라 **"번역 실패는 다른 실패보다 약하다"**는
         # 계약 자체다. 값을 바꾸다 3이 66보다 커지면 여기가 죽는다.
         ((EXIT_TRANSLATION_FAILURE, EXIT_UNAVAILABLE), EXIT_UNAVAILABLE),
-        ((EXIT_TRANSLATION_FAILURE, EXIT_NOT_IMPLEMENTED), EXIT_NOT_IMPLEMENTED),
+        ((EXIT_TRANSLATION_FAILURE, EXIT_SOFTWARE), EXIT_SOFTWARE),
         ((EXIT_TRANSLATION_FAILURE, EXIT_BAD_INPUT), EXIT_BAD_INPUT),
         ((EXIT_BAD_INPUT, EXIT_UNAVAILABLE), EXIT_UNAVAILABLE),
-        ((EXIT_BAD_INPUT, EXIT_NOT_IMPLEMENTED), EXIT_NOT_IMPLEMENTED),
+        ((EXIT_BAD_INPUT, EXIT_SOFTWARE), EXIT_SOFTWARE),
         # **이것이 이 표의 핵심 단언이다.** 70(우리 쪽 결함)이 69(서비스 거부)를
         # 이긴다 - 69는 설정을 고치면 사라지지만 70은 안 사라진다. 게다가 69는
         # 조기 break를 걸어 다음 언어를 건너뛰므로, 여기서 69가 이기면 70이
         # 다음 실행까지 숨는다. **값 크기로는 맞는 쌍이라 `max` 변이로는 안
         # 죽는다**(70 > 69) - `_EXIT_PRIORITY`를 뒤집는 변이만 이것을 죽인다.
-        ((EXIT_NOT_IMPLEMENTED, EXIT_UNAVAILABLE), EXIT_NOT_IMPLEMENTED),
+        ((EXIT_SOFTWARE, EXIT_UNAVAILABLE), EXIT_SOFTWARE),
         # **오늘 `max()`와 이 함수를 가르는 것은 이 두 줄뿐이다.**
         # `_EXIT_PRIORITY`가 `(70, 69, 66, 3)`이라 값의 내림차순과 정확히
         # 같아, 등록된 넷만 넣으면 `max()`가 **같은 답을 낸다** - 실측으로

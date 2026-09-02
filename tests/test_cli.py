@@ -40,7 +40,7 @@ def test_translate_accepts_documented_flags(
 ) -> None:
     """요구사항정의서 §8.1 S1의 호출 형태가 파싱되는지 확인한다.
 
-    **Task 4에서 `translate`가 골격을 벗어난 뒤로는 EXIT_NOT_IMPLEMENTED를
+    **Task 4에서 `translate`가 골격을 벗어난 뒤로는 종료 코드 70을
     기대할 수 없다.** 이전 판은 `episode01.ko.srt`가 존재하지 않아도 골격이
     입력을 열어 보지 않아 항상 70으로 끝났는데, 지금은 `check`와 같은 이유로
     `exists=True`가 본문 전에 존재를 확인한다(그렇지 않으면

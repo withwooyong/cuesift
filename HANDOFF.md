@@ -1,11 +1,14 @@
 # Session Handoff
 
 > Last updated: 2026-09-02 (KST)
-> **WP9(STT 어댑터)가 코드까지 끝났다.** 태스크 7개 · 커밋 25개(`0244e61`..`f038fc1`)로
-> `src/cuesift/stt/`가 생겼고 FR-1.2·1.3·1.4가 닫혔다. 최종 전체 리뷰·적대적 보안 리뷰·
-> 검증 5관문을 돌린 뒤 **최종 픽스 3라운드**로 HTTP 왕복을 스트리밍으로 다시 짰다.
-> **남은 것은 CLI 배선(FR-8.3)이고 그것은 WP6 소속이다** — `transcribe`는 지금 exit 70을 낸다.
-> **PR [#20](https://github.com/withwooyong/cuesift/pull/20)이 squash merge 되어 `main`에 들어갔다**(`1741337`).
+> **WP6이 닫혔다 - `transcribe` 배선(FR-8.3)이 마지막 조각이었다.** `feat/media-wiring`에서
+> 태스크 6개 · 커밋 6개(`6131eec`..`a842b23`)로 `cuesift transcribe <영상>`과
+> `cuesift translate --media <영상>`이 동작한다. 같은 브랜치가 **이월 1번**(`_output_path`)과
+> **7번**(STT 재시도 루프)을 함께 닫았다 - 둘 다 배선하는 순간에만 도달 가능해지는 것이었다.
+> **v0.1 완료 개수 39 → 40 (42개 중, 95%).** 남은 것은 FR-6.3의 "상위 K개"(🟡)와
+> FR-4.2 역번역(⬜) 둘뿐이다.
+> 직전 세션의 WP9(STT 어댑터)는 PR [#20](https://github.com/withwooyong/cuesift/pull/20)으로
+> `main`에 들어갔다(`1741337`).
 > 상태 값은 여기 적힌 숫자가 아니라 아래 "현재 상태 재는 법"의 명령으로 직접 재라.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
@@ -20,11 +23,14 @@
 | 적대적 보안 리뷰 | ✅ 닫힘 | High 1 · Medium 2 · Low 3 → 최종 픽스로 전부 대응 |
 | 검증 5관문 | ✅ 통과 | 빌드·ruff·pytest·bandit·pip-audit·CLI |
 | **최종 픽스 3라운드** | ✅ 승인 | `03ad01e`..`f038fc1` |
-| **푸시·PR·merge** | ✅ **머지됨** | PR [#20](https://github.com/withwooyong/cuesift/pull/20) · squash `1741337` · CI 5잡 통과 |
-| FR-8.3(`transcribe` CLI 배선) | ⬜ **WP9 아님** | WP6의 마지막 조각 |
+| **WP9 푸시·PR·merge** | ✅ **머지됨** | PR [#20](https://github.com/withwooyong/cuesift/pull/20) · squash `1741337` · CI 5잡 통과 |
+| WP6 설계 스펙 (FR-8.3) | ✅ | `27e5d9b` · [설계 스펙](docs/superpowers/specs/2026-09-02-media-wiring-design.md) |
+| WP6 구현 계획 (FR-8.3) | ✅ | `4c1d585` · [계획서](docs/superpowers/plans/2026-09-02-media-wiring.md) |
+| **WP6 구현 - 태스크 6개** | ✅ **전부 완료** | `6131eec`..`a842b23` |
+| **FR-8.3 푸시·PR·merge** | ⬜ | `feat/media-wiring` · **PR 번호는 머지 후 채운다** |
 
-**PR 행은 두 커밋에 걸쳐 채워졌다.** 인수인계 문서는 자기 자신이 들어갈 PR을 볼 수 없어
-직전 커밋에서는 비워 두었고, 머지된 뒤 이 커밋이 번호를 채웠다. 추측해서 적지 않는 것이
+**PR 행은 두 커밋에 걸쳐 채워진다.** 인수인계 문서는 자기 자신이 들어갈 PR을 볼 수 없어
+지금은 비워 두고, 머지된 뒤 다음 커밋이 번호를 채운다. 추측해서 적지 않는 것이
 규칙이고, 그래서 아래 시작 절차의 첫 명령이 PR 상태 확인이다.
 
 ## 현재 상태 재는 법
@@ -32,10 +38,10 @@
 **첫 일은 직전 작업이 어디까지 갔는지 확인하는 것이다.**
 
 ```bash
-gh pr list --state open           # 열린 PR. WP9는 #20으로 이미 머지됐으니 비어 있는 것이 정상이다
-git branch --show-current         # main 이어야 한다 (feat/stt-adapter는 머지 후 삭제됐다)
+gh pr list --state open           # 열린 PR. FR-8.3(feat/media-wiring)이 아직 머지 전이면 여기 있다
+git branch --show-current         # feat/media-wiring (머지 후에는 main)
 git status --short                # clean 이어야 한다
-git log --oneline -3              # 최상단이 WP9 squash 커밋 1741337 이어야 한다
+git log --oneline -8              # 6131eec..a842b23 여섯 개가 FR-8.3이다
 ```
 
 ## WP9가 낸 것 — 태스크 7개
@@ -61,80 +67,97 @@ flowchart LR
   C --> D["ingest/loader.py::load_media<br/>SSAFile 합성 · format=srt"]
   D --> E["Segment.source_from_stt=True"]
   E --> F["review.json summary·segments[]<br/>report.html 요약줄·행 배지"]
-  G["cli.py transcribe"] -. "배선 없음 · exit 70" .-> B
-  style G stroke-dasharray: 5 5
+  G["cli.py transcribe<br/>cli.py translate --media"] --> H["_transcribe_to_file<br/>재사용 판정 · stt/retry.py"]
+  H --> B
+  style G fill:#e6f4ea,stroke:#34a853
 ```
 
-점선 하나가 이 패키지의 남은 구멍이다 — **어댑터부터 산출물까지는 이어져 있고 CLI만 끊겨 있다.**
+**점선이 사라졌다.** WP9가 낸 것은 어댑터부터 산출물까지의 한 줄이었고 CLI만 끊겨
+있었는데, FR-8.3이 `_transcribe_to_file` 하나로 그 자리를 이었다 - `transcribe`와
+`translate --media`가 **같은 함수를 부른다.**
 
-## 게이트 실행 기록 (2026-09-02, HEAD `f038fc1` + 이 문서 커밋)
+## 게이트 실행 기록 (2026-09-02, HEAD `a842b23` + 이 문서 커밋)
 
-| 게이트 | 결과 |
-| --- | --- |
-| `pytest -q` | **1700 passed · 5 deselected** |
-| `pytest --cov` | TOTAL **99%** · `stt/openai_compat.py` **105 stmts · 0 miss · 100%** |
-| `ruff check .` / `ruff format --check .` | 통과 · **123 files** |
-| `scripts/check_links.py` | 마크다운 **41개** · 상대 링크 **211개** · 깨진 링크 **0** |
-| `npx markdownlint-cli2` | **Linting: 41 files** |
-| CLI `transcribe <더미>` | **70**(미구현) · 영상을 `run`에 주면 **66** |
-| bandit / pip-audit | Low 1건은 `translate/engine.py:537`(이 브랜치 아님) · pip 자체 취약점 |
+| 게이트 | 착수 시점 | 지금 |
+| --- | --- | --- |
+| `pytest -q` | 1700 passed · 5 deselected | **1742 passed · 5 deselected** |
+| `ruff check .` / `ruff format --check .` | 통과 · 123 files | 통과 · **129 files** |
+| CLI 옵션 개수 | 24 | **30** (`translate` 23 · `check` 3 · `transcribe` 4) |
+| YAML 허용 키 | 25 | **28** (`BINDINGS` 26 + `SPECIAL_PATHS` 2) |
+| `scripts/check_links.py` | 마크다운 41개 · 상대 링크 211개 · 깨진 링크 0 | 마크다운 **43개** · 상대 링크 **221개** · 깨진 링크 **0** |
+| `npx markdownlint-cli2` | Linting: 41 files | **Linting: 43 files** · 0 issues |
 
-**두 도구의 파일 개수가 같은지를 본다** — 41개 / 41 files. 갈리면 새 문서가 `git add`되지
-않아 링크 검사를 아예 받지 않은 것이다.
+**두 도구의 파일 개수가 같은지를 본다.** 갈리면 새 문서가 `git add`되지 않아 링크 검사를
+아예 받지 않은 것이다 - `check_links.py`는 `git ls-files`를 보고 markdownlint는 `gitignore`
+규칙을 본다.
 
-## FR 완료 개수 — 37 → **39**
+## FR 완료 개수 - 39 → **40**
 
-WP9는 FR-1.2·1.3·1.4 셋을 닫았지만 완료 개수는 **둘만 오른다.**
-**FR-1.3은 WP4에서 이미 완료로 세어져 있었고**(영상 확장자 거부가 그 반쪽이었다)
-WP9가 나머지 반쪽(자막·영상 동시 입력 시 자막 채택)을 채운 것이라 개수가 움직이지 않는다.
+FR-8.3 하나가 올랐고 **이로써 WP6이 ✅가 됐다.** 직전 세션의 39는 WP9가 FR-1.2·1.4를
+닫아 37에서 오른 값이다(FR-1.3은 WP4에서 이미 세어져 있어 움직이지 않았다).
+**v0.1 대상 42개 중 40개이고 남은 둘은 FR-6.3의 "상위 K개"(🟡)와 FR-4.2 역번역(⬜)이다.**
 
-## 다음 작업 패키지로 넘어간 항목 — 이월 트리아지 8건
+## 다음 작업 패키지로 넘어간 항목 - 이월 트리아지 **9건** (기존 8건 중 둘이 닫히고 셋이 늘었다)
+
+**1번과 7번이 표에서 빠졌다.** 둘 다 `feat/media-wiring`이 닫았다 - **배선하는 순간에만
+도달 가능해지는 것들이라 같은 브랜치가 함께 고쳐야 했고**, 그것이 이 표가 그 둘을
+🔴와 별도 절로 강조해 둔 이유다. 나머지 여섯의 번호는 **원래 번호를 유지한다** -
+다시 매기면 이전 세션의 기록에서 가리키는 번호가 다른 항목을 뜻하게 된다.
 
 | # | 무엇 | 왜 지금 안 했나 | 다시 열 조건 |
 | --- | --- | --- | --- |
-| **1** | 🔴 **`_output_path`가 `talk.en.mp4`를 만들고 그 안에 SRT를 넣는다** — 조용한 실패 | WP6(`--media` 배선) 범위 | **`--media` 배선 커밋이 반드시 함께 고쳐야 한다.** 아래 참조 |
 | 2 | `bench/track_io.py`의 `_FIELDS`가 `source_from_stt`를 모른다 — 왕복에서 **조용히 `False`로 리셋** | 도달 경로가 없다(벤치 코퍼스는 자막). 고치면 벤치 직렬화 포맷이 바뀐다 | STT 트랙을 벤치에 넣을 때. `tests/test_bench_track_io.py`의 왕복 동등성이 그 순간 실패한다 |
 | 3 | `pyproject.toml`에 **`filterwarnings`가 없어 경고가 게이트를 통과한다** | `["error"]`는 스위트 전체에 영향 — WP9 범위 밖 | 별도 과제. **"검사하지 않고 통과하는 게이트" 규율에 직접 걸린다** |
 | 4 | `translate/provider.py`의 `RetryableProviderError.__init__`도 `isinstance`+`isfinite`를 쓴다 — 거대 정수에서 같은 `OverflowError` 누출이 있는지 **미확인** | 기존 코드. 이번 변경과 무관 | `translate`를 손대는 다음 패키지. STT 경로에는 도달 경로가 없음을 확인했다 |
 | 5 | `Transcript.__post_init__`이 `cues`의 **컨테이너 타입만** 보고 원소 타입은 안 본다 | Task 1 범위 밖 | 프로바이더를 하나 더 붙일 때 |
 | 6 | `pyproject.toml:69`의 **죽은 `stt` extra** | 의존성 고정 규율상 채울 것이 없다 | 패키징을 손볼 때 |
-| 7 | **STT에 재시도 루프가 없다** — `RetryableProviderError`를 받을 호출부가 리포에 0건 | 호출부(CLI)가 아직 없다 | **아래 별도 절 참조 — 다음 패키지가 반드시 알아야 한다** |
 | 8 | FR-1.5(원문 언어 자동 감지)가 반쪽 — STT 응답의 `language`를 **기록만** 한다 | `IngestResult.source_lang`은 선언값을 쓴다(값 도메인이 백엔드마다 다르다) | 자막 파일 입력까지 함께 닫을 때 |
+| 9 | API 키가 **공백 한 칸**이면 `Authorization: Bearer` 뒤에 공백만 붙은 헤더가 나가 401이 "키가 틀렸다"로 오독된다 | 기존 동작이고 번역(`CUESIFT_API_KEY`)도 같다. STT만 `.strip()`을 넣으면 두 경로가 비대칭이 된다 | 키 처리를 손볼 때. `_resolve_stt_key`와 `_require_ascii_api_key` 양쪽을 함께 고친다 |
+| 10 | `translate --media X --to ko`처럼 **대상이 원문과 같으면** 전사를 마친 뒤 exit 2 | 출력 경로 충돌 검사가 입력 이름을 알아야 해서 전사 앞으로 옮기기 어렵다. 다만 `media is not None and target == source_lang`은 앞에서 판정 가능하다 | 되돌릴 수 없는 비용 앞의 검사를 정리할 때 |
+| 11 | 설정의 `input.media` + `--dry-run` 조합에 **CLI 탈출구가 없다** - `--no-media` 같은 무효화 옵션이 없다 | 위치 인자로 자막을 주면 회피된다. 설정 무효화 옵션은 이 한 자리만의 문제가 아니다 | 설정 무효화 규칙을 전반적으로 정할 때 |
 
-여덟 건 모두 "다음 패키지"로 판정됐지만 **1번만 성격이 다르다** — 나머지는 미루면 그대로 있고,
-1번은 **미루면 조용히 깨진다.**
+**9~11번은 이번 세션의 이중 리뷰가 새로 찾은 것이다.** 셋 다 종료 코드가 2나 69로
+나가 오보는 없고, 고치려면 이번 변경 범위 밖(번역 경로의 키 처리·설정 무효화 규칙)을
+함께 건드려야 해서 미뤘다.
 
-### 🔴 1번은 `--media` 배선 커밋과 **같은 커밋**에서 고쳐야 한다
+같은 리뷰가 찾은 **HIGH 2건은 미루지 않고 닫았다.** 둘 다 "미루면 그대로 있는" 부류가
+아니었기 때문이다 - STT 키 폴백은 번역용 자격증명이 다른 호스트로 나가는 것이었고,
+`--media`의 `exists=True`는 설정 파일을 쓰는 사용자가 명령줄로 준 자막을 잃는 것이었다.
+후자는 요구사항정의서 §8.2의 예시 YAML을 채우자 **문서 게이트에서 실제로 발동했다.**
 
-`load_media`가 `IngestResult.format`을 **`"srt"`로 하드코딩**했고(설계 D6),
-`writer.py`가 `format_=result.format`으로 확장자를 덮는다. 그런데 `_output_path`는
-**입력 파일명에서 확장자를 상속**한다. 그래서 `--media talk.mp4`를 배선하는 순간
-출력이 **`talk.en.mp4`라는 이름의 SRT 파일**이 된다.
+남은 아홉은 전부 "미루면 그대로 있는" 부류다. **닫힌 둘은 그렇지 않았다** - 1번은 미루면
+조용히 깨졌고, 7번은 미루면 사용자가 전사 한 번에 몇 분을 기다린 뒤 429 하나로 전부 잃었다.
 
-**지금은 도달 경로가 없어 아무 게이트도 빨개지지 않는다.** 배선 커밋이 이것을 빼면
-그때부터 조용히 깨지고, 고칠 재료(`format="srt"` 확정)는 **이미 있다.**
-스펙 §9.1 C1과 `docs/WBS.md`에도 같은 문장을 남겨 두었다.
-
-## STT는 코드가 있고 CLI 배선만 없다
+## STT는 이제 CLI에서 도달한다
 
 | 부르는 쪽 | 오늘 동작 |
 | --- | --- |
-| `cuesift transcribe <파일>` | **exit 70**(미구현) — `EX_SOFTWARE` |
-| `cuesift run/check`에 영상을 준다 | **exit 66** — `_reject_non_subtitle`이 확장자로 거부 |
-| `cuesift.stt.transcribe_media(...)` (파이썬) | **동작한다.** 100% 커버리지 |
+| `cuesift transcribe <영상>` | **동작한다.** `episode02.mp4` → `episode02.ko.srt` |
+| `cuesift translate --media <영상> --to en` | **동작한다.** 전사 자막과 번역 자막을 함께 낸다 |
+| `cuesift translate/check`에 영상을 **위치 인자로** 준다 | **exit 66** - `_reject_non_subtitle`이 확장자로 거부. 영상은 `--media`로 준다 |
+| `cuesift.ingest.load_media(...)` (파이썬) | **동작한다.** 100% 커버리지 |
 
-**"STT가 없다"가 아니라 "STT를 부르는 CLI가 없다"이다.** FR-8.3은 §5.8(CLI) 소속이라
-WP9가 아니라 **WP6의 마지막 조각**이고, 그래서 WP6은 ✅가 아니라 🟡로 남아 있다.
+### 직전 인수인계의 이 표가 두 군데 틀렸다 - 정정한다
 
-### 다음 패키지가 반드시 알아야 할 것 — STT에 재시도 루프가 없다
+| # | 직전 판이 말한 것 | 실제 |
+| --- | --- | --- |
+| P1 | "영상을 `run`에 주면 **66**" | **`run` 명령이 없다.** `cli.py`의 `def run()`은 콘솔 스크립트 진입점(`__main__`)이고 서브커맨드가 아니다. 66을 내는 것은 `translate`·`check`의 위치 인자다 |
+| P2 | "`cuesift.stt.transcribe_media(...)`가 동작한다" | **그런 이름이 `__all__`에 없다.** 파이썬 진입점은 `cuesift.ingest.loader::load_media`이고, `cuesift.stt`가 내보내는 것은 프로바이더 계약과 어댑터다 |
 
-`stt/openai_compat.py`는 429·5xx·전송 오류에서 **`RetryableProviderError`를 던지고 끝난다.**
-`Retry-After`를 파싱해 `retry_after_s`에 실어 주지만 **그것을 받아 다시 부르는 코드가
-리포 전체에 0건이다**(`translate` 쪽 재시도 루프는 STT를 모른다).
+**둘 다 이번 스펙의 착수 조사가 코드로 확인해 뒤집었다.** 인수인계 문서에 적힌 API 이름과
+명령 이름은 **읽는 순간 참으로 보이지만 아무 게이트도 대조하지 않는다** - 착수 조사가
+`grep`으로 확인하지 않았다면 계획서가 없는 이름을 부르는 코드를 지시했을 자리다.
 
-**배선 커밋은 재시도 루프를 함께 넣어야 한다.** 넣지 않으면 사용자는 전사 한 번에 몇 분을
-기다린 뒤 429 하나로 전부 잃는다 — 그리고 어댑터는 **이미 재시도 가능이라고 말하고 있으므로**
-그 정보가 버려지는 것이 코드 어디에도 드러나지 않는다.
+### ⚠ live 검증을 못 했다 - 설계 스펙 R3의 한계
+
+**STT 백엔드가 아직 정해지지 않았다.** OpenAI 호환 `/v1/audio/transcriptions`를 내면서
+`verbose_json`을 돌려주는 서버가 필요한데 **Ollama는 그 엔드포인트를 제공하지 않는다.**
+그래서 FR-8.3의 전 경로는 **가짜 프로바이더로만 검증됐다** - `transcribe`·`translate --media`·
+재시도 루프·재사용 판정 어느 것도 실제 백엔드를 한 번도 치지 않았다.
+
+**이것은 "테스트가 없다"가 아니라 "목이 만들지 않는 조건은 게이트가 통과시킨다"의 자리다.**
+직전 세션이 `Content-Encoding` 회귀를 1693건 통과시킨 것과 같은 구조다(아래 ⓑ).
+백엔드를 정하는 사람이 `tests/test_stt_live.py`(`-m live`, `CUESIFT_LIVE_STT_*`)를 먼저 돌려야 한다.
 
 ## 이번 세션이 배운 것
 
@@ -206,6 +229,7 @@ D8을 어기면 무엇이 깨지는지는 `tests/test_ingest_media.py:439`가 **
 | **Q4**(자가일관성 유사도 측정 수단) | 여전히 열려 있다. 판정은 벤치마크에 Tier 1을 태우는 별도 작업의 몫 |
 | **FR-4.2**(역번역) | 구현 안 함. 문자 단위 유사도로는 `llm.retranslation_gap`이 **역방향으로 작동**한다 |
 | **FR-8.5 R3**(Windows 콘솔의 `\r`) | 구조는 확인됐고 **육안 관측이 남아 있다.** 진짜 콘솔 창이 필요하다 |
+| **FR-8.3 R3**(STT live 검증) | **열려 있다.** 백엔드가 정해지지 않아 가짜 프로바이더로만 검증했다 - 위 "live 검증을 못 했다" 참고 |
 | **`engine.py::_run_single`의 전역 index** | 확인됐고 안 고쳤다. `main`에 있다 |
 | `segments[].reasons`의 순서 미검증 | NFR-3 재현성 문제. 열려 있다 |
 | 파킹 2 — 권장 모델 `qwen2.5:3b`가 3큐 중 2큐 실패 | 모델 품질 문제라 코드로 닫을 수 없다 |
@@ -268,5 +292,11 @@ git checkout -b feat/media-wiring        # 다음 작업은 여기서 시작한�
 직접 푸시하면 머지된 **뒤에야** CI가 돈다 — 게이트가 아니라 사후 통보다.
 PR 절차는 [CLAUDE.md](CLAUDE.md)의 "PR 절차"에 있다.
 
-**다음 작업은 WP6의 `--media` 배선이다.** 그 커밋은 이월 1번(`_output_path`)과
-7번(재시도 루프)을 **함께** 닫아야 한다 — 둘 다 배선하는 순간에만 도달 가능해진다.
+**다음 작업의 후보는 둘뿐이다.** v0.1 대상 42개 중 40개가 닫혀 남은 것은
+**FR-6.3의 "상위 K개"**(🟡, 담당 WP6)와 **FR-4.2 역번역**(⬜)이다. 후자는
+요구사항정의서 §12 **Q4**(자가일관성 유사도 측정 수단)가 닫히기 전에는 착수 근거가 없다 -
+문자 단위 유사도로는 `llm.retranslation_gap`이 역방향으로 작동한다는 실측이 있고,
+판정은 벤치마크에 Tier 1을 태우는 별도 작업의 몫이다.
+
+**그 전에 STT 백엔드를 정하는 것이 값싸다.** FR-8.3의 전 경로가 가짜 프로바이더로만
+검증돼 있어(위 R3), 백엔드가 정해지는 순간 `-m live` 한 번이 배선 전체를 실물로 확인한다.
