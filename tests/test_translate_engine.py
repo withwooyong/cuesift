@@ -11,8 +11,9 @@ from tests.fakes.provider import EchoProvider, ScriptedProvider
 
 from cuesift.glossary import Glossary, GlossaryEntry
 from cuesift.progress import ProgressUpdate
+from cuesift.retry import MAX_BACKOFF_S
 from cuesift.segment.models import Segment
-from cuesift.translate.engine import _MAX_BACKOFF_S, translate_segments
+from cuesift.translate.engine import translate_segments
 from cuesift.translate.provider import (
     Completion,
     FatalProviderError,
@@ -670,7 +671,7 @@ def test_retry_after_0을_존중한다() -> None:
 
 def test_상한_미만의_retry_after는_그대로_존중한다() -> None:
     waited: list[float] = []
-    below = _MAX_BACKOFF_S - 0.5
+    below = MAX_BACKOFF_S - 0.5
     provider = ScriptedProvider([RetryableProviderError("429", retry_after_s=below), _ok([0])])
     translate_segments(
         _segs(1),
@@ -694,7 +695,7 @@ def test_상한을_넘는_retry_after는_잘린다() -> None:
         target_lang="en",
         sleep=waited.append,
     )
-    assert waited == [_MAX_BACKOFF_S]
+    assert waited == [MAX_BACKOFF_S]
 
 
 def test_지수_백오프도_상한에서_멈춘다() -> None:
@@ -710,8 +711,8 @@ def test_지수_백오프도_상한에서_멈춘다() -> None:
         max_retries=8,
         sleep=waited.append,
     )
-    assert waited == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, _MAX_BACKOFF_S, _MAX_BACKOFF_S]
-    assert max(waited) == _MAX_BACKOFF_S
+    assert waited == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, MAX_BACKOFF_S, MAX_BACKOFF_S]
+    assert max(waited) == MAX_BACKOFF_S
 
 
 # --------------------------------------------------------------------------
