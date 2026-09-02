@@ -12,7 +12,7 @@ from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import strip_rich_decoration
-from cuesift import __version__
+from cuesift import __version__, cli
 from cuesift.cli import EXIT_NOT_IMPLEMENTED, FailOn, app, check
 
 runner = CliRunner()
@@ -202,3 +202,31 @@ def test_fail_on_defaults_to_hard():
     """
     default = inspect.signature(check).parameters["fail_on"].default
     assert default is FailOn.hard
+
+
+def test_output_path는_suffix를_반드시_받는다() -> None:
+    """설계 D6. **기본값을 두면 위험한 쪽이 기본이 된다.**
+
+    이 게이트는 동작이 아니라 **시그니처**를 본다 - 기본값
+    (`suffix: str = ""` 또는 `input_path.suffix`)을 되돌려 넣는 변이는
+    기존 호출부의 출력이 같아 다른 어떤 테스트로도 죽지 않는다. 다음에 영상
+    경로를 하나 더 붙이는 사람이 값을 넘기지 않으면 `TypeError`를 받는다 -
+    조용한 실패가 시끄러운 실패가 된다.
+    """
+    with pytest.raises(TypeError):
+        cli._output_path(Path("talk.mp4"), None, "ko", "ko")  # type: ignore[call-arg]
+
+
+def test_output_path가_입력_확장자를_물려받지_않는다() -> None:
+    """C1. 예전 판은 `talk.ko.mp4`라는 이름의 SRT 파일을 만든다.
+
+    **확장자만 다르고 예외는 없다** - 플레이어가 열지 못하는 파일이 조용히
+    생기고 종료 코드는 0이다.
+    """
+    assert cli._output_path(Path("talk.mp4"), None, "ko", "ko", suffix=".srt") == Path(
+        "talk.ko.srt"
+    )
+    # 이미 태그가 붙은 입력도 같은 출력을 낸다 - 치환 규칙이 작동한다.
+    assert cli._output_path(Path("talk.ko.mp4"), None, "ko", "ko", suffix=".srt") == Path(
+        "talk.ko.srt"
+    )

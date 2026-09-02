@@ -786,7 +786,12 @@ def _build_provider(*, base_url: str, model: str, api_key: str | None) -> Provid
 
 
 def _output_path(
-    input_path: Path, out_dir: Path | None, source_lang: str, target_lang: str
+    input_path: Path,
+    out_dir: Path | None,
+    source_lang: str,
+    target_lang: str,
+    *,
+    suffix: str,
 ) -> Path:
     """출력 경로를 정한다 (FR-7.1 · 설계 §5.1).
 
@@ -801,13 +806,23 @@ def _output_path(
     낸다(실측: WP7b Task 4 리뷰 라운드 1) - 이 함수가 막겠다고 선언한 바로
     그 사고다. `_resolve_profile`이 `--spec`의 확장자를 가를 때 같은 이유로
     같은 처리를 한다.
+
+    **`suffix`가 필수 키워드 인자인 것이 게이트다**(설계 D6). 예전 판은
+    `input_path.suffix`를 무조건 물려받았는데, 영상 입력이 들어오는 순간
+    그것이 `talk.ko.mp4`라는 이름의 **SRT 파일**을 만든다 - 확장자만 틀리고
+    예외는 없어 플레이어가 열지 못하는 파일이 조용히 생기며 종료 코드는 0이다.
+    기본값을 두면 위험한 쪽이 기본이 되어 다음에 영상 경로를 하나 더 붙이는
+    사람이 똑같이 밟는다. 값을 넘기지 않으면 `TypeError`이므로 조용한 실패가
+    시끄러운 실패가 된다.
     """
     stem = input_path.stem
-    suffix = f".{source_lang}"
-    if stem.casefold().endswith(suffix.casefold()):
-        stem = stem[: -len(suffix)]
+    # **`suffix`라는 이름을 쓰면 안 된다.** 인자와 겹쳐 마지막 줄이 출력
+    # 확장자 대신 `.{source_lang}`을 쓰고, `talk.mp4`가 `talk.ko.ko`가 된다.
+    lang_tag = f".{source_lang}"
+    if stem.casefold().endswith(lang_tag.casefold()):
+        stem = stem[: -len(lang_tag)]
     directory = out_dir if out_dir is not None else input_path.parent
-    return directory / f"{stem}.{target_lang}{input_path.suffix}"
+    return directory / f"{stem}.{target_lang}{suffix}"
 
 
 def _review_path(input_path: Path, review_dir: Path, source_lang: str, target_lang: str) -> Path:
@@ -1364,7 +1379,7 @@ def translate(
         raise typer.Exit(EXIT_BAD_INPUT) from exc
 
     for target in targets:
-        out_path = _output_path(input, out, source_lang, target)
+        out_path = _output_path(input, out, source_lang, target, suffix=input.suffix)
         if out_path.resolve() == input.resolve():
             # 이것이 없으면 원본이 번역문으로 덮여 되돌릴 수 없다.
             _echo(f"출력 경로가 입력과 같다: {out_path}", err=True)
@@ -1770,10 +1785,15 @@ def _dry_run_report(
                 )
                 if (cache_dir / f"{request.key}.json").exists():
                     hits += 1
+        # `line-length = 100`을 넘지 않으려고 미리 뺀다. f-string 안에 두면
+        # `ruff format`이 쪼개지 못해 E501이 남는다.
+        preview_out = _output_path(
+            input_path, out_dir, source_lang, target, suffix=input_path.suffix
+        )
         lines.extend(
             [
                 "",
-                f"[{target}] {_output_path(input_path, out_dir, source_lang, target)}",
+                f"[{target}] {preview_out}",
                 f"  배치 {batches}개 (size={DEFAULT_BATCH_SIZE}, context_window={context_window})",
                 # "이상"을 뺄 수 없다 - 위 독스트링 참고. 배치 폴백·재시도가
                 # 발동하면 실제 호출은 이 수의 몇 배가 될 수 있다.
@@ -1983,7 +2003,7 @@ def _translate_one(
         return 2
     reporter.done(f"완료 (실패 {len(translated.failures)})")
 
-    out_path = _output_path(input_path, out_dir, source_lang, target_lang)
+    out_path = _output_path(input_path, out_dir, source_lang, target_lang, suffix=input_path.suffix)
     try:
         write_subtitle(result, translated.segments, out_path)
     except OSError as exc:
