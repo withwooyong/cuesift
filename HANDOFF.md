@@ -5,8 +5,8 @@
 > `src/cuesift/stt/`가 생겼고 FR-1.2·1.3·1.4가 닫혔다. 최종 전체 리뷰·적대적 보안 리뷰·
 > 검증 5관문을 돌린 뒤 **최종 픽스 3라운드**로 HTTP 왕복을 스트리밍으로 다시 짰다.
 > **남은 것은 CLI 배선(FR-8.3)이고 그것은 WP6 소속이다** — `transcribe`는 지금 exit 70을 낸다.
-> **이 커밋 시점에 브랜치는 아직 푸시되지 않았다.** 아래 "현재 상태 재는 법" 첫 명령으로 확인하라.
-> 상태 값은 여기 적힌 숫자가 아니라 그 절의 명령으로 직접 재라.
+> **PR [#20](https://github.com/withwooyong/cuesift/pull/20)이 squash merge 되어 `main`에 들어갔다**(`1741337`).
+> 상태 값은 여기 적힌 숫자가 아니라 아래 "현재 상태 재는 법"의 명령으로 직접 재라.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
 ## Current Status
@@ -20,22 +20,22 @@
 | 적대적 보안 리뷰 | ✅ 닫힘 | High 1 · Medium 2 · Low 3 → 최종 픽스로 전부 대응 |
 | 검증 5관문 | ✅ 통과 | 빌드·ruff·pytest·bandit·pip-audit·CLI |
 | **최종 픽스 3라운드** | ✅ 승인 | `03ad01e`..`f038fc1` |
-| **푸시·PR** | ⬜ **이 커밋 다음에 열린다** | 번호를 여기 적지 않는다 — `gh pr list`로 확인하라 |
+| **푸시·PR·merge** | ✅ **머지됨** | PR [#20](https://github.com/withwooyong/cuesift/pull/20) · squash `1741337` · CI 5잡 통과 |
 | FR-8.3(`transcribe` CLI 배선) | ⬜ **WP9 아님** | WP6의 마지막 조각 |
 
-**PR 행을 비워 둔 것은 실수가 아니다.** 인수인계 문서는 자기 자신이 들어갈 PR을 볼 수 없다 —
-이 커밋 뒤에 푸시와 PR 생성이 이어지므로 지금 번호를 적으면 그것은 추측이다.
+**PR 행은 두 커밋에 걸쳐 채워졌다.** 인수인계 문서는 자기 자신이 들어갈 PR을 볼 수 없어
+직전 커밋에서는 비워 두었고, 머지된 뒤 이 커밋이 번호를 채웠다. 추측해서 적지 않는 것이
+규칙이고, 그래서 아래 시작 절차의 첫 명령이 PR 상태 확인이다.
 
 ## 현재 상태 재는 법
 
-**첫 일은 이 브랜치가 어디까지 갔는지 확인하는 것이다.**
+**첫 일은 직전 작업이 어디까지 갔는지 확인하는 것이다.**
 
 ```bash
-gh pr list --state open           # PR 번호는 여기서 나온다. 비어 있으면 아직 안 열렸다
-gh pr checks --watch              # PR이 있으면 CI 5잡을 본다
-git branch --show-current         # feat/stt-adapter
+gh pr list --state open           # 열린 PR. WP9는 #20으로 이미 머지됐으니 비어 있는 것이 정상이다
+git branch --show-current         # main 이어야 한다 (feat/stt-adapter는 머지 후 삭제됐다)
 git status --short                # clean 이어야 한다
-git log --oneline main..HEAD      # 이 브랜치에만 있는 커밋
+git log --oneline -3              # 최상단이 WP9 squash 커밋 1741337 이어야 한다
 ```
 
 ## WP9가 낸 것 — 태스크 7개
@@ -257,16 +257,16 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 ## 다음 세션 시작 절차
 
 ```bash
-gh pr list --state open                  # PR 번호를 여기서 얻는다
-gh pr checks --watch                     # CI 5잡(test 3.11~3.14 · docs)
-git branch --show-current                # feat/stt-adapter
+gh pr list --state open                  # 열린 PR. WP9는 #20으로 머지됐으니 비어 있는 것이 정상이다
+git branch --show-current                # main
 git status --short                       # clean
-git log --oneline main..HEAD             # 커밋 30개(이 문서 커밋 포함)
+git log --oneline -3                     # 최상단이 WP9 squash 커밋 1741337
+git checkout -b feat/media-wiring        # 다음 작업은 여기서 시작한다
 ```
 
 **`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거가 `branches: [main]`뿐이라
 직접 푸시하면 머지된 **뒤에야** CI가 돈다 — 게이트가 아니라 사후 통보다.
 PR 절차는 [CLAUDE.md](CLAUDE.md)의 "PR 절차"에 있다.
 
-**PR이 머지되면 다음 작업은 WP6의 `--media` 배선이다.** 그 커밋은 이월 1번(`_output_path`)과
+**다음 작업은 WP6의 `--media` 배선이다.** 그 커밋은 이월 1번(`_output_path`)과
 7번(재시도 루프)을 **함께** 닫아야 한다 — 둘 다 배선하는 순간에만 도달 가능해진다.
