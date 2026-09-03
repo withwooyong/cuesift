@@ -657,24 +657,29 @@ def _from_config(ctx: typer.Context | None, name: str) -> bool:
     return getattr(source, "name", "") == "DEFAULT_MAP"
 
 
-def _resolve_exclusive(ctx: typer.Context | None, message: str, first: str, second: str) -> str:
-    """상호배타 두 파라미터 중 **버릴 쪽**의 이름을 낸다 (FR-8.4 · 설계 D3).
+def _resolve_exclusive(ctx: typer.Context | None, message: str, *names: str) -> list[str]:
+    """상호배타 파라미터들 중 **버릴 쪽**의 이름 목록을 낸다 (FR-8.4 · 설계 D3).
 
     **값의 존재만 보는 상호배타 검사는 설정 파일을 이길 방법을 없앤다.**
     `cuesift.yaml`에 `triage.review_threshold`가 있으면 `--review-budget`을 친
     사람이 exit 2를 받는데, 그는 `--review-threshold`를 쓴 적이 없다. 그래서
-    이 쌍에서만 FR-8.4 본문의 후반절이 통째로 뒤집힌다.
+    이 쌍들에서만 FR-8.4 본문의 후반절이 통째로 뒤집힌다.
 
-    **양보는 한쪽만 설정에서 왔을 때뿐이다.** 둘 다 설정에서 왔으면 설정
-    파일 자체가 모순이고, 어느 쪽을 버려도 사용자가 적은 정책 하나가 조용히
-    사라진다 - 그것이 D4가 막는 실패다. 둘 다 명령줄이면 원래의 사용법
-    오류다. 두 경우 모두 여기서 exit 2로 끝내므로 반환은 늘 이름 하나다.
+    **양보는 명령줄 출처가 정확히 하나일 때뿐이다.** 둘 이상이면 원래의 사용법
+    오류이고, 하나도 없으면(전부 설정에서 왔으면) 설정 파일 자체가 모순이라
+    어느 쪽을 버려도 사용자가 적은 정책 하나가 조용히 사라진다 - 그것이 D4가
+    막는 실패다. 두 경우 모두 여기서 exit 2로 끝낸다.
+
+    **반환이 `str`이 아니라 `list[str]`인 것은 3자 이상을 받기 때문이다**
+    (FR-6.3의 `--review-budget`·`--review-threshold`·`--review-top-k`).
+    호출부는 `in`으로 판정한다 - `==` 비교를 남겨 두면 문자열과 리스트를
+    비교해 **예외 없이 조용히 `False`가 되고 양보가 통째로 죽는다.**
     """
-    from_first = _from_config(ctx, first)
-    from_second = _from_config(ctx, second)
-    if from_first != from_second:
-        return first if from_first else second
-    if from_first:
+    from_config = {name: _from_config(ctx, name) for name in names}
+    from_cli = [name for name, cfg in from_config.items() if not cfg]
+    if len(from_cli) == 1:
+        return [name for name in names if name not in from_cli]
+    if not from_cli:
         # 출처를 밝힌다(설계 D7). 사용자는 이 옵션들을 친 적이 없다.
         message = f"{message} (설정 파일에 둘 다 있다)"
     _echo(message, err=True)
@@ -1300,10 +1305,10 @@ def translate(
     if no_cache and cache_dir is not None:
         # **명령줄이 이긴다**(FR-8.4 후반절). `_resolve_exclusive`가 설정에서
         # 온 쪽을 골라 주고, 둘 다 같은 출처면 거기서 exit 2로 끝난다.
-        exclusive_loser = _resolve_exclusive(
+        losers = _resolve_exclusive(
             ctx, "--no-cache와 --cache-dir을 함께 줄 수 없다", "no_cache", "cache_dir"
         )
-        if exclusive_loser == "no_cache":
+        if "no_cache" in losers:
             no_cache = False
         else:
             cache_dir = None
@@ -1311,15 +1316,13 @@ def translate(
         # FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
         # 합성하면 어느 쪽이 이겼는지가 출력에서 사라진다(설계 D4).
         # 버리는 쪽은 위와 같은 규칙으로 고른다.
-        if (
-            _resolve_exclusive(
-                ctx,
-                "--review-budget과 --review-threshold는 함께 쓸 수 없다",
-                "review_budget",
-                "review_threshold",
-            )
-            == "review_budget"
-        ):
+        losers = _resolve_exclusive(
+            ctx,
+            "--review-budget과 --review-threshold는 함께 쓸 수 없다",
+            "review_budget",
+            "review_threshold",
+        )
+        if "review_budget" in losers:
             review_budget = None
         else:
             review_threshold = None
@@ -1329,10 +1332,8 @@ def translate(
         # 실리지 않으므로 `_from_config`가 늘 거짓이고, 따라서 설정에서 온
         # `media`만 양보 대상이 된다. 둘 다 명령줄이면 원래의 사용법 오류라
         # `_resolve_exclusive`가 exit 2로 끝낸다.
-        if (
-            _resolve_exclusive(ctx, "자막 파일과 --media를 함께 줄 수 없다", "input", "media")
-            == "input"
-        ):
+        losers = _resolve_exclusive(ctx, "자막 파일과 --media를 함께 줄 수 없다", "input", "media")
+        if "input" in losers:
             input = None
         else:
             media = None

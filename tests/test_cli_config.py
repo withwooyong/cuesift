@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import normalize_rich_message
+from cuesift import cli
 from cuesift.cli import app
 
 runner = CliRunner()
@@ -108,6 +109,25 @@ def test_진리표_둘_다_있으면_CLI가_이긴다(tmp_path: Path) -> None:
 # 통째로 뒤집힌다.
 
 
+def _spy_dry_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """dry-run 리포트가 실제로 받은 인자를 붙잡는다 (FR-8.4 · 설계 D3).
+
+    **`exit_code == 0`만 보는 상호배타 회귀는 양보가 뒤집힌 것을 못 잡는다.**
+    해소된 `cache_dir`은 어디에도 출력되지 않으므로 두 갈래가 같은 화면과 같은
+    종료 코드를 낸다 - 실측으로 호출부를 `in`에서 `==`로 되돌려도 이 파일의
+    회귀가 전부 통과했다. 그래서 화면이 아니라 인자를 본다.
+    """
+    seen: dict[str, object] = {}
+    original = cli._dry_run_report
+
+    def spy(**kwargs: object):
+        seen.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(cli, "_dry_run_report", spy)
+    return seen
+
+
 def test_CLI_예산이_설정의_임계값을_이긴다(tmp_path: Path) -> None:
     cfg = _config(tmp_path, "triage:\n  review_threshold: 0.5\n")
     result = _translate(cfg, _srt(tmp_path), "--review-budget", "10%")
@@ -116,21 +136,37 @@ def test_CLI_예산이_설정의_임계값을_이긴다(tmp_path: Path) -> None:
 
 def test_CLI_임계값이_설정의_예산을_이긴다(tmp_path: Path) -> None:
     # 반대 방향도 본다. 한쪽만 고치면 다른 쪽이 그대로 남는다.
-    cfg = _config(tmp_path, 'triage:\n  review_budget: "10%"\n')
+    #
+    # **설정의 예산을 범위 밖 값으로 둔다.** `"10%"`로 두면 양보가 반대로
+    # 뒤집혀 예산이 살아남아도 정상 값이라 exit 0이 그대로 나온다 - 관측이
+    # 없는 단언이다. `"500%"`는 `_parse_review_budget`이 거부하므로 예산이
+    # 살아남는 순간 exit 2가 되어 뒤집힘이 종료 코드로 드러난다.
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "500%"\n')
     result = _translate(cfg, _srt(tmp_path), "--review-threshold", "0.5")
     assert result.exit_code == 0, result.output
 
 
-def test_CLI_캐시_끄기가_설정의_캐시_경로를_이긴다(tmp_path: Path) -> None:
+def test_CLI_캐시_끄기가_설정의_캐시_경로를_이긴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _spy_dry_run(monkeypatch)
     cfg = _config(tmp_path, "cache:\n  dir: .c\n")
     result = _translate(cfg, _srt(tmp_path), "--no-cache")
     assert result.exit_code == 0, result.output
+    # `--no-cache`가 이겼으므로 설정의 `.c`가 아니라 `None`이 실려야 한다.
+    assert seen["cache_dir"] is None
 
 
-def test_CLI_캐시_경로가_설정의_캐시_끄기를_이긴다(tmp_path: Path) -> None:
+def test_CLI_캐시_경로가_설정의_캐시_끄기를_이긴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _spy_dry_run(monkeypatch)
     cfg = _config(tmp_path, "cache:\n  enabled: false\n")
     result = _translate(cfg, _srt(tmp_path), "--cache-dir", str(tmp_path / "c"))
     assert result.exit_code == 0, result.output
+    # 명령줄의 경로가 이겼으므로 캐시가 켜진 채 그 경로를 봐야 한다.
+    # 양보가 뒤집히면 `no_cache`가 살아남아 여기가 `None`이 된다.
+    assert seen["cache_dir"] == tmp_path / "c"
 
 
 def test_설정끼리의_상호배타는_여전히_오류다(tmp_path: Path) -> None:
@@ -157,6 +193,30 @@ def test_명령줄끼리의_상호배타는_여전히_오류다(tmp_path: Path) 
     assert normalize_rich_message("설정 파일") not in normalize_rich_message(budget.stderr)
     cache = _translate(cfg, _srt(tmp_path), "--no-cache", "--cache-dir", str(tmp_path / "c"))
     assert cache.exit_code == 2
+
+
+def test_CLI_자막이_설정의_media를_이긴다(tmp_path: Path) -> None:
+    """`input`/`media` 쌍에도 같은 양보가 걸린다 (FR-8.4 후반절).
+
+    **이 쌍만 회귀 테스트가 없었다.** 위치 인자는 `default_map`에 실리지
+    않으므로 `_from_config("input")`은 늘 거짓이고, 따라서 설정에서 온
+    `media`가 양보 대상이 된다. 양보가 죽으면 설정 파일을 쓰는 사용자가
+    명령줄로 준 자막을 잃는다 - FR-8.3의 리뷰가 HIGH로 잡았던 실패다.
+    """
+    cfg = _config(tmp_path, "input:\n  media: 없는영상.mp4\n")
+    result = _translate(cfg, _srt(tmp_path))
+    # 자막이 이겼으므로 없는 영상 파일에 닿지 않고 정상 종료한다.
+    assert result.exit_code == 0, result.output
+
+
+def test_명령줄_자막과_media는_여전히_오류다(tmp_path: Path) -> None:
+    # 둘 다 명령줄이면 원래의 사용법 오류다. 양보를 넓히면 이것이 통과한다.
+    cfg = _config(tmp_path, "source_lang: ko\n")
+    media = tmp_path / "v.mp4"
+    media.write_bytes(b"\x00")
+    result = _translate(cfg, _srt(tmp_path), "--media", str(media))
+    assert result.exit_code == 2
+    assert normalize_rich_message("함께 줄 수 없다") in normalize_rich_message(result.stderr)
 
 
 def test_설정이_필수_옵션을_만족시킨다(tmp_path: Path) -> None:
