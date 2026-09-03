@@ -120,6 +120,9 @@ def select_by_count(risks: Sequence[SegmentRisk], k: int) -> list[SegmentRisk]:
 
     **`k`가 세그먼트 수보다 크면 전량이다**(D5). 오류로 만들면 세그먼트 수를
     미리 아는 사람만 이 함수를 쓸 수 있다.
+
+    **거부는 전부 `ValueError`다.** `bool`·실수·음수 어느 쪽이든 같은 예외이고,
+    `risks`가 비어 있어도 `k` 검증이 먼저 돈다.
     """
     # **`bool`을 먼저 막는다**(D8). `bool`은 `int`의 서브클래스라
     # `select_by_count(risks, True)`가 아래 `k < 0`을 통과해 조용히 K=1로
@@ -127,8 +130,17 @@ def select_by_count(risks: Sequence[SegmentRisk], k: int) -> list[SegmentRisk]:
     # 이유다 - 조용히 도는 잘못된 값은 게이트에 걸리지 않는다.
     if isinstance(k, bool):
         raise ValueError(f"k는 bool일 수 없다 (받은 값: {k})")
+    # **`int`가 아니면 여기서 `ValueError`로 끝난다.** 이 검사가 없으면 `2.5`가
+    # 아래 `k < 0`을 통과해 `_select_top`의 슬라이스에서 `TypeError`로 샌다 -
+    # 공개 API(`__all__`)의 거부가 값에 따라 예외 타입이 갈리면 호출부가
+    # `except ValueError` 하나로 방어할 수 없다.
+    if not isinstance(k, int):
+        raise ValueError(f"k는 정수여야 한다 (받은 값: {k!r})")
     if k < 0:
         raise ValueError(f"k는 0 이상이어야 한다 (받은 값: {k})")
+    # **빈 목록 반환이 검증보다 뒤에 있어야 한다.** 앞에 두면
+    # `select_by_count([], 2.5)`가 조용히 `[]`를 내고, 빈 목록으로 쓰는
+    # 테스트에서는 잘못된 `k`가 영영 걸리지 않는다.
     if not risks:
         return []
     return _select_top(risks, k)

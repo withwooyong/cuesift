@@ -609,7 +609,8 @@ def _apply_config(ctx: typer.Context, config: Path | None) -> None:
     try:
         ctx.default_map = cfg.to_default_map()
     except ValueError as exc:
-        # `targets`의 list->str 변환만이 여기서 실패할 수 있다(설계 §5 2행).
+        # `BINDINGS`의 변환 함수가 여기서 실패한다 - `targets`의 list->str
+        # (설계 §5 2행)과 `triage.review_top_k`의 정수 검사(FR-6.3 ①).
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
 
     # `signals.weights`는 CLI 옵션이 아니라 `ctx.obj`로 간다(설계 D6).
@@ -657,6 +658,26 @@ def _from_config(ctx: typer.Context | None, name: str) -> bool:
     return getattr(source, "name", "") == "DEFAULT_MAP"
 
 
+# 검수 정책 파라미터 이름 -> 사용자가 실제로 치는 옵션 이름 (FR-6.3 ① · 설계 D7).
+# **상호배타 오류 메시지가 이 표로 조립된다.** 파라미터 이름(`review_top_k`)을
+# 그대로 내면 사용자가 명령줄에서 그 문자열을 찾지 못한다.
+_POLICY_FLAGS = {
+    "review_budget": "--review-budget",
+    "review_threshold": "--review-threshold",
+    "review_top_k": "--review-top-k",
+}
+
+
+def _count_word(count: int) -> str:
+    """`2 -> "둘 다"`, `3 -> "셋 다"` (설계 D7).
+
+    **넷 이상은 숫자로 낸다.** 한국어 수사를 계속 늘리는 대신 여기서 끊는다 -
+    지금 상호배타의 최대 항수는 셋이고(FR-6.3의 검수 정책), 넷째가 생기는 날
+    이 함수가 `"4개 다"`로 정직하게 말하는 편이 `"셋 다"`로 거짓말하는 것보다 낫다.
+    """
+    return {2: "둘 다", 3: "셋 다"}.get(count, f"{count}개 다")
+
+
 def _resolve_exclusive(ctx: typer.Context | None, message: str, *names: str) -> list[str]:
     """상호배타 파라미터들 중 **버릴 쪽**의 이름 목록을 낸다 (FR-8.4 · 설계 D3).
 
@@ -681,7 +702,11 @@ def _resolve_exclusive(ctx: typer.Context | None, message: str, *names: str) -> 
         return [name for name in names if name not in from_cli]
     if not from_cli:
         # 출처를 밝힌다(설계 D7). 사용자는 이 옵션들을 친 적이 없다.
-        message = f"{message} (설정 파일에 둘 다 있다)"
+        #
+        # **개수를 `names`에서 센다.** `"둘 다"`로 고정하면 3자 호출에서
+        # 셋이 있는데 "둘"이라고 말한다 - 사용자는 자기 설정 파일에서
+        # 지우지 않은 세 번째 키를 찾지 못한다.
+        message = f"{message} (설정 파일에 {_count_word(len(names))} 있다)"
     _echo(message, err=True)
     raise typer.Exit(2)
 
@@ -1158,7 +1183,7 @@ def translate(
         typer.Option(
             "--review-budget",
             # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
-            help="사람이 검수할 상위 비율 (예: 10% 또는 0.1). --review-threshold와 함께 쓸 수 없다",
+            help="사람이 검수할 상위 비율 (예: 10% 또는 0.1). 비율·임계값·개수 중 하나만 쓴다",
         ),
     ] = None,
     review_threshold: Annotated[
@@ -1170,7 +1195,7 @@ def translate(
             # 라이브러리(`policy.py`)도 범위를 검사하지만 여기서 막으면 오류
             # 메시지가 옵션 이름을 말한다 - `--context-window`·`--limit`이
             # 이미 같은 패턴이다.
-            help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). --review-budget과 함께 쓸 수 없다",
+            help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). 비율·임계값·개수 중 하나만 쓴다",
         ),
     ] = None,
     review_top_k: Annotated[
@@ -1183,7 +1208,7 @@ def translate(
             # 사람만 이 옵션을 쓸 수 있다.
             min=0,
             # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
-            help="사람이 검수할 상위 개수 (예: 50). --review-budget과 함께 쓸 수 없다",
+            help="사람이 검수할 상위 개수 (예: 50). 비율·임계값·개수 중 하나만 쓴다",
         ),
     ] = None,
     review_out: Annotated[
@@ -1338,9 +1363,13 @@ def translate(
         # **주어진 것만 넘긴다.** 셋을 늘 넘기면 주지도 않은 옵션이 양보
         # 후보가 되어, 명령줄 하나 + 설정 하나인 정상 조합에서 "명령줄이
         # 정확히 하나"라는 판정이 주지 않은 세 번째 때문에 흔들린다.
+        # **메시지를 `_given`으로 조립한다**(설계 D7). 셋을 고정 문자열로
+        # 나열하면 예산과 임계값만 준 사람이 자기가 친 적도 없는
+        # `--review-top-k`를 오류에서 읽고 그 옵션을 지우려 든다.
+        _flags = ", ".join(_POLICY_FLAGS[name] for name in _given)
         losers = _resolve_exclusive(
             ctx,
-            "--review-budget과 --review-threshold와 --review-top-k는 함께 쓸 수 없다",
+            f"{_flags} 중 하나만 쓸 수 있다",
             *_given,
         )
         # **`elif`가 아니라 `if` 셋을 나란히 둔다.** 3자에서는 버릴 것이 둘일 수 있다.
@@ -3083,9 +3112,10 @@ def _run_triage(
 def _parse_review_budget(raw: str) -> float:
     """`--review-budget` 값을 비율로 바꾼다 (FR-6.3 ① · 설계 §5.2).
 
-    `10%`와 `0.1`을 모두 받는다. **개수 지정(`50`)은 범위 밖으로 거부된다** -
-    라이브러리에 개수 기반 선별 함수가 없고, `k/n`으로 환산하면 `ceil`과 hard
-    fail 소진 때문에 정확히 K개가 나오지 않아 옵션이 거짓말을 한다(설계 D5).
+    `10%`와 `0.1`을 모두 받는다. **개수 지정(`50`)은 범위 밖으로 거부되고
+    `--review-top-k`를 가리킨다** - 개수 축은 `select_by_count`가 환산 없이
+    받는 별도 옵션이다(FR-6.3 ① · 설계 D5). 여기서 `50`을 100으로 나눠
+    받아 주면 50개를 원한 사람이 조용히 50%를 받는다.
 
     **`1`은 100%다.** `%` 유무만 다르고 나머지는 `0.0 <= x <= 1.0` 한 규칙이라
     그 결과다. 규칙을 좁혀(`%` 없는 값에 소수점을 요구해) `1`을 거부하면 `0`도
@@ -3109,7 +3139,8 @@ def _parse_review_budget(raw: str) -> float:
     if not 0.0 <= value <= 1.0:
         raise ValueError(
             f"--review-budget이 0~100% 범위를 벗어났다: {raw!r}. "
-            "개수 지정은 v0.1 범위 밖이다 - 비율로 지정하라 (예: 10%)"
+            "비율로 지정하거나(예: 10%) 개수로 지정하려면 --review-top-k를 쓴다 "
+            "(예: --review-top-k 50)"
         )
     return value
 

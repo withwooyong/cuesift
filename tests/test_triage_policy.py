@@ -189,6 +189,29 @@ def test_빈_목록은_빈_목록이다():
     assert select_by_count([], 5) == []
 
 
+@pytest.mark.parametrize("bad", [2.5, 1.0, "3", None])
+def test_정수가_아닌_k는_ValueError다(ten, bad):
+    """**`TypeError`가 아니라 `ValueError`다** (`__all__` 공개 API의 계약).
+
+    검증이 없으면 `2.5`가 `k < 0`을 통과해 `_select_top`의 슬라이스에서
+    `TypeError: slice indices must be integers`로 샌다 - 거부의 예외 타입이
+    값에 따라 갈리면 호출부가 `except ValueError` 하나로 방어할 수 없다.
+    """
+    with pytest.raises(ValueError, match="정수"):
+        select_by_count(ten, bad)
+
+
+@pytest.mark.parametrize("bad", [2.5, True, -1])
+def test_빈_목록이어도_k_검증이_먼저다(bad):
+    """`if not risks: return []`가 검증보다 앞에 있으면 **여기가 통과한다.**
+
+    그 상태에서는 빈 목록으로 쓰는 테스트가 잘못된 `k`를 영영 잡지 못하고,
+    "게이트가 있다"는 착각만 남는다.
+    """
+    with pytest.raises(ValueError):
+        select_by_count([], bad)
+
+
 def test_threshold_selects_at_or_above(ten):
     result = select_by_threshold(ten, 0.7)
     assert {r.segment_id for r in result if r.selected} == {"s7", "s8", "s9"}

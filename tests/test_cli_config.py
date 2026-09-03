@@ -184,6 +184,19 @@ def test_설정끼리의_캐시_상호배타도_여전히_오류다(tmp_path: Pa
     result = _translate(cfg, _srt(tmp_path))
     assert result.exit_code == 2
     assert normalize_rich_message("설정 파일") in normalize_rich_message(result.stderr)
+    # 2자 쌍은 여전히 "둘 다"다. 개수 문구를 `names`로 세면서 이쪽이
+    # 깨지면 3자 일반화가 기존 쌍의 메시지를 망친 것이다.
+    assert normalize_rich_message("둘 다") in normalize_rich_message(result.stderr)
+
+
+def test_설정에_두_정책만_있으면_문구가_둘_다다(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "10%"\n  review_threshold: 0.5\n')
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2
+    stderr = normalize_rich_message(result.stderr)
+    assert normalize_rich_message("둘 다") in stderr
+    # **주지 않은 세 번째를 말하지 않는다**(설계 D7).
+    assert "--review-top-k" not in stderr
 
 
 def test_명령줄끼리의_상호배타는_여전히_오류다(tmp_path: Path) -> None:
@@ -627,7 +640,13 @@ def test_설정에_세_정책이_전부_있으면_오류다(tmp_path: Path) -> N
     )
     result = _translate(cfg, _srt(tmp_path))
     assert result.exit_code == 2
-    assert normalize_rich_message("설정 파일") in normalize_rich_message(result.stderr)
+    stderr = normalize_rich_message(result.stderr)
+    assert normalize_rich_message("설정 파일") in stderr
+    # **"둘 다"가 아니라 "셋 다"다.** 셋이 있는데 "둘"이라고 말하면
+    # 사용자는 지우지 않은 세 번째 키를 찾지 못한다.
+    assert normalize_rich_message("셋 다") in stderr
+    for flag in ("--review-budget", "--review-threshold", "--review-top-k"):
+        assert normalize_rich_message(flag) in stderr
 
 
 def test_설정의_top_k만으로_트리아지가_돈다(
@@ -645,3 +664,37 @@ def test_설정의_top_k만으로_트리아지가_돈다(
     assert result.exit_code == 0, result.output
     assert normalize_rich_message("상위 2개") in normalize_rich_message(result.output)
     assert "검수 대상 2개" in result.output
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        # click의 `IntRange`가 `int(2.5) == 2`로 **먼저** 변환해 버리므로
+        # 이 넷은 전부 exit 0으로 돌았다. `0.9`와 `false`는 `k=0`이 되어
+        # **트리아지가 켜진 채 빈 검수 큐**를 냈다 - 사용자는 "정책을 껐다"고
+        # 생각한 자리에서 조용히 아무것도 받지 못한다.
+        ("2.5", "2.5"),
+        ("0.9", "0.9"),
+        ("true", "True"),
+        ("false", "False"),
+    ],
+)
+def test_설정의_top_k가_정수가_아니면_exit_2다(tmp_path: Path, raw: str, shown: str) -> None:
+    cfg = _config(tmp_path, f"triage:\n  review_top_k: {raw}\n")
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2, result.output
+    stderr = normalize_rich_message(result.stderr)
+    # 어느 키가 어떤 값이라 거부됐는지 둘 다 나와야 원인을 안다.
+    assert normalize_rich_message("triage.review_top_k") in stderr
+    assert normalize_rich_message(shown) in stderr
+
+
+def test_설정의_top_k는_0이면_그대로_통과한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """엄격 검사가 정상 값까지 막지 않는지 본다. `0`은 "hard fail만 보기"다(D4)."""
+    cfg = _config(tmp_path, "triage:\n  review_top_k: 0\n")
+    result = _triage(cfg, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert normalize_rich_message("상위 0개") in normalize_rich_message(result.output)
+    assert "검수 대상 0개" in result.output

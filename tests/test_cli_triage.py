@@ -110,9 +110,44 @@ def test_NaN과_inf는_범위_검사가_거부한다(raw: str) -> None:
         _parse_review_budget(raw)
 
 
-def test_개수를_주면_비율로_지정하라고_안내한다() -> None:
-    with pytest.raises(ValueError, match="비율로 지정하라"):
+def test_개수를_주면_review_top_k를_안내한다() -> None:
+    """**`--review-top-k`를 이름으로 말해야 한다** (FR-6.3 ①).
+
+    `select_by_count`가 생기기 전에는 "개수 지정은 v0.1 범위 밖이다"가 참이었다.
+    지금은 거짓이고, 그 문구가 남으면 CLI가 **이 저장소가 방금 만든 기능을
+    없다고 말한다.** `50`을 친 사람은 십중팔구 50개를 원한 사람이다.
+    """
+    with pytest.raises(ValueError, match="--review-top-k"):
         _parse_review_budget("50")
+
+
+def test_세_정책_옵션의_help가_같은_배타_문구를_말한다() -> None:
+    """세 옵션이 **서로 다른 부분집합**을 말하면 금지된 조합이 어디에도 안 적힌다.
+
+    실제로 `--review-threshold 0.5 --review-top-k 5`가 exit 2인데 두 옵션의
+    help 어디에도 그 금지가 없었다. 셋이 **같은 문구**를 쓰면 어느 것을
+    읽어도 같은 제약을 만난다.
+
+    **렌더가 아니라 click 파라미터를 본다.** `--help` 출력에 단언하면 rich가
+    폭에 따라 문구를 접어 이 게이트가 폭 테스트가 된다 - 옵션 이름이 쪼개진
+    사건과 같은 부류다. 렌더 폭은 `test_cli_progress.py`가 따로 잰다.
+    """
+    import typer
+
+    translate = typer.main.get_command(app).commands["translate"]
+    helps = {
+        param.name: param.help
+        for param in translate.params
+        if param.name in {"review_budget", "review_threshold", "review_top_k"}
+    }
+    assert len(helps) == 3, helps
+    suffixes = {text.split(". ")[-1] for text in helps.values()}
+    # 하나라도 다른 상대를 나열하면 집합의 크기가 1이 아니다.
+    assert len(suffixes) == 1, helps
+    # 문구가 셋을 다 가리켜야 한다 - "둘 중 하나"로 좁히면 대칭이어도 거짓이다.
+    suffix = suffixes.pop()
+    for word in ("비율", "임계값", "개수"):
+        assert word in suffix, suffix
 
 
 def test_두_정책을_함께_주면_exit_2다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,6 +174,10 @@ def test_두_정책을_함께_주면_exit_2다(tmp_path: Path, monkeypatch: pyte
     # 두 옵션 이름이 모두 나와야 사용자가 무엇을 지울지 안다.
     assert "--review-budget" in result.stderr
     assert "--review-threshold" in result.stderr
+    # **치지 않은 세 번째를 말하지 않는다**(설계 D7). 고정 문자열로 셋을
+    # 나열하면 여기가 실패한다 - 사용자는 자기 명령줄에 없는 옵션을
+    # 오류에서 읽고 그것을 지우려 든다.
+    assert "--review-top-k" not in result.stderr
 
 
 def test_예산_파싱_실패는_exit_2다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,7 +186,9 @@ def test_예산_파싱_실패는_exit_2다(tmp_path: Path, monkeypatch: pytest.M
     result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-budget", "50"))
 
     assert result.exit_code == 2, result.output
-    assert "비율로 지정하라" in result.output
+    # 화면에도 개수 축의 옵션 이름이 나와야 한다 - 독스트링만 고치면
+    # 사용자가 보는 문구는 그대로 "v0.1 범위 밖"에 머문다.
+    assert "--review-top-k" in result.output
 
 
 def test_프로파일이_없는_언어는_경고하고_건너뛴다(
