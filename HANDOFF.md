@@ -21,7 +21,7 @@
 | 직전 인수인계 | ✅ 머지됨 | PR [#26](https://github.com/withwooyong/cuesift/pull/26) · squash `5d4b607` |
 | **Q4 spike — 전제 검증 + 2×2 측정** | ✅ **끝났다** | 아래 "Q4 spike 실측". **로컬 행만 채웠다** |
 | **상용 API 행** | ⬜ **미착수** | 키를 못 받아 비어 있다. 아래 "다음 세션" 참고 |
-| **이 문서** | 이 PR | 코드 변경 0건 — `CHANGELOG.md`를 건드리지 않았다 |
+| **이 문서** | PR [#27](https://github.com/withwooyong/cuesift/pull/27) | 코드 변경 0건 — `CHANGELOG.md`를 건드리지 않았다 |
 
 **이번 세션은 코드를 한 줄도 바꾸지 않았다.** 그래서 `CHANGELOG.md`에 넣을 것이
 없다 — Keep a Changelog는 코드 변경을 적는 문서이고, 실측 결과는 여기 적는다.
@@ -326,7 +326,7 @@ STT live 테스트는 `-m live` · `CUESIFT_LIVE_STT_*` 환경변수로 돌고
 gh pr list --state all --limit 3 --json number,title,state,mergedAt
 git branch --show-current                 # main
 git status --short                        # clean
-git log --oneline -3                      # 최상단이 이 PR의 squash 커밋
+git log --oneline -3                      # 최상단이 PR #27의 squash 커밋
 ```
 
 **`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거가 `branches: [main]`뿐이라
