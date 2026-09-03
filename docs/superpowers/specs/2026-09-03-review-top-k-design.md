@@ -199,6 +199,11 @@ triage:
 
 ## 6. 리포트 파급 (D7)
 
+> **2026-09-03 정정** — 아래 표의 `html_report.py` 행은 틀렸다. 그 파일(218행)은 `policy_label`만
+> 읽고 `policy_kind`를 보지 않으므로 **손댈 것이 없다.** D6의 "실제 개수 표시"도 `cli.py:2731`이
+> 이미 내고 있어 만들 것이 아니라 고정할 것이다. 둘 다
+> [구현 계획](../plans/2026-09-03-review-top-k.md)의 "스펙에서 정정한 것" 절이 단일 출처다.
+
 | 파일 | 지금 | 변경 |
 | --- | --- | --- |
 | `report/models.py:218` | `policy_kind: str  # "budget" \| "threshold"` | `"top_k"` 추가 |
