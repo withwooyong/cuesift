@@ -145,8 +145,8 @@ FR-6.3 하나가 🟡에서 ✅로 올랐다. 비율·임계값 두 축은 이�
 | 9 | API 키가 **공백 한 칸**이면 `Authorization: Bearer` 뒤에 공백만 붙은 헤더가 나가 401이 "키가 틀렸다"로 오독된다 | 기존 동작이고 번역(`CUESIFT_API_KEY`)도 같다. STT만 `.strip()`을 넣으면 두 경로가 비대칭이 된다 | 키 처리를 손볼 때. `_resolve_stt_key`와 `_require_ascii_api_key` 양쪽을 함께 고친다 |
 | 10 | `translate --media X --to ko`처럼 **대상이 원문과 같으면** 전사를 마친 뒤 exit 2 | 출력 경로 충돌 검사가 입력 이름을 알아야 해서 전사 앞으로 옮기기 어렵다. 다만 `media is not None and target == source_lang`은 앞에서 판정 가능하다 | 되돌릴 수 없는 비용 앞의 검사를 정리할 때 |
 | 11 | 설정의 `input.media` + `--dry-run` 조합에 **CLI 탈출구가 없다** - `--no-media` 같은 무효화 옵션이 없다 | 위치 인자로 자막을 주면 회피된다. 설정 무효화 옵션은 이 한 자리만의 문제가 아니다 | 설정 무효화 규칙을 전반적으로 정할 때 |
-| ~~12~~ | ~~설정 채널에서 `true`를 exit 0으로 받는다~~ | ✅ **닫혔다** (2026-09-03, `require_number`). 아래 정정 참고 | — |
-| ~~13~~ | ~~설정에 리스트를 주면 raw traceback이 샌다~~ | ✅ **닫혔다** (2026-09-03). 12번과 같은 커밋이다 | — |
+| ~~12~~ | ~~설정 채널에서 `true`를 exit 0으로 받는다~~ | ✅ **닫혔다** — PR [#25](https://github.com/withwooyong/cuesift/pull/25) · `require_number`. 아래 정정 참고 | — |
+| ~~13~~ | ~~설정에 리스트를 주면 raw traceback이 샌다~~ | ✅ **닫혔다** — PR [#25](https://github.com/withwooyong/cuesift/pull/25). 12번과 같은 커밋이다 | — |
 | 14 | `cli.py` 자막/영상 자리의 `if "input" in losers:`는 **도달 불가능한 죽은 코드** | 위치 인자는 `default_map`에 실리지 않아 `_from_config("input")`이 늘 거짓이다. **어떤 테스트도 덮을 수 없다** | `_resolve_exclusive` 호출부를 정리할 때. 지우는 것이 맞는지부터 판정한다 |
 | 15 | `review.json`에 **스키마 버전 필드가 존재한 적이 없다** | 그래서 "이번에 올리지 않았다"가 **표현 불가능한 결정이다.** `policy.kind` 도메인이 넓어졌는데 하류가 감지할 신호가 없다 | 하류 소비자가 생길 때. 계약·호환성 축 리뷰가 지목했다 |
 | 16 | `policy_kind` 분기의 `else`가 **threshold로 조용히 떨어진다** | 지금은 같은 함수가 셋 중 하나를 배정하고 넷째는 `ValueError`로 죽어 도달 불가다 | **넷째 축이 추가될 때.** 그 순간 유일하게 조용히 틀릴 자리다 |
