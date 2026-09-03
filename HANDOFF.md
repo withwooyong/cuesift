@@ -9,9 +9,10 @@
 > 그것은 요구사항정의서 §12 **Q4**가 닫히기 전에는 착수 근거가 없다.
 > 직전 세션의 FR-8.3은 PR [#22](https://github.com/withwooyong/cuesift/pull/22)로
 > `main`에 들어갔다.
-> **이번 FR-6.3은 아직 푸시되지 않았다** - 이 문서를 커밋한 **뒤에** 푸시하고 PR을 연다.
-> 그래서 **PR 번호도 squash 해시도 여기 적을 수 없다.** 적을 수 없는 것은 추측하지 않는다 -
-> 아래 "다음 세션 시작 절차"의 **첫 명령**이 그 값들을 재는 명령이다.
+> **이번 FR-6.3도 PR [#24](https://github.com/withwooyong/cuesift/pull/24)로 `main`에 들어갔다**
+> (squash `d7e927c`, 2026-09-03). 이 문단은 **PR을 열기 전에 쓰여 번호를 비워 둔 채 커밋됐고,
+> 다음 세션의 첫 명령이 그 값을 재서 채운 것이다** - 아래 "이 문서는 자기 자신의 PR을 못 본다"
+> 절이 그 구조를 설명한다.
 > 상태 값은 여기 적힌 숫자가 아니라 아래 "현재 상태 재는 법"의 명령으로 직접 재라.
 > 진척은 [WBS](docs/WBS.md), FR 번호의 출처는 [요구사항정의서](docs/요구사항정의서.md)다
 
@@ -27,23 +28,30 @@
 | **이중 리뷰 - 품질 축 · 계약·호환성 축** | ✅ 승인 | CRITICAL·HIGH **0건** · MEDIUM 이하 **6건** |
 | 리뷰 반영 · 두 축 재확인 | ✅ 닫힘 | `12de0df` - 6건 전부 해소 · **새 문제 0건** |
 | 검증 (제3자가 직접 실행, HEAD `12de0df`) | ✅ 통과 | 1783 passed · 커버리지 99% · 문서 게이트 45 = 45 |
-| **FR-6.3 푸시·PR·merge** | ⬜ **미실행** | 이 문서를 커밋한 뒤에 연다 |
+| **FR-6.3 푸시·PR·merge** | ✅ **머지됨** | PR [#24](https://github.com/withwooyong/cuesift/pull/24) · squash `d7e927c` · CI 5잡 통과 |
+
+### 이 문서는 자기 자신의 PR을 못 본다 - 그 값은 다음 세션이 채웠다
 
 **이번에는 직전 세션의 순서를 쓰지 못했다.** 직전 세션은 PR을 먼저 열어 번호를 문서에 넣고
-머지 직전에 이 표를 ✅로 고쳐 같은 squash에 담았다. 이번 문서는 **커밋한 뒤에 푸시하므로
-PR 번호도 squash 해시도 적을 수 없다.** 적을 수 없는 것은 추측하지 않는다 - 대신 아래
+머지 직전에 이 표를 ✅로 고쳐 같은 squash에 담았다. 이번 문서는 **커밋한 뒤에 푸시했으므로
+PR 번호도 squash 해시도 적을 수 없었다.** 적을 수 없는 것은 추측하지 않는다 - 대신 아래
 시작 절차의 **첫 명령을 PR 상태 확인으로** 두었다. 이 문서가 자기 자신을 담은 PR을
 볼 수 없는 것에 대한 유일한 방어가 그것이다.
+
+**그 방어가 실제로 작동했다.** 다음 세션(2026-09-03)의 첫 명령이
+`gh pr list`로 **#24 · MERGED · `d7e927c`** 를 재서 위 표와 머리말을 채웠다.
+**빈칸을 남기고 그것을 채우는 명령을 함께 적어 두는 것이 추측해서 채우는 것보다 낫다** -
+빈칸은 다음 사람이 채우지만, 틀린 값은 아무도 고치지 않는다.
 
 ## 현재 상태 재는 법
 
 **첫 일은 직전 작업이 어디까지 갔는지 확인하는 것이다.**
 
 ```bash
-gh pr list --head feat/review-top-k --state all --json number,state,mergeCommit
-git branch --show-current                     # feat/review-top-k (머지 후에는 main)
+gh pr list --state all --limit 5 --json number,title,state,mergedAt
+git branch --show-current                     # main (다음 작업 브랜치를 팠으면 그 이름)
 git status --short                            # clean 이어야 한다
-git log --oneline -10                         # 5c1f65e..12de0df 아홉 개 + 이 문서가 FR-6.3이다
+git log --oneline -5                          # 최상단이 d7e927c (FR-6.3 squash)
 ```
 
 ## 이번 세션이 낸 것 - 태스크 6개 · 커밋 7개
@@ -137,8 +145,8 @@ FR-6.3 하나가 🟡에서 ✅로 올랐다. 비율·임계값 두 축은 이�
 | 9 | API 키가 **공백 한 칸**이면 `Authorization: Bearer` 뒤에 공백만 붙은 헤더가 나가 401이 "키가 틀렸다"로 오독된다 | 기존 동작이고 번역(`CUESIFT_API_KEY`)도 같다. STT만 `.strip()`을 넣으면 두 경로가 비대칭이 된다 | 키 처리를 손볼 때. `_resolve_stt_key`와 `_require_ascii_api_key` 양쪽을 함께 고친다 |
 | 10 | `translate --media X --to ko`처럼 **대상이 원문과 같으면** 전사를 마친 뒤 exit 2 | 출력 경로 충돌 검사가 입력 이름을 알아야 해서 전사 앞으로 옮기기 어렵다. 다만 `media is not None and target == source_lang`은 앞에서 판정 가능하다 | 되돌릴 수 없는 비용 앞의 검사를 정리할 때 |
 | 11 | 설정의 `input.media` + `--dry-run` 조합에 **CLI 탈출구가 없다** - `--no-media` 같은 무효화 옵션이 없다 | 위치 인자로 자막을 주면 회피된다. 설정 무효화 옵션은 이 한 자리만의 문제가 아니다 | 설정 무효화 규칙을 전반적으로 정할 때 |
-| 12 | `triage.review_threshold`·`review_budget`도 **설정 채널에서 `true`를 exit 0으로 받는다** | **기존 동작**이라 지금 고치면 하위 호환이 깨진다. `review_top_k`만 처음부터 엄격하다(`require_int`) | 설정 스키마에 타입 검증을 일괄로 넣을 때. 리뷰어가 실측으로 재현했다 |
-| 13 | 설정에 **리스트를 주면 raw traceback이 샌다** | `review_threshold: []`에서 동일 재현. `review_top_k: []`는 `require_int`가 이번에 닫았다 | 12번과 같은 자리다. 같은 커밋에서 함께 닫는다 |
+| ~~12~~ | ~~설정 채널에서 `true`를 exit 0으로 받는다~~ | ✅ **닫혔다** (2026-09-03, `require_number`). 아래 정정 참고 | — |
+| ~~13~~ | ~~설정에 리스트를 주면 raw traceback이 샌다~~ | ✅ **닫혔다** (2026-09-03). 12번과 같은 커밋이다 | — |
 | 14 | `cli.py` 자막/영상 자리의 `if "input" in losers:`는 **도달 불가능한 죽은 코드** | 위치 인자는 `default_map`에 실리지 않아 `_from_config("input")`이 늘 거짓이다. **어떤 테스트도 덮을 수 없다** | `_resolve_exclusive` 호출부를 정리할 때. 지우는 것이 맞는지부터 판정한다 |
 | 15 | `review.json`에 **스키마 버전 필드가 존재한 적이 없다** | 그래서 "이번에 올리지 않았다"가 **표현 불가능한 결정이다.** `policy.kind` 도메인이 넓어졌는데 하류가 감지할 신호가 없다 | 하류 소비자가 생길 때. 계약·호환성 축 리뷰가 지목했다 |
 | 16 | `policy_kind` 분기의 `else`가 **threshold로 조용히 떨어진다** | 지금은 같은 함수가 셋 중 하나를 배정하고 넷째는 `ValueError`로 죽어 도달 불가다 | **넷째 축이 추가될 때.** 그 순간 유일하게 조용히 틀릴 자리다 |
@@ -146,6 +154,24 @@ FR-6.3 하나가 🟡에서 ✅로 올랐다. 비율·임계값 두 축은 이�
 **12~16번은 미룬 이유가 서로 다르다.** 12·13은 **하위 호환**(고치면 지금 도는 설정이 깨진다),
 14는 **범위 밖**, 15·16은 **미래 확장 시점에만 발동**한다. 이 구분이 다시 열 조건을 정한다 -
 12·13은 사람이 날을 잡아야 하고, 15·16은 그때가 오면 저절로 걸린다.
+
+### 12번 서술이 절반 틀렸다 - 다음 세션이 닫으면서 정정한다
+
+**"`review_threshold`·`review_budget` 둘 다 관대하다"는 `review_threshold`에만 참이었다.**
+`review_budget`은 옵션 타입이 `str | None`이라 click이 `str(True)`를 넘기고
+`_parse_review_budget`이 숫자로 읽지 못해 **이미 exit 2를 낸다**(실측).
+그래서 실제로 닫을 것은 **한 키**였고, 12·13번은 서로 다른 두 결함이 아니라
+**같은 키의 두 증상**이었다.
+
+**미룬 이유였던 하위 호환도 실측이 좁혔다.** 깨지는 것은 `true`·`[]`처럼 **이미 틀린 설정**뿐이고,
+따옴표 친 `'0.5'`는 값이 맞고 의도대로 돈다 - 그래서 `require_number`는 `bool`과 비숫자
+타입만 막고 **문자열은 통과시킨다.** `require_int`가 문자열까지 거부하는 것과 갈리며,
+갈리는 이유는 그 키가 신설이라 깨질 설정이 없었기 때문이다.
+
+**"리뷰어가 실측으로 재현했다"는 기록이 재현의 범위까지 보증하지는 않는다.**
+리뷰어는 `review_threshold`에서 재현하고 `review_budget`을 **같은 부류로 묶어 서술**했는데,
+그 묶음이 인수인계를 거치며 "둘 다 재현됐다"로 읽혔다. 착수 조사가 여덟 값을 다시 돌려
+표로 만들기 전에는 드러나지 않았다.
 
 같은 리뷰가 찾은 **MEDIUM 이하 6건은 미루지 않고 닫았다**(`12de0df`). 그중 하나가
 **설정 파일의 `review_top_k: false`가 exit 0 + K=0으로 조용히 돌던 것**이고, 그것이
@@ -369,13 +395,15 @@ $env:CUESIFT_LIVE_MODEL="qwen2.5:3b"
 
 **첫 명령이 PR 상태 확인이다.** 이 문서는 자기 자신을 담은 PR을 볼 수 없어
 번호·상태·squash 해시가 **전부 거기서만 나온다.** 순서를 바꾸지 마라.
+**FR-6.3에 대해서는 이 절차가 이미 한 번 돌았고**(#24 · `d7e927c`) 그 결과가 위 표에 반영돼
+있으므로, 다음 사람은 **자기 세션의 직전 작업**에 대해 같은 순서를 다시 밟으면 된다.
 
 ```bash
-gh pr list --head feat/review-top-k --state all --json number,state,mergeCommit
-gh pr checks --watch                      # OPEN 이면 CI 5잡을 기다린다
-git branch --show-current                 # feat/review-top-k (머지 후에는 main)
+gh pr list --state all --limit 5 --json number,title,state,mergedAt
+gh pr checks --watch                      # OPEN 인 PR이 있으면 CI 5잡을 기다린다
+git branch --show-current                 # main
 git status --short                        # clean
-git log --oneline -3                      # 머지 후에는 최상단이 FR-6.3 squash 커밋
+git log --oneline -3                      # 최상단이 d7e927c
 git checkout -b feat/<다음-작업>          # 다음 작업은 여기서 시작한다
 ```
 

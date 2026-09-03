@@ -698,3 +698,72 @@ def test_설정의_top_k는_0이면_그대로_통과한다(
     assert result.exit_code == 0, result.output
     assert normalize_rich_message("상위 0개") in normalize_rich_message(result.output)
     assert "검수 대상 0개" in result.output
+
+
+# --- 이월 12·13번: 설정 키 `triage.review_threshold`의 타입 검증 ---
+#
+# **`review_top_k`만 처음부터 엄격했다**(`require_int`, FR-6.3 ①). 옛 키인
+# `review_threshold`는 관대한 채로 남아 두 증상을 냈다 - `true`가 exit 0으로
+# 임계값 1.0이 되고(12번), 리스트를 주면 raw `TypeError`가 샜다(13번).
+# 둘은 같은 원인의 두 얼굴이다: click의 `FloatRange`가 `default_map` 값을
+# 본문 진입 **전에** 변환하므로, 본문에 둔 방어는 이 채널을 지키지 못한다.
+#
+# **`review_budget`은 여기 없다.** 옵션 타입이 `str | None`이라 click이
+# `str(True)`를 넘기고 `_parse_review_budget`이 이미 exit 2로 막는다(실측).
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        # 12번 - `true`는 임계값 1.0, `false`는 0.0으로 조용히 돌았다.
+        # 사용자는 "정책을 켰다/껐다"고 생각한 자리에서 임계값을 받는다.
+        ("true", "True"),
+        ("false", "False"),
+        # 13번 - 여기서 raw `TypeError`가 새어 exit 1이었다.
+        ("[]", "[]"),
+        ("{}", "{}"),
+        # `review_top_k: null`은 이미 exit 2다. 한쪽만 통과하면 같은 오타가
+        # 키에 따라 다른 결말을 맞는다.
+        ("null", "None"),
+    ],
+)
+def test_설정의_threshold가_숫자가_아니면_exit_2다(tmp_path: Path, raw: str, shown: str) -> None:
+    cfg = _config(tmp_path, f"triage:\n  review_threshold: {raw}\n")
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2, result.output
+    stderr = normalize_rich_message(result.stderr)
+    # 어느 키가 어떤 값이라 거부됐는지 둘 다 나와야 원인을 안다.
+    assert normalize_rich_message("triage.review_threshold") in stderr
+    assert normalize_rich_message(shown) in stderr
+
+
+@pytest.mark.parametrize("raw", ["0.5", "'0.5'"])
+def test_설정의_threshold는_숫자와_숫자문자열을_그대로_받는다(
+    tmp_path: Path, raw: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**엄격 검사가 도는 설정을 깨뜨리지 않는지 본다.**
+
+    따옴표 친 `'0.5'`는 click의 `FloatRange`가 파싱해 **값이 맞고 의도대로
+    돈다** - 여기서 문자열까지 막으면 정상 동작하던 설정이 exit 2가 된다.
+    `require_int`가 문자열도 거부하는 것과 갈리는 유일한 자리이고, 갈리는
+    이유는 그 키가 신설이라 깨질 설정이 없었기 때문이다.
+
+    선별이 **실제로 도는** 실행으로 잰다 - `--dry-run`은 트리아지를 부르지
+    않아 정책 라벨이 나오지 않는다(실측).
+    """
+    cfg = _config(tmp_path, f"triage:\n  review_threshold: {raw}\n")
+    result = _triage(cfg, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert normalize_rich_message("임계값 0.5") in normalize_rich_message(result.output)
+
+
+def test_설정의_threshold가_숫자문자열이_아니면_click이_막는다(tmp_path: Path) -> None:
+    """문자열을 통과시키는 대가를 못 박는다.
+
+    `require_number`가 `str`을 그냥 넘기므로 **`'abc'`를 거르는 것은 click뿐이다.**
+    이 게이트가 없으면 문자열 허용을 넓히다가 아무 문자열이나 통과하는 것을
+    아무도 못 잡는다.
+    """
+    cfg = _config(tmp_path, "triage:\n  review_threshold: 'abc'\n")
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2, result.output
