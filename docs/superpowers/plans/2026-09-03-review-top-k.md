@@ -937,7 +937,7 @@ D6 hard fail이 K를 넘으면 화면 개수도 K를 넘는다. 자르지 않는
 만들어 검사하면 배선이 정말 정수를 싣는지는 재지 못한다 — 그 사이에 `float()` 변환이 하나
 끼어도 통과한다.
 
-- [ ] **단계 1: 실패하는 테스트를 쓴다 (G12)**
+- [x] **단계 1: 실패하는 테스트를 쓴다 (G12)**
 
 `tests/test_cli_review_out.py` 끝에 넣는다. 그 파일의 `_read_review`
 (334행, `tmp_path/"reports"/<이름>`을 읽는다)와 `_args`를 쓴다.
@@ -978,7 +978,7 @@ def test_top_k의_policy_value가_정수로_직렬화된다(
 **`_args`의 픽스처 이름과 `_read_review`의 기본 파일명(`minimal.en.review.json`)이 짝이다.**
 다른 픽스처를 쓰면 `_read_review`에 이름을 넘겨야 한다.
 
-- [ ] **단계 2: 실패를 확인한다**
+- [x] **단계 2: 실패를 확인한다**
 
 실행: `.venv/Scripts/python.exe -m pytest tests/test_cli_review_out.py -q -k policy_value`
 
@@ -989,7 +989,7 @@ def test_top_k의_policy_value가_정수로_직렬화된다(
 **호출부가 정수를 넘기는 계약**을 재는 그물이며 여전히 유효하다 — 그 사실을 테스트
 독스트링에 적고 단계 3으로 넘어간다. 실패하든 통과하든 **관측한 것을 그대로 적는다.**
 
-- [ ] **단계 3: 타입을 넓힌다**
+- [x] **단계 3: 타입을 넓힌다**
 
 `src/cuesift/report/models.py:218-219`:
 
@@ -1003,7 +1003,7 @@ def test_top_k의_policy_value가_정수로_직렬화된다(
 같은 파일의 독스트링에서 `policy_kind`/`policy_value`를 설명하는 문단이 두 가지 축만
 말하고 있으면 세 번째를 더한다.
 
-- [ ] **단계 4: 게이트를 실패시켜 본다**
+- [x] **단계 4: 게이트를 실패시켜 본다**
 
 `cli.py`의 `policy_kind, policy_value = "top_k", top_k`를 잠시
 `"top_k", float(top_k)`로 바꾼다.
@@ -1014,7 +1014,7 @@ def test_top_k의_policy_value가_정수로_직렬화된다(
 **이 단계를 건너뛰면 안 된다.** `== 3` 단언만으로는 `3.0`이 통과하므로,
 그물이 실제로 잡는지를 본 뒤에야 회귀 테스트다.
 
-- [ ] **단계 5: 전체 게이트와 커밋**
+- [x] **단계 5: 전체 게이트와 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check .
