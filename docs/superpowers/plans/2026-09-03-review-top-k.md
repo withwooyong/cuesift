@@ -1055,7 +1055,7 @@ html_report.py는 손대지 않는다 - policy_label만 읽고 policy_kind를
 - 사용하는 것: `--review-top-k`(Task 4)
 - 내놓는 것: `cuesift.yaml`의 `triage.review_top_k` 키
 
-- [ ] **단계 1: 지금 깨져 있는 게이트를 확인한다**
+- [x] **단계 1: 지금 깨져 있는 게이트를 확인한다**
 
 ```bash
 .venv/Scripts/python.exe -m pytest tests/test_config_schema.py -q
@@ -1064,7 +1064,7 @@ html_report.py는 손대지 않는다 - policy_label만 읽고 policy_kind를
 기대: **2건 FAIL** — `test_매핑표가_CLI_옵션_집합과_상등이다`와 `test_CLI_옵션은_30개다`.
 Task 4가 남긴 상태이고, **이 게이트가 매핑표 누락을 실제로 잡는다는 증거**다.
 
-- [ ] **단계 2: 실패하는 테스트를 더한다 (G9 · G14)**
+- [x] **단계 2: 실패하는 테스트를 더한다 (G9 · G14)**
 
 `tests/test_cli_config.py`에 넣는다.
 
@@ -1102,14 +1102,14 @@ def test_설정의_top_k만으로_트리아지가_돈다(tmp_path: Path) -> None
     assert normalize_rich_message("상위 1개") in normalize_rich_message(result.output)
 ```
 
-- [ ] **단계 3: 실패를 확인한다**
+- [x] **단계 3: 실패를 확인한다**
 
 실행: `.venv/Scripts/python.exe -m pytest tests/test_cli_config.py -q -k top_k`
 
 기대: **FAIL** — `review_top_k`가 허용 키가 아니라 exit 2가 난다
 (`test_CLI_예산이_설정의_top_k를_이긴다`·`test_설정의_top_k만으로_트리아지가_돈다`).
 
-- [ ] **단계 4: `Binding`을 더한다**
+- [x] **단계 4: `Binding`을 더한다**
 
 `src/cuesift/config/schema.py:77`(`review_threshold` 행) 바로 아래:
 
@@ -1120,7 +1120,7 @@ def test_설정의_top_k만으로_트리아지가_돈다(tmp_path: Path) -> None
 **`ALLOWED_PATHS`는 손대지 않는다.** `BINDINGS`에서 파생되므로 자동으로 는다 —
 손으로 두면 "허용은 되는데 아무 데도 안 가는 키"가 생긴다.
 
-- [ ] **단계 5: 개수 게이트를 갱신한다**
+- [x] **단계 5: 개수 게이트를 갱신한다**
 
 `tests/test_config_schema.py:29-34`:
 
@@ -1136,7 +1136,7 @@ def test_CLI_옵션은_31개다() -> None:
 **함수 이름의 숫자도 함께 고친다.** 이름이 `30개다`인 채 값만 31이면 실패했을 때
 읽는 사람이 어느 쪽을 믿을지 알 수 없다.
 
-- [ ] **단계 6: 요구사항정의서 §8.2 예시를 채우고 실행 게이트를 확인한다 (G14)**
+- [x] **단계 6: 요구사항정의서 §8.2 예시를 채우고 실행 게이트를 확인한다 (G14)**
 
 `docs/요구사항정의서.md` §8.2의 YAML 예시에서 `triage` 절을 고친다.
 
@@ -1159,7 +1159,7 @@ triage:
 이 대체 관계를 §8.2의 주석 옆에 한 줄로 남긴다 - 적어 두지 않으면 다음 사람이
 "문서 예시가 검사받는다"고 오인한다.
 
-- [ ] **단계 7: 전체 게이트와 커밋**
+- [x] **단계 7: 전체 게이트와 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check .

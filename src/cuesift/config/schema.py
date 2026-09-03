@@ -75,6 +75,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("signals", "tier1", "temperature"), (("translate", "tier1_temperature"),)),
     Binding(("triage", "review_budget"), (("translate", "review_budget"),)),
     Binding(("triage", "review_threshold"), (("translate", "review_threshold"),)),
+    Binding(("triage", "review_top_k"), (("translate", "review_top_k"),)),
     Binding(("review", "out"), (("translate", "review_out"),)),
     Binding(("review", "format"), (("translate", "review_format"),)),
     Binding(("spec", "profile"), (("check", "spec"),)),

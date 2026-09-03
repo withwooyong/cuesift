@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import normalize_rich_message
@@ -548,3 +549,99 @@ def test_진행_False가_falsy라서_삼켜지지_않는다(monkeypatch: pytest.
 
     monkeypatch.setenv("CUESIFT_PROGRESS", "1")
     assert _prefer_env_bool(None, "progress", False, "CUESIFT_PROGRESS") is False
+
+
+# --- FR-6.3 ① · FR-8.4: 설정 키 `triage.review_top_k` (설계 D3) ---
+#
+# **선별이 실제로 도는 실행으로 잰다.** 위의 `_translate`는 `--dry-run`이라
+# 트리아지를 아예 부르지 않아 정책 라벨이 화면에 나오지 않는다(실측).
+# 종료 코드만 단언하면 설정 키를 받고도 조용히 무시되는 배선 누락이 통과한다.
+
+_TEN_CUES = Path(__file__).parent / "fixtures" / "ingest" / "ten_cues.srt"
+
+
+def _risk_free(source: str) -> str:
+    """Tier 0 신호를 **하나도** 내지 않는 번역문 (`test_cli_triage.py`와 같은 규칙).
+
+    신호가 하나라도 끼면 hard fail이 검수 예산을 우회해(FR-6.2) 정책이 무엇을
+    했는지 화면에서 안 보인다 - 그러면 이 절의 개수 단언이 정책이 아니라
+    신호 개수를 재게 된다. 근거는 `test_cli_triage.py::_risk_free`에 있다.
+    """
+    return f"Line {''.join(c for c in source if c.isdigit())} of the talk"
+
+
+def _triage(cfg: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *after: str):
+    """트리아지가 **끝까지 도는** `translate`. 프로바이더만 가짜로 바꾼다.
+
+    `ten_cues.srt`(10큐)를 쓰므로 `50%`는 5개, `--review-top-k 3`은 3개로
+    갈린다 - 두 정책이 같은 개수를 내면 어느 쪽이 이겼는지 화면으로 알 수 없다.
+    """
+    monkeypatch.setattr(
+        "cuesift.cli._build_provider", lambda **_: EchoProvider(transform=_risk_free)
+    )
+    return runner.invoke(
+        app,
+        [
+            "--config",
+            str(cfg),
+            "translate",
+            str(_TEN_CUES),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            *after,
+        ],
+    )
+
+
+def test_CLI_top_k가_설정의_예산을_이긴다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 세 방식이 대등하다. 한 쌍만 고치면 나머지가 그대로 남는다.
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "50%"\n')
+    result = _triage(cfg, tmp_path, monkeypatch, "--review-top-k", "3")
+    assert result.exit_code == 0, result.output
+    # 양보가 뒤집히면 설정의 5개가 그대로 남는다. 라벨과 개수 둘 다 본다.
+    assert normalize_rich_message("상위 3개") in normalize_rich_message(result.output)
+    assert "검수 대상 3개" in result.output
+
+
+def test_CLI_예산이_설정의_top_k를_이긴다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _config(tmp_path, "triage:\n  review_top_k: 3\n")
+    result = _triage(cfg, tmp_path, monkeypatch, "--review-budget", "50%")
+    assert result.exit_code == 0, result.output
+    assert normalize_rich_message("예산 50%") in normalize_rich_message(result.output)
+    assert "검수 대상 5개" in result.output
+
+
+def test_설정에_세_정책이_전부_있으면_오류다(tmp_path: Path) -> None:
+    # 전부 설정에서 왔으면 설정 파일 자체가 모순이다. 어느 쪽을 버려도
+    # 사용자가 적은 정책 하나가 조용히 사라진다.
+    cfg = _config(
+        tmp_path,
+        'triage:\n  review_budget: "10%"\n  review_threshold: 0.5\n  review_top_k: 3\n',
+    )
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2
+    assert normalize_rich_message("설정 파일") in normalize_rich_message(result.stderr)
+
+
+def test_설정의_top_k만으로_트리아지가_돈다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설정 경유 경로를 끝까지 돌리는 유일한 게이트다 (§8.2 · FR-8.4).
+
+    `click`의 옵션 타입 검증은 명령줄 인자만이 아니라 `default_map`
+    (= `cuesift.yaml`)이 채운 값에도 걸린다. 그래서 설정에서 온 값은 본문
+    로직보다 **먼저** 터질 수 있고, 그 부류는 로더만 부르는 문서 테스트로는
+    잡히지 않는다. 배선이 없으면 키를 받고도 조용히 무시된다.
+    """
+    cfg = _config(tmp_path, "triage:\n  review_top_k: 2\n")
+    result = _triage(cfg, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert normalize_rich_message("상위 2개") in normalize_rich_message(result.output)
+    assert "검수 대상 2개" in result.output
