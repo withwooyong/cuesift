@@ -6,6 +6,7 @@ from cuesift.segment import SegmentRisk
 from cuesift.triage import (
     review_ratio,
     select_by_budget,
+    select_by_count,
     select_by_threshold,
     select_tier1_candidates,
 )
@@ -107,6 +108,85 @@ def test_ties_are_broken_deterministically():
     first = [r.segment_id for r in select_by_budget(risks, 0.34)]
     second = [r.segment_id for r in select_by_budget(list(reversed(risks)), 0.34)]
     assert first == second
+
+
+# 개수 축 (FR-6.3 ① · 설계 D4·D5·D6·D8).
+#
+# **비율 축과 같은 코드 경로(`_select_top`)를 쓴다.** 아래 테스트가 검사하는
+# hard fail 소진과 동점 처리는 두 축에서 같은 답이어야 하고, 갈리면
+# `review_ratio()`의 의미가 축마다 달라진다.
+
+
+def test_top_k는_정확히_k개를_고른다(ten):
+    result = select_by_count(ten, 3)
+    assert {r.segment_id for r in result if r.selected} == {"s9", "s8", "s7"}
+
+
+def test_top_k도_전체_목록을_반환한다(ten):
+    # `select_by_budget`과 같은 계약이다. 선별분만 내면 `review_ratio`가
+    # 언제나 1.0이 되고 그 값이 README 배수의 분모다.
+    result = select_by_count(ten, 3)
+    assert len(result) == 10
+
+
+def test_hard_fail이_k를_넘으면_선별이_k를_넘는다():
+    # D6 - hard fail은 검수 예산을 우회한다(FR-6.2). 자르면 요구사항 위반이다.
+    risks = [_risk(f"h{i}", 0.1, hard=True) for i in range(4)]
+    result = select_by_count(risks, 2)
+    assert sum(1 for r in result if r.selected) == 4
+
+
+def test_hard_fail이_k를_소진한다():
+    # 위험도가 낮은 hard fail이 그보다 높은 비-hard를 밀어낸다.
+    # 비율 축과 같은 규칙이다.
+    risks = [_risk("high", 0.9), _risk("hard", 0.05, hard=True)]
+    result = select_by_count(risks, 1)
+    assert {r.segment_id for r in result if r.selected} == {"hard"}
+
+
+def test_k가_0이면_hard_fail만_남는다():
+    # D4 - `--review-budget 0`이 이미 "hard fail만 보기"를 뜻한다.
+    # 개수 축에서만 0을 거부하면 두 축이 비대칭이 된다.
+    risks = [_risk("a", 0.9), _risk("h", 0.1, hard=True)]
+    result = select_by_count(risks, 0)
+    assert {r.segment_id for r in result if r.selected} == {"h"}
+
+
+def test_k가_세그먼트_수보다_크면_전량이다(ten):
+    # D5 - 비율 축의 100%가 허용되는 것과 같은 자리다. 오류로 만들면
+    # 세그먼트 수를 미리 아는 사람만 이 옵션을 쓸 수 있다.
+    result = select_by_count(ten, 100)
+    assert all(r.selected for r in result)
+
+
+def test_음수_k는_거부된다(ten):
+    with pytest.raises(ValueError, match="0 이상"):
+        select_by_count(ten, -1)
+
+
+def test_bool은_거부된다(ten):
+    # D8 - `bool`은 `int`의 서브클래스라 `True`가 조용히 K=1로 동작한다.
+    # 이 모듈이 NaN을 세 자리에서 명시적으로 막는 것과 같은 부류다.
+    with pytest.raises(ValueError, match="bool"):
+        select_by_count(ten, True)
+
+
+def test_top_k는_동점을_세그먼트_id로_깨뜨린다():
+    # NFR-3(재현성). 비율 축과 같은 `_sorted_desc`를 쓰므로 규칙이 같다.
+    risks = [_risk("b", 0.5), _risk("a", 0.5), _risk("c", 0.5)]
+    result = select_by_count(risks, 2)
+    assert [r.segment_id for r in result] == ["a", "b", "c"]
+    assert {r.segment_id for r in result if r.selected} == {"a", "b"}
+
+
+def test_top_k는_입력을_변형하지_않는다(ten):
+    # 예산 스윕(§6.1)이 같은 원본에 여러 정책을 차례로 적용한다.
+    select_by_count(ten, 5)
+    assert all(not r.selected for r in ten)
+
+
+def test_빈_목록은_빈_목록이다():
+    assert select_by_count([], 5) == []
 
 
 def test_threshold_selects_at_or_above(ten):

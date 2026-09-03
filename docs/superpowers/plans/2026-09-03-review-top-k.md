@@ -112,7 +112,7 @@ def ten():
     return [_risk(f"s{i}", i / 10) for i in range(10)]
 ```
 
-- [ ] **단계 1: 공통 헬퍼를 먼저 추출한다 (리팩터링, 동작 불변)**
+- [x] **단계 1: 공통 헬퍼를 먼저 추출한다 (리팩터링, 동작 불변)**
 
 `src/cuesift/triage/policy.py`의 `select_by_budget` 본문에서 quota 계산 아래를 헬퍼로 옮긴다.
 `_sorted_desc` 정의 바로 아래에 넣는다.
@@ -150,13 +150,13 @@ def _select_top(risks: Sequence[SegmentRisk], quota: int) -> list[SegmentRisk]:
     return _select_top(risks, quota)
 ```
 
-- [ ] **단계 2: 기존 테스트가 그대로 통과하는지 본다 (리팩터링 검증)**
+- [x] **단계 2: 기존 테스트가 그대로 통과하는지 본다 (리팩터링 검증)**
 
 실행: `.venv/Scripts/python.exe -m pytest tests/test_triage_policy.py -q`
 
 기대: 이전과 **같은 개수가 통과**한다. 하나라도 줄거나 실패하면 추출이 동작을 바꾼 것이다.
 
-- [ ] **단계 3: 실패하는 테스트를 쓴다 (G1~G7)**
+- [x] **단계 3: 실패하는 테스트를 쓴다 (G1~G7)**
 
 `tests/test_triage_policy.py`의 `select_by_threshold` 테스트 묶음 **앞**에 넣는다.
 
@@ -252,14 +252,14 @@ from cuesift.triage import (
 )
 ```
 
-- [ ] **단계 4: 테스트가 실패하는 것을 확인한다**
+- [x] **단계 4: 테스트가 실패하는 것을 확인한다**
 
 실행: `.venv/Scripts/python.exe -m pytest tests/test_triage_policy.py -q`
 
 기대: **수집 단계에서 `ImportError`로 죽는다** (`cannot import name 'select_by_count'`).
 통과하면 게이트가 아무것도 안 재는 것이므로 멈추고 원인을 찾는다.
 
-- [ ] **단계 5: 최소 구현을 쓴다**
+- [x] **단계 5: 최소 구현을 쓴다**
 
 `policy.py`의 `select_by_budget` **바로 아래**에 넣는다.
 
@@ -294,7 +294,7 @@ def select_by_count(risks: Sequence[SegmentRisk], k: int) -> list[SegmentRisk]:
     return _select_top(risks, k)
 ```
 
-- [ ] **단계 6: `__all__`에 넣는다**
+- [x] **단계 6: `__all__`에 넣는다**
 
 `src/cuesift/triage/__init__.py`의 임포트와 `__all__` **둘 다** 고친다.
 
@@ -318,14 +318,14 @@ __all__ = [
 ]
 ```
 
-- [ ] **단계 7: 테스트가 통과하는지 본다**
+- [x] **단계 7: 테스트가 통과하는지 본다**
 
 실행: `.venv/Scripts/python.exe -m pytest tests/test_triage_policy.py -q`
 
 기대: 전부 통과. **수집 개수가 11건 늘었는지 확인한다** — 늘지 않았으면 새 테스트가
 수집되지 않은 것이다.
 
-- [ ] **단계 8: 전체 게이트를 돌린다**
+- [x] **단계 8: 전체 게이트를 돌린다**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check .
@@ -335,7 +335,7 @@ __all__ = [
 
 기대: ruff 통과 · pytest **1754 passed**(착수 1743 + 11) · 5 deselected
 
-- [ ] **단계 9: 커밋한다**
+- [x] **단계 9: 커밋한다**
 
 ```bash
 git add src/cuesift/triage/policy.py src/cuesift/triage/__init__.py tests/test_triage_policy.py

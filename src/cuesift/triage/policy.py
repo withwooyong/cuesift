@@ -52,6 +52,28 @@ def _sorted_desc(risks: Sequence[SegmentRisk]) -> list[SegmentRisk]:
     return sorted(risks, key=lambda r: (-r.risk_score, r.segment_id))
 
 
+def _select_top(risks: Sequence[SegmentRisk], quota: int) -> list[SegmentRisk]:
+    """위험도 상위 `quota`개를 선별한 **전체 목록**을 낸다 (FR-6.3 ① · FR-6.2).
+
+    **비율 축과 개수 축이 이 함수 하나를 공유한다.** 두 축이 각자 이 로직을 갖고
+    있으면 hard fail 소진 규칙이나 동점 처리가 한쪽에서만 바뀌어 갈라지고,
+    그때 `review_ratio()`의 의미가 축마다 달라진다 - 그 값이 README 최상단
+    배수의 분모다.
+
+    **hard fail이 quota를 소진한다.** 따라서 위험도가 낮은 hard fail이 그보다
+    높은 비-hard 세그먼트를 큐에서 밀어내고, hard fail 개수가 quota를 넘으면
+    선별 개수가 quota를 **넘는다**(FR-6.2 - hard fail은 검수 예산을 우회한다).
+    가산으로 바꾸면 반대로 `review_ratio`가 요청 예산을 크게 넘어 §9.1 배수의
+    분모가 부풀고, hard fail 오탐이 지표를 직접 파괴한다 - 그쪽이 더 나쁘다.
+    """
+    ordered = _sorted_desc(risks)
+    hard_ids = {r.segment_id for r in ordered if r.hard_fail}
+    rest = [r for r in ordered if not r.hard_fail]
+    remaining = max(0, quota - len(hard_ids))
+    selected_ids = hard_ids | {r.segment_id for r in rest[:remaining]}
+    return [_copy(r, selected=r.segment_id in selected_ids) for r in ordered]
+
+
 def select_by_budget(risks: Sequence[SegmentRisk], budget_ratio: float) -> list[SegmentRisk]:
     """상위 `budget_ratio` 비율을 검수 큐에 담는다 (FR-6.3 ①).
 
@@ -76,23 +98,40 @@ def select_by_budget(risks: Sequence[SegmentRisk], budget_ratio: float) -> list[
     if not risks:
         return []
 
-    ordered = _sorted_desc(risks)
-    hard_ids = {r.segment_id for r in ordered if r.hard_fail}
-    rest = [r for r in ordered if not r.hard_fail]
-
     # 올림한다. 10건에 5% 예산이면 0.5건인데, 내림하면 0건이 되어
     # 트리아지가 아무것도 안 하고 통과한다.
     quota = math.ceil(len(risks) * budget_ratio)
+    return _select_top(risks, quota)
 
-    # **hard fail이 quota를 소진한다.** 따라서 위험도가 낮은 hard fail이 그보다
-    # 높은 비-hard 세그먼트를 큐에서 밀어낸다(위험도 0.05 hard fail 하나가
-    # quota=1을 다 먹으면 0.9짜리가 탈락한다). 가산으로 바꾸면 반대로
-    # `review_ratio`가 요청 예산을 크게 넘어 §9.1 배수의 분모가 부풀고,
-    # hard fail 오탐이 지표를 직접 파괴한다 — 그쪽이 더 나쁘다.
-    remaining = max(0, quota - len(hard_ids))
-    selected_ids = hard_ids | {r.segment_id for r in rest[:remaining]}
 
-    return [_copy(r, selected=r.segment_id in selected_ids) for r in ordered]
+def select_by_count(risks: Sequence[SegmentRisk], k: int) -> list[SegmentRisk]:
+    """위험도 상위 `k`개를 검수 큐에 담는다 (FR-6.3 ① · 설계 D4·D5·D6·D8).
+
+    `select_by_budget`과 **계약이 같다** - 전체 목록을 반환하고 선별된 것에만
+    `selected=True`를 붙이며, 입력을 변형하지 않고, 동점은 세그먼트 ID로
+    깨뜨린다(NFR-3). 다른 것은 quota를 환산 없이 `k`로 쓰는 것 하나뿐이다.
+
+    **`k`가 상한이 아니다.** hard fail이 `k`를 넘으면 선별 개수가 `k`를 넘는다
+    (FR-6.2 - hard fail은 검수 예산을 우회한다). 자르면 요구사항을 정면으로
+    어기고, 실제 개수는 `review_ratio()`와 화면의 "검수 대상 N개"가 말한다.
+
+    **`k = 0`은 "hard fail만 보기"다**(D4). `--review-budget 0`이 이미 그
+    뜻이므로 개수 축에서만 0을 거부하면 두 축이 비대칭이 된다.
+
+    **`k`가 세그먼트 수보다 크면 전량이다**(D5). 오류로 만들면 세그먼트 수를
+    미리 아는 사람만 이 함수를 쓸 수 있다.
+    """
+    # **`bool`을 먼저 막는다**(D8). `bool`은 `int`의 서브클래스라
+    # `select_by_count(risks, True)`가 아래 `k < 0`을 통과해 조용히 K=1로
+    # 동작한다. 이 모듈이 NaN을 비교 연산의 우연에 맡기지 않는 것과 같은
+    # 이유다 - 조용히 도는 잘못된 값은 게이트에 걸리지 않는다.
+    if isinstance(k, bool):
+        raise ValueError(f"k는 bool일 수 없다 (받은 값: {k})")
+    if k < 0:
+        raise ValueError(f"k는 0 이상이어야 한다 (받은 값: {k})")
+    if not risks:
+        return []
+    return _select_top(risks, k)
 
 
 def select_by_threshold(risks: Sequence[SegmentRisk], threshold: float) -> list[SegmentRisk]:

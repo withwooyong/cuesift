@@ -6,6 +6,7 @@ from cuesift.triage.policy import (
     gray_zone,
     review_ratio,
     select_by_budget,
+    select_by_count,
     select_by_threshold,
     select_tier1_candidates,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "gray_zone",
     "review_ratio",
     "select_by_budget",
+    "select_by_count",
     "select_by_threshold",
     "select_tier1_candidates",
 ]
