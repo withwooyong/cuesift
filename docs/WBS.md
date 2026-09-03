@@ -1,6 +1,6 @@
 # WBS — cuesift 작업 분해 구조
 
-> 갱신: 2026-09-02 (KST) · 기준 커밋 `a842b23`
+> 갱신: 2026-09-03 (KST) · 기준 커밋 `acb4d66`
 > 대상 마일스톤: **v0.1 (MVP)** — [요구사항정의서](요구사항정의서.md) §10
 >
 > **기준 커밋은 구조적으로 한 커밋 뒤처진다.** 자기 해시는 커밋 전에 알 수
@@ -27,21 +27,21 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 ## 현재 위치
 
 ```text
-  v0.1 대상 FR 42개 중 40개 완료 (95%)
+  v0.1 대상 FR 42개 중 41개 완료 (98%)
 
-  WP1 Tier 0 신호 엔진   ████████████████████  ✅  FR 16개 중 15개 완료 (6.3 참고)
+  WP1 Tier 0 신호 엔진   ████████████████████  ✅  FR 16개 전부 (6.3이 2026-09-03에 닫혔다)
   WP2 벤치마크 하네스     ████████████████████  ✅  (§9.1)
   WP3 융합·검출 정정      ████████████████████  ✅  FR-6.1·3.4 정정
   WP4 인제스트           ████████████████████  ✅  FR-1.1·1.3·1.5 (1.3의 나머지 반쪽은 WP9가 채웠다)
   WP5 출력              ████████████████████  ✅  FR 5개 전부 (7.1~7.5)
-  WP6 CLI 배선           ████████████████████  ✅  FR 5개 전부 (8.1~8.5) (+6.3 CLI 담당)
+  WP6 CLI 배선           ████████████████████  ✅  FR 5개 전부 (8.1~8.5) (+6.3 CLI 담당, 완료)
   WP7 번역 계층          ████████████████████  ✅  FR 8개 전부 (7a·7b 완료)
   WP8a Tier 1 라이브러리 ████████████████████  ✅  FR 3개 중 4.1 완료(4.3은 WP8b가 닫았다)
   WP8b Tier 1 CLI 배선   ████████████████████  ✅  FR-4.3 닫힘(CLI 노출) · FR-7.4도 함께
   WP9 STT               ████████████████████  ✅  FR 2개 전부 (1.2·1.4)
 ```
 
-### 30 → 32 → 34 → 35 → 36 → 37 → 39 → 40 - 산수를 남긴다
+### 30 → 32 → 34 → 35 → 36 → 37 → 39 → 40 → 41 - 산수를 남긴다
 
 | 항 | 값 | 왜 |
 | --- | --- | --- |
@@ -60,7 +60,9 @@ FR에 없는 일이 WP로 올라온다면 그것은 요구사항정의서를 먼
 | **FR-1.4** 원문 검수 필요 플래그 | **+1** | ⬜ → ✅ (2026-09-02, WP9). `Segment.source_from_stt`가 `review.json`의 두 층과 `report.html`의 요약 줄·행 배지에 도달한다. **점수에도 hard fail에도 넣지 않는다**(설계 D8) — 넣으면 STT 실행의 실제 검수 비율이 1이 되어 §9.1의 배수가 산출 불가가 된다 |
 | **소계** | **39** | 2026-09-02 |
 | **FR-8.3** `transcribe` 배선 | **+1** | ⬜ → ✅ (2026-09-02, WP6 나머지). `cuesift transcribe <영상>`과 `cuesift translate --media <영상>`이 `_transcribe_to_file` **하나를** 공유하고, `stt/retry.py`가 429·5xx에서 다시 부른다. **STT 어댑터(WP9)가 선행이었고 그것이 2026-09-02에 풀렸다** |
-| **합** | **40** | 2026-09-02 |
+| **소계** | **40** | 2026-09-02 |
+| **FR-6.3** 트리아지 정책 | **+1** | 🟡 → ✅ (2026-09-03, WP6 나머지). `--review-top-k 50`이 붙어 ①의 "상위 K개"가 닫혔다. **`k/n` 환산을 하지 않았다** - 개수 전용 함수 `select_by_count`를 라이브러리에 신설해 `ceil`과 hard fail 소진이 개수를 흔들던 자리를 없앴다(트리아지 CLI 설계 D5의 "보류"가 이렇게 풀렸다). **함께 닫힌 FR은 없다** - 이 옵션은 FR-6.3 자신의 열거 항목을 채울 뿐 다른 FR의 통로가 아니다 |
+| **합** | **41** | 2026-09-03 |
 
 **FR-1.3은 이 줄에서 개수를 움직이지 않는다 — 이미 세어져 있었기 때문이다.** WP4가
 FR-1.1·1.3·1.5를 ✅로 냈을 때 FR-1.3의 구현은 `_reject_non_subtitle`이 영상 확장자를
@@ -95,20 +97,28 @@ FR-4.3(`signals.tier1.max_ratio`)이 **이름을 걸어 지목**하고 있어 "�
 **라이브러리만 있는 상태로 WP1에서 ✅로 세어지고 있었고**, 그 둘을 실제 상태(🟡)로
 되돌리면 32 - 2 = 30이었다. 그때의 32는 실제보다 2개 높았다.
 
-**WP1이 ✅인 채로 "16개 중 15개"인 것은 모순이 아니다.** WP 기호는 **그 WP의 산출물**
+**2026-09-03에 WP1이 16개 중 16개가 됐다.** 마지막 하나가 FR-6.3이었고, `--review-top-k`가
+그 축 2를 채웠다. **아래 문단은 그 상태가 아니었던 시절의 설명이지만 지우지 않는다** -
+WP 기호와 FR 완료가 다른 축이라는 것은 개수가 맞아떨어진 뒤에도 참이고, 다음에 같은
+구멍이 생겼을 때 그것을 알아보는 근거가 여기에만 있다.
+
+**WP1이 ✅인 채로 "16개 중 15개"였던 것은 모순이 아니었다.** WP 기호는 **그 WP의 산출물**
 기준이고(WP1의 산출물은 Tier 0 신호 엔진 라이브러리이며 그것은 완료됐다), FR 완료는
 라이브러리와 CLI **두 계층이 모두 닫혀야** 성립한다. 두 축이 다르다는 것이 애초에 이
 구멍이 생긴 이유이므로, 기호를 흔들어 덮지 않고 두 축을 나란히 적는다.
 
 **이 문장의 수는 위 막대 그래프에서 기계적으로 검산된다** — 산문이 낡으면 총계가
 갈라진다. 실제로 이 자리가 `14`로 낡아 있었고(Task 8이 표를 올리면서 산문을 놓쳤다),
-`14`를 믿으면 아래 합이 **39**가 되어 표제 40과 어긋난다.
+`14`를 믿으면 합이 표제와 어긋난다.
 
 | 축 | WP1 | WP4 | WP5 | WP6 | WP7 | WP8a·b | WP9 | 합 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 전수 | 16 | 3 | 5 | 5 | 8 | 3 | 2 | **42** |
-| 완료 | **15** | 3 | **5** | **5** | 8 | **2** | **2** | **40** |
-| 완료(낡은 `14`) | 14 | 3 | 5 | 5 | 8 | 2 | 2 | **39 ✗** |
+| 완료 | **16** | 3 | **5** | **5** | 8 | **2** | **2** | **41** |
+| 완료(낡은 `15`) | 15 | 3 | 5 | 5 | 8 | 2 | 2 | **40 ✗** |
+
+**WP1 열이 2026-09-03에 15에서 16으로 올랐다** - FR-6.3이 닫히며 WP1이 담당하는 16개가
+전부 완료됐다. 개수는 번호 구간이 정하므로 배선을 낸 것이 WP6이어도 이 열에서 센다.
 
 **이 표 자체가 한 번 더 낡아 있었다 - 2026-08-28에 고쳤다.** FR-7.3이 닫히며 WP5가
 4에서 5가 됐는데 이 행이 `4`인 채로 남아 합이 **34**를 냈고, 바로 위 문단이 표제를
@@ -121,7 +131,7 @@ WP2·WP3은 FR을 새로 담당하지 않고 다른 WP의 FR을 정정한 작업
 
 | FR | 옛 셈 | 정정 후 | 지금 | 왜 |
 | --- | --- | --- | --- | --- |
-| FR-6.3 | ✅ (WP1) | 🟡 | **🟡 그대로** | ②(임계값)와 ①의 비율은 닫혔고 **"상위 K개"가 남는다.** 정정 당시에는 CLI에서 아무것도 도달할 수 없었고, 지금은 도달하되 불완전하다(축 1 → 축 2로 부족한 축이 바뀌었다) |
+| FR-6.3 | ✅ (WP1) | 🟡 | **✅ (2026-09-03)** | 정정 당시에는 CLI에서 아무것도 도달할 수 없었고(축 1 부족), 그 뒤 도달하되 불완전했으며(축 2 부족), `--review-top-k`가 "상위 K개"를 채우며 닫혔다. **옛 셈이 결과적으로 같은 ✅에 도달했으나 그때는 근거가 없었다** - 라이브러리에 개수 기반 선별 함수 자체가 없었다 |
 | FR-6.4 | ✅ (WP1) | 🟡 | **✅ (2026-08-19)** | 세그먼트별 사유를 라이브러리는 기록하지만 사용자에게 가는 통로는 FR-7.2(`review.json`)뿐이었다. **그 통로가 열리며 닫혔다** — 옛 셈이 결과적으로 같은 ✅에 도달했으나 그때는 근거가 없었다 |
 
 FR 상태의 단일 출처는 [요구사항정의서](요구사항정의서.md) §5.4·§5.6·§5.7·§5.8이고 이 표는 그
@@ -139,11 +149,11 @@ FR 상태의 단일 출처는 [요구사항정의서](요구사항정의서.md) 
 
 | 축 | 대상 | 완료 |
 | --- | --- | --- |
-| 상태 열 **있는** FR | 요구사항정의서 §5.4·§5.6·§5.7·**§5.8**의 **18개** | **16** - FR-4.1·4.3·6.1·6.2·6.4·6.5·7.1·7.2·7.3·7.4·7.5·8.1·8.2·**8.3**·8.4·8.5 (남은 둘은 FR-4.2 ⬜ · FR-6.3 🟡) |
+| 상태 열 **있는** FR | 요구사항정의서 §5.4·§5.6·§5.7·**§5.8**의 **18개** | **17** - FR-4.1·4.3·6.1·6.2·**6.3**·6.4·6.5·7.1·7.2·7.3·7.4·7.5·8.1·8.2·8.3·8.4·8.5 (남은 하나는 FR-4.2 ⬜) |
 | 상태 열 **없는** FR | v0.1 대상 42개 중 나머지 **24개**(`42 - 18`) | **24** — WP9가 FR-1.2·1.4를 닫으며 22에서 올랐다. §5.1에는 상태 열이 없으므로 그 판정의 근거는 이 문서(위 산수 표)와 [설계 스펙](superpowers/specs/2026-08-30-stt-adapter-design.md) §1.2에 있다 |
-| **합** | **42** | **40** |
+| **합** | **42** | **41** |
 
-`24 + 16 = 40`이 WP 축의 합과 같은 값을 낸다. **분모가 13/29에서 18/24로 옮겨간 것은
+`24 + 17 = 41`이 WP 축의 합과 같은 값을 낸다. **분모가 13/29에서 18/24로 옮겨간 것은
 FR이 움직여서가 아니라 §5.8에 상태 열을 넣었기 때문이다** - FR-8.1·8.2·8.4 셋이
 아래 칸에서 위 칸으로 이사했고(`11 + 3 = 14`, `24 - 2 = 22`), 총계 36은 그 이사에
 영향받지 않는다. 이사가 총계를 움직이면 어느 한쪽을 두 번 셌다는 뜻이다. **두 값이 갈라지면 산수가 아니라 판정이
@@ -175,7 +185,7 @@ translate`의 옵션으로 노출하는 배선 작업이고, 라이브러리는 
 | --- | --- | --- | --- |
 | FR-5.3 | WP1 ✅ | 도달 불가였다 | 발견 후 WP6이 `--spec ./x.yaml`을 열어 닫았다 (`f16bb0f`) |
 | FR-4.3 | WP8a ✅ | **WP8b ✅ (2026-08-27)** | WP8a 세션이 발견해 §5.4에 🟡로 표시하고 WP8b를 만들었다. **세 줄 중 착수 전에 함정을 알고 판 유일한 줄이다** - 나머지 둘은 라이브러리 절반만 세고 ✅로 닫힌 뒤에 발견했다 |
-| FR-6.3 | WP1 ✅ | 미구현 | **담당 WP가 없어 표시할 칸조차 없었다.** 이번에 WP6으로 넣었다 |
+| FR-6.3 | WP1 ✅ | **WP6 ✅ (2026-09-03)** | **담당 WP가 없어 표시할 칸조차 없었다.** WP6으로 넣은 뒤 배선(2026-08-18)과 "상위 K개"(2026-09-03) 두 번에 걸쳐 닫혔다 |
 
 한 줄로: **"라이브러리에 있다"와 "사용자가 쓸 수 있다"가 같은 FR 번호를 공유하면, FR
 번호로 나눈 WP는 앞의 절반만 세고 닫힌다.** 다음에 이 표에 네 번째 줄이 생길 것 같으면
@@ -193,7 +203,7 @@ translate`의 옵션으로 노출하는 배선 작업이고, 라이브러리는 
 | **3** | 융합·검출 정정 | 6.1 · 3.4 | ✅ | S | 1·2 | `risk/fuse.py` noisy-or · `signals/structural.py` NFKC · `bench/results/` 재측정 (`2314fc6`·`78921d4`·`57bbded`) |
 | **4** | 인제스트 | 1.1 · 1.3 · 1.5 | ✅ | S | — | `src/cuesift/ingest/{__init__,loader}.py` · `tests/fixtures/ingest/`(픽스처 12종) · `tests/test_ingest.py` · `tests/test_ingest_fixtures.py` · `tests/test_ingest_contamination.py` (`42a126f`·`bb105b7`·`be51706`·`52acf5b`·`d51cb3c`·`1cbc21a`·`26f7517`·`6ad9366`·`50e62cf`) |
 | **5** | 출력 | 7.1~7.5 | ✅ | M | 4 | **FR-7.1·7.2·7.4·7.5 완료** — `check`의 CI 종료 코드 5종(0·1·2·66·70)이 실제로 갈린다(FR-7.5, `90c6a7d`·`4899fec`·`59c7b51`·`6b45f95`). `ingest/writer.py`가 번역된 자막을 실제 파일로 낸다(FR-7.1, `4dc5571`·`eeb4d33`). **`src/cuesift/report/`가 `review.json`을 낸다**(FR-7.2, `--review-out DIR` · 파일명 `{stem}.{target}.review.json`) — `_run_triage`가 `list[str]` 대신 `TriageOutcome`을 돌려주어 **화면 요약과 파일이 같은 객체에서 갈라져 나온다**(수치가 어긋날 자리가 구조적으로 없다). 이 작업이 **WP1의 FR-6.4도 함께 닫았다** — 검수자에게 가는 통로가 이것뿐이었다. [설계 스펙](superpowers/specs/2026-08-18-review-json-design.md). **FR-7.4는 WP8b가 닫았다** — 요약 통계의 마지막 빈칸이던 "소요 토큰"에 Tier 1분이 합산되며 `cost.includes`가 `["translation", "tier1"]`이 된다(이 WP의 코드는 `report/models.py`의 `resolve_cost_scope`만 늘었다). **FR-7.3이 2026-08-28에 닫히며 이 WP가 완료됐다** — `report.html`이 원문/번역 대조·위험 구간 하이라이트·필터를 낸다(`--review-out DIR --review-format html`). **"렌더러 하나"라던 이 칸의 옛 서술은 틀렸다** — 근거였던 "`spans[].side`가 이미 실려 있다"가 스키마에만 참이었고, `grep -rn "Span(" src/`는 프로덕션 **0건**을 냈다. 그래서 범위가 수집기 3종(`glossary.miss`·`struct.number_missing`·`struct.tag_lost`)과 렌더러 **둘**이 됐고, 부수 효과로 `review.json`의 `spans`도 채워졌다(`json_report.py` 변경 0줄). **필터 동작에는 자동 게이트가 없다** - pytest는 브라우저를 띄우지 않아 live 1회(Chrome)로 확인했다. [설계 스펙](superpowers/specs/2026-08-27-report-html-design.md) |
-| **6** | CLI 배선 | 8.1~8.5 · **6.3(CLI)** | ✅ | M | 4·5 | **FR-8.1·8.2·8.4 완료** - `cuesift translate`와 `cuesift check <자막파일> --spec <프로파일>`이 둘 다 동작한다. `check`는 `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). `translate`는 캐시·재개·다국어 순차 번역·`--dry-run`이 붙었다 - 완료 개수는 이 행에서 세지만 구현 커밋은 WP7b 행에 있다. **FR-8.4 완료** (2026-08-28) - `cuesift --config c.yaml translate ...`과 현재 디렉터리 `./cuesift.yaml` 자동 탐색이 CLI 옵션 23개를 전부 파일에서 받고, CLI 인자가 이긴다. `src/cuesift/config/`(`schema.py` 매핑표 · `loader.py`)가 새로 생겼고 `cli.py`가 `ctx.default_map`에 싣는다 - **병합 코드를 쓰지 않았다**(설계 D1, 착수 조사 P1~P4). `signals.weights`만 CLI 옵션이 아니라 `ctx.obj`로 가서 `fuse()` 호출 **3곳**에 내려간다(`cli.py` 1 · `tier1.py` 2) - 둘을 빠뜨리면 `--tier1` 유무로 순위가 갈린다. 모르는 키는 종료 코드 2로 거부하고 `difflib`로 가까운 키를 제시한다(D4). **`DEFAULT_WEIGHTS`는 여전히 전부 1.0이고 튜닝하지 않는다** - 사용자가 바꿀 수 있는 것과 우리가 맞추는 것은 다르다(§11 R3). [설계 스펙](superpowers/specs/2026-08-28-config-file-design.md) · [구현 계획](superpowers/plans/2026-08-28-config-file.md) · 구현 (`1e92019`..`b6fff47`, 테스트 1379 → 1475) · 문서와 §8.2 게이트 (`7736355`·`63c4f65`, → **1480**). **FR-8.5 완료** (2026-08-29) - `--progress/--no-progress`(3상)와 `output.progress`가 붙고, `stderr.isatty()`·`CI`·`TERM=dumb` 세 신호가 대화형/비대화형을 가른다(설계 D8). 신규 모듈 `src/cuesift/progress.py`(이벤트·감지·렌더러·전역 리포터)와 라이브러리 세 함수의 `on_progress` 콜백(`translate_segments`·`collect_tier1`·`triage_with_tier1`)이 이음매다 - **착수 조사에서 진행 훅 grep이 0건이라 작업의 절반이 라이브러리 쪽이었다**(FR-7.3의 `Span` 사건과 같은 구조). `rich`를 쓰지 않는다(D6). Tier 1 진행의 분모는 **후보 수 × 수집기 수**이고(D4), 오늘은 수집기가 하나라 두 정의가 같은 값을 내므로 가짜 수집기를 등록하는 테스트가 그 정의를 코드에 고정한다. `_echo`가 쓰기 전에 진행 줄을 지운다(D11). CLI 옵션 23 → **24**. [설계 스펙](superpowers/specs/2026-08-29-progress-display-design.md) · [구현 계획](superpowers/plans/2026-08-29-progress-display.md) · 구현 (`00ebc31`..`8e89c55`, 테스트 1480 → **1547**). **FR-8.3 완료** (2026-09-02) - `cuesift transcribe <영상>`과 `cuesift translate --media <영상>`이 동작하고 **이로써 WP6이 ✅가 됐다.** 둘은 `_transcribe_to_file` **하나를** 공유한다 - 전사 규칙(출력 경로·재사용·재시도)이 두 벌이 되면 한쪽만 고치는 일이 생긴다. 신규 모듈은 **둘**이다: `src/cuesift/retry.py`(백오프 정책을 번역과 공유하도록 승격)와 `src/cuesift/stt/retry.py`(STT 재시도 루프, 이월 7번). **`cuesift/stt/__init__.py`에서 `stt/retry.py`를 export하면 순환 임포트가 된다**(실측) - 경로는 `cuesift.ingest.loader` → `cuesift.stt.provider` → `cuesift.stt.__init__` → `cuesift.stt.retry` → `cuesift.ingest.loader`(초기화 중)이고, `tests/test_stt_retry.py::test_stt_패키지가_이_모듈을_export하지_않는다`가 그 제약을 코드에 건다. **이월 1번(`_output_path`)을 같은 브랜치가 함께 닫았다** - `suffix`가 필수 키워드 인자가 되어 영상 확장자를 물려받지 않는다(설계 D6). 종료 코드 상수 `EXIT_NOT_IMPLEMENTED` → **`EXIT_SOFTWARE`로 개명**했다: 배선으로 "미구현" 발신처가 사라져 70의 뜻이 산출물의 내용 결함으로 좁혀졌다. CLI 옵션 24 → **30**(`translate` 23 · `transcribe` 4 · `check` 3), `BINDINGS` 3행 추가(`stt.base_url`·`stt.model`·`input.media`), 테스트 1700 → **1742**. [설계 스펙](superpowers/specs/2026-09-02-media-wiring-design.md) · [구현 계획](superpowers/plans/2026-09-02-media-wiring.md) (**"구현 중 바뀐 결정" 절이 본문 코드 블록보다 최신이다**) · 구현 (`6131eec`..`a842b23`). **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 - FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`). **FR-6.3의 CLI 절반도 이 WP가 담당한다**(위 "FR-6.3은 어느 WP의 것인가") - `cuesift translate --review-budget 10%`·`--review-threshold 0.7`이 `collect_all`→`fuse`→`select_by_budget`/`select_by_threshold`를 실제로 돌고 요약을 낸다. 프로파일은 대상 언어 코드로 자동 유도하며 새 옵션이 없다. **라이브러리는 한 줄도 바뀌지 않았다** - 변경이 `cli.py` 하나에 갇혀 되돌리기 단위가 작다. [설계 스펙](superpowers/specs/2026-08-18-triage-cli-design.md). **FR-6.3은 여전히 🟡다** - "상위 K개"가 남는다 |
+| **6** | CLI 배선 | 8.1~8.5 · **6.3(CLI)** | ✅ | M | 4·5 | **FR-8.1·8.2·8.4 완료** - `cuesift translate`와 `cuesift check <자막파일> --spec <프로파일>`이 둘 다 동작한다. `check`는 `spec/check.py`에 `TrackViolation`·`check_empty_cues`·`check_track`, `cli.py`에 `check()` 본문·`_resolve_profile`·`_format_report`. [설계 스펙](superpowers/specs/2026-08-03-check-cli-design.md) (`9ef4869`) · [구현 계획](superpowers/plans/2026-08-13-check-cli.md) (`5c07fc0`) · 구현 (`4899fec`, 테스트 316→481). `translate`는 캐시·재개·다국어 순차 번역·`--dry-run`이 붙었다 - 완료 개수는 이 행에서 세지만 구현 커밋은 WP7b 행에 있다. **FR-8.4 완료** (2026-08-28) - `cuesift --config c.yaml translate ...`과 현재 디렉터리 `./cuesift.yaml` 자동 탐색이 CLI 옵션 23개를 전부 파일에서 받고, CLI 인자가 이긴다. `src/cuesift/config/`(`schema.py` 매핑표 · `loader.py`)가 새로 생겼고 `cli.py`가 `ctx.default_map`에 싣는다 - **병합 코드를 쓰지 않았다**(설계 D1, 착수 조사 P1~P4). `signals.weights`만 CLI 옵션이 아니라 `ctx.obj`로 가서 `fuse()` 호출 **3곳**에 내려간다(`cli.py` 1 · `tier1.py` 2) - 둘을 빠뜨리면 `--tier1` 유무로 순위가 갈린다. 모르는 키는 종료 코드 2로 거부하고 `difflib`로 가까운 키를 제시한다(D4). **`DEFAULT_WEIGHTS`는 여전히 전부 1.0이고 튜닝하지 않는다** - 사용자가 바꿀 수 있는 것과 우리가 맞추는 것은 다르다(§11 R3). [설계 스펙](superpowers/specs/2026-08-28-config-file-design.md) · [구현 계획](superpowers/plans/2026-08-28-config-file.md) · 구현 (`1e92019`..`b6fff47`, 테스트 1379 → 1475) · 문서와 §8.2 게이트 (`7736355`·`63c4f65`, → **1480**). **FR-8.5 완료** (2026-08-29) - `--progress/--no-progress`(3상)와 `output.progress`가 붙고, `stderr.isatty()`·`CI`·`TERM=dumb` 세 신호가 대화형/비대화형을 가른다(설계 D8). 신규 모듈 `src/cuesift/progress.py`(이벤트·감지·렌더러·전역 리포터)와 라이브러리 세 함수의 `on_progress` 콜백(`translate_segments`·`collect_tier1`·`triage_with_tier1`)이 이음매다 - **착수 조사에서 진행 훅 grep이 0건이라 작업의 절반이 라이브러리 쪽이었다**(FR-7.3의 `Span` 사건과 같은 구조). `rich`를 쓰지 않는다(D6). Tier 1 진행의 분모는 **후보 수 × 수집기 수**이고(D4), 오늘은 수집기가 하나라 두 정의가 같은 값을 내므로 가짜 수집기를 등록하는 테스트가 그 정의를 코드에 고정한다. `_echo`가 쓰기 전에 진행 줄을 지운다(D11). CLI 옵션 23 → **24**. [설계 스펙](superpowers/specs/2026-08-29-progress-display-design.md) · [구현 계획](superpowers/plans/2026-08-29-progress-display.md) · 구현 (`00ebc31`..`8e89c55`, 테스트 1480 → **1547**). **FR-8.3 완료** (2026-09-02) - `cuesift transcribe <영상>`과 `cuesift translate --media <영상>`이 동작하고 **이로써 WP6이 ✅가 됐다.** 둘은 `_transcribe_to_file` **하나를** 공유한다 - 전사 규칙(출력 경로·재사용·재시도)이 두 벌이 되면 한쪽만 고치는 일이 생긴다. 신규 모듈은 **둘**이다: `src/cuesift/retry.py`(백오프 정책을 번역과 공유하도록 승격)와 `src/cuesift/stt/retry.py`(STT 재시도 루프, 이월 7번). **`cuesift/stt/__init__.py`에서 `stt/retry.py`를 export하면 순환 임포트가 된다**(실측) - 경로는 `cuesift.ingest.loader` → `cuesift.stt.provider` → `cuesift.stt.__init__` → `cuesift.stt.retry` → `cuesift.ingest.loader`(초기화 중)이고, `tests/test_stt_retry.py::test_stt_패키지가_이_모듈을_export하지_않는다`가 그 제약을 코드에 건다. **이월 1번(`_output_path`)을 같은 브랜치가 함께 닫았다** - `suffix`가 필수 키워드 인자가 되어 영상 확장자를 물려받지 않는다(설계 D6). 종료 코드 상수 `EXIT_NOT_IMPLEMENTED` → **`EXIT_SOFTWARE`로 개명**했다: 배선으로 "미구현" 발신처가 사라져 70의 뜻이 산출물의 내용 결함으로 좁혀졌다. CLI 옵션 24 → **30**(`translate` 23 · `transcribe` 4 · `check` 3), `BINDINGS` 3행 추가(`stt.base_url`·`stt.model`·`input.media`), 테스트 1700 → **1742**. [설계 스펙](superpowers/specs/2026-09-02-media-wiring-design.md) · [구현 계획](superpowers/plans/2026-09-02-media-wiring.md) (**"구현 중 바뀐 결정" 절이 본문 코드 블록보다 최신이다**) · 구현 (`6131eec`..`a842b23`). **표면 확장 `--limit N`**(위반 목록 상한, 기본 0=무제한)과 요약 이중 출력이 2026-08-16에 들어왔다 - FR을 새로 닫은 것이 아니라 FR-8.2의 출력 표면이므로 **완료 개수는 그대로다** (`fb0949d`·`b0a76ec`). **FR-6.3의 CLI 절반도 이 WP가 담당한다**(위 "FR-6.3은 어느 WP의 것인가") - `cuesift translate --review-budget 10%`·`--review-threshold 0.7`이 `collect_all`→`fuse`→`select_by_budget`/`select_by_threshold`를 실제로 돌고 요약을 낸다. 프로파일은 대상 언어 코드로 자동 유도하며 새 옵션이 없다. **라이브러리는 한 줄도 바뀌지 않았다** - 변경이 `cli.py` 하나에 갇혀 되돌리기 단위가 작다. [설계 스펙](superpowers/specs/2026-08-18-triage-cli-design.md). **FR-6.3 완료** (2026-09-03) - `--review-top-k 50`이 붙어 ①의 "상위 K개"가 닫혔다. **이번에는 라이브러리가 바뀌었다** - 개수 전용 함수 `select_by_count`를 신설하고 `select_by_budget`과 `_select_top` 공통 헬퍼를 공유시켜 hard fail 소진과 동점 처리가 두 축에서 갈리지 않게 했다. `k/n` 환산을 하지 않은 것이 D5의 "보류"를 푼 방법이다. `_resolve_exclusive`가 2자에서 **N자**로 일반화됐고(상호배타가 셋이 됐다), `policy_kind`에 `"top_k"`가, `policy_value`에 `int \| float`가 들어왔다. **`--tier1`과의 공존은 이월한다**(설계 D2) - `triage_with_tier1`에 선별 전략을 주입하는 별도 작업이 필요하다. CLI 옵션 30 → **31**, `BINDINGS` 26 → **27**(`triage.review_top_k`), 테스트 1743 → **1769**. [설계 스펙](superpowers/specs/2026-09-03-review-top-k-design.md) · [구현 계획](superpowers/plans/2026-09-03-review-top-k.md) (**"구현 중 바뀐 결정" 절이 본문 코드 블록보다 최신이다**) · 구현 (`4f2cdc2`..`acb4d66`) |
 | **7a** | 번역 엔진 | 2.1~2.6 · 2.8 | ✅ | L | 4 | **FR 7개 완료** — `src/cuesift/translate/`(`provider`·`batch`·`prompt`·`engine`·`openai_compat`)와 `Glossary.terms_in`. 배치 번역·개별 폴백·재시도·예외 분류가 동작한다. [설계 스펙](superpowers/specs/2026-08-16-translate-engine-design.md) (`10d3b31`) · [구현 계획](superpowers/plans/2026-08-16-translate-engine.md) (`8f0ea4a`) · 구현 (`f6e0ec6`..`1b4ea6e`, 테스트 499→**813**) · 공개 API·`live` 마커와 게이트 방어 3겹 (`9159791`~, 813→**859**). **네트워크를 치지 않는다** — `httpx.MockTransport`로 검증하고 실 API는 `-m live` opt-in |
 | **7b** | 번역 영속화·CLI | 2.7 | ✅ | M | 7a·5 | **FR-2.7 완료** — 캐시(NFR-3)·재개·`--dry-run`이 실제로 동작한다. `cuesift translate` 배선(FR-8.1, 완료 개수는 WP6에서 센다)과 번역된 자막 파일 쓰기(FR-7.1, 완료 개수는 WP5에서 센다)도 이 작업 패키지에서 나왔다. `python -m cuesift`를 서브프로세스로 두 번 실행해 재개를 실물로 확인했다 — Ollama `qwen2.5:3b`, 1회차 exit 0·실제 호출 1개(2.71초), 2회차 exit 0·캐시 히트 1개·**실제 호출 0개**(0.38초). [설계 스펙](superpowers/specs/2026-08-17-translate-cli-design.md) · [구현 계획](superpowers/plans/2026-08-17-translate-cli.md) (`2d17cc2`·`cb4e0c7`) · 구현 (`742ac52`..`4685be1`) |
 | **8a** | Tier 1 신호 — 라이브러리 | 4.1 · 4.3(라이브러리) | ✅ | M | **7a** | `src/cuesift/{signals/llm,signals/similarity,tier1}.py` 신규, `signals/base`·`triage/policy`·`store/cache`·`store/provider`·`risk/fuse` 수정. 자가일관성(`llm.self_consistency`, FR-4.1)이 N회 재번역의 상호 유사도를 재고, Tier 1은 컷라인 아래 회색지대에서만 후보를 고르며(`select_tier1_candidates`, FR-4.3) `collect_all()`은 tier 0만 돈다(비용 격리). **선행은 7a까지다** — 7b(재개·CLI)를 기다리지 않는다. FR-4.2(역번역)는 착수 시점 실측이 역방향 작동 위험을 보여 **보류**했다(요구사항정의서 §12 Q4). [설계 스펙](superpowers/specs/2026-08-17-tier1-signals-design.md) · [구현 계획](superpowers/plans/2026-08-17-tier1-signals.md) · live 검증(Ollama `qwen2.5:3b`, 실제 엔드포인트에서 `llm.self_consistency` 신호 실측 확인) |
@@ -341,7 +351,8 @@ v0.1 전체를 기다리지 않고 중간 산출물을 낼 수 있는 유일한 
 | ~~12~~ | ~~WP6 나머지 (**FR-8.5**)~~ | ✅ 완료 (2026-08-29). `--progress/--no-progress`와 `output.progress`가 붙고 `stderr.isatty()`·`CI`·`TERM=dumb` 감지가 대화형/비대화형 출력을 가른다. **착수 시점 기록은 "선행이 전부 풀린 유일한 항목"이었고 그것은 그때 참이었다** — FR-8.3은 STT 어댑터(WP9)가 없어 붙일 대상이 없었고, WP9가 2026-09-02에 그 대상을 냈다. 테스트 1480 → **1547**. [설계 스펙](superpowers/specs/2026-08-29-progress-display-design.md) |
 | ~~13~~ | ~~WP9 (STT 어댑터)~~ | ✅ 완료 (2026-09-02). FR-1.2·1.4를 닫고 FR-1.3의 반쪽을 채웠다. **착수 시점 기록은 "Whisper 계열 어댑터"였고 그것이 틀렸다** — 설계 D1이 파이썬 STT 패키지를 배제해 실제로는 OpenAI 호환 HTTP 어댑터가 됐다. 테스트 1582 → **1693**(태스크 7개 뒤 1678, 최종 픽스 라운드 1에서 +15). [설계 스펙](superpowers/specs/2026-08-30-stt-adapter-design.md) |
 | ~~14~~ | ~~WP6 나머지 (**FR-8.3** `transcribe` 배선)~~ | ✅ 완료 (2026-09-02). `cuesift transcribe <영상>`과 `cuesift translate --media <영상>`이 동작하고 **WP6이 ✅로 닫혔다.** 착수 시점 기록은 "함께 볼 위험은 C1 하나"였고 그것은 참이었다 - **C1(`_output_path`가 `talk.en.mp4` 안에 SRT를 넣는 조용한 실패)을 이 브랜치가 함께 닫았다**(`2cdccd6`, 이월 1번). 다만 픽스가 계획서의 처방 그대로는 아니었다: `suffix`를 키워드 인자로 더하자 함수 본문의 동명 지역 변수가 그것을 덮어써 `talk.ko.ko`가 나왔고, 지역 변수를 `lang_tag`로 개명해 닫았다(계획서 "구현 중 바뀐 결정" 1번). **이월 7번(STT 재시도 루프)도 같은 브랜치가 닫았다**(`5ede326`·`6131eec`). 함께 적혀 있던 C2(`_reject_non_subtitle`의 낡은 문구)는 2026-09-02 최종 픽스 라운드 1에서 이미 닫혀 있었다 |
-| 1 | v0.1 잔여 - **FR-6.3의 "상위 K개"**(🟡)와 **FR-4.2 역번역**(⬜) | 42개 중 40개가 닫혀 **남은 것은 둘뿐이다.** FR-6.3은 축 2(완전성)만 부족하고 담당은 WP6, FR-4.2는 §12 Q4(유사도 측정 수단)가 닫히기 전에는 착수 근거가 없다 - 벤치마크로 판정한다 |
+| ~~15~~ | ~~WP6 나머지 (**FR-6.3**의 "상위 K개")~~ | ✅ 완료 (2026-09-03). `cuesift translate --review-top-k 50`이 개수 축을 연다. **착수 시점 기록은 "축 2(완전성)만 부족"이었고 그것은 참이었다** - 다만 계획 단계의 조사가 스펙 두 줄을 뒤집었다: `html_report.py`는 `policy_label`만 읽어 손댈 것이 없었고, "실제 개수 표시"도 `cli.py`가 이미 내고 있어 만들 것이 아니라 **게이트로 고정할 것**이었다. 테스트 1743 → **1769**, CLI 옵션 30 → **31**. [설계 스펙](superpowers/specs/2026-09-03-review-top-k-design.md) |
+| 1 | v0.1 잔여 - **FR-4.2 역번역**(⬜) | 42개 중 41개가 닫혀 **남은 것은 하나뿐이다.** §12 Q4(유사도 측정 수단)가 닫히기 전에는 착수 근거가 없다 - 벤치마크로 판정한다 |
 
 **WP7b 완료로 WP7 전체가 닫혔다.** WP8a 착수의 필수 선행은 WP7a까지였고(위 도식의
 갈라진 화살표 참고) WP7b는 조건이 아니었지만, 둘 다 끝난 지금은 그 구분이 더 이상

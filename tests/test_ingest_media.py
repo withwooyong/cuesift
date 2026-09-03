@@ -495,6 +495,7 @@ def test_STT_입력이_전량_번역_실패해도_배선이_출처를_남긴다(
         translated=translated,
         budget_ratio=0.1,
         threshold=None,
+        top_k=None,
         policy_label="예산 10%",
         reporter=ProgressReporter("off"),
     )

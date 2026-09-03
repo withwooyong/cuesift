@@ -348,6 +348,9 @@ class TriageOutcome:
     usage: Usage | None
 ```
 
+**위 두 줄은 2026-09-03에 넓어졌다** - `policy_kind`에 `"top_k"`가, `policy_value`에
+`int | float`가 들어왔다. §13의 갱신 블록이 그 판정의 자리다.
+
 **`risks`는 전량이고 `selected` 플래그를 갖는다.** 선별된 것만 담으면 `review_ratio`가
 언제나 1.0이 되는데, 그 값이 README 배수의 분모라 조용히 틀리면 프로젝트의 핵심 주장이
 무너진다 — `select_by_budget`의 독스트링이 이미 같은 이유로 전체 목록을 반환한다.
@@ -497,4 +500,19 @@ FR 13개에 전수 대조하라는 요구가 요구사항정의서 §0.1에 있�
 | `report.html` (FR-7.3) | 같은 `TriageOutcome`을 렌더한다. 별도 설계 |
 | `cost.includes`에 `"tier1"` 추가 | WP8b. **그때 Tier 1 토큰 통로도 함께 뚫는다** |
 | `detail` 직렬화 계약 | v0.2 QE 플러그인이 비원시값을 넣을 수 있다. 지금은 시끄럽게 죽이는 것까지만 한다(§8.1) |
-| "상위 K개" 정책 (FR-6.3 ①의 나머지) | 라이브러리에 개수 기반 선별 함수가 없다 |
+| ~~"상위 K개" 정책 (FR-6.3 ①의 나머지)~~ | **✅ 닫혔다 (2026-09-03)** - [개수 기반 검수 예산 설계](2026-09-03-review-top-k-design.md)가 `select_by_count`를 신설하고 `--review-top-k`를 배선했다 |
+
+> **2026-09-03 갱신 - `policy`가 이 설계 이후 넓어졌다.** D7의 `{kind, value}` 구조는
+> 그대로이고, 값 도메인만 늘었다.
+>
+> | 필드 | 이 설계 | 지금 |
+> | --- | --- | --- |
+> | `policy_kind` | `"budget"` \| `"threshold"` | **`"budget"` \| `"threshold"` \| `"top_k"`** |
+> | `policy_value` | `float` | **`int \| float`** - `"top_k"`일 때만 `int`다 |
+>
+> **`json_report.py`는 한 줄도 바뀌지 않았다.** 파이썬 타입이 그대로 JSON 수치가 되므로
+> `{"kind": "top_k", "value": 50}`이 나간다 - `50.0`이 아니라 `50`이어야 하고, 그 한 글자를
+> `tests/test_cli_review_out.py`의 게이트가 고정한다. **스키마 버전은 올리지 않았다**:
+> JSON 수치에는 타입이 없어 파이썬도 JS도 `50`과 `50.0`을 가르지 않는 하위호환 확장이다.
+> **소비자는 `value`보다 `kind`를 먼저 읽어야 한다** - `0.1`과 `50`이 같은 필드에 온다.
+> D7이 애초에 `{kind, value}`로 구조화해 둔 덕분에 이 확장이 스키마를 깨지 않았다.

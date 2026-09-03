@@ -87,7 +87,7 @@ from cuesift.translate import (
     iter_batches,
     translate_segments,
 )
-from cuesift.triage import select_by_budget, select_by_threshold
+from cuesift.triage import select_by_budget, select_by_count, select_by_threshold
 
 # CI가 "미구현"과 "검수 실패"를 구분할 수 있도록 종료 코드를 분리한다.
 #
@@ -609,7 +609,8 @@ def _apply_config(ctx: typer.Context, config: Path | None) -> None:
     try:
         ctx.default_map = cfg.to_default_map()
     except ValueError as exc:
-        # `targets`의 list->str 변환만이 여기서 실패할 수 있다(설계 §5 2행).
+        # `BINDINGS`의 변환 함수가 여기서 실패한다 - `targets`의 list->str
+        # (설계 §5 2행)과 `triage.review_top_k`의 정수 검사(FR-6.3 ①).
         raise typer.BadParameter(str(exc), param_hint="--config") from exc
 
     # `signals.weights`는 CLI 옵션이 아니라 `ctx.obj`로 간다(설계 D6).
@@ -657,26 +658,55 @@ def _from_config(ctx: typer.Context | None, name: str) -> bool:
     return getattr(source, "name", "") == "DEFAULT_MAP"
 
 
-def _resolve_exclusive(ctx: typer.Context | None, message: str, first: str, second: str) -> str:
-    """상호배타 두 파라미터 중 **버릴 쪽**의 이름을 낸다 (FR-8.4 · 설계 D3).
+# 검수 정책 파라미터 이름 -> 사용자가 실제로 치는 옵션 이름 (FR-6.3 ① · 설계 D7).
+# **상호배타 오류 메시지가 이 표로 조립된다.** 파라미터 이름(`review_top_k`)을
+# 그대로 내면 사용자가 명령줄에서 그 문자열을 찾지 못한다.
+_POLICY_FLAGS = {
+    "review_budget": "--review-budget",
+    "review_threshold": "--review-threshold",
+    "review_top_k": "--review-top-k",
+}
+
+
+def _count_word(count: int) -> str:
+    """`2 -> "둘 다"`, `3 -> "셋 다"` (설계 D7).
+
+    **넷 이상은 숫자로 낸다.** 한국어 수사를 계속 늘리는 대신 여기서 끊는다 -
+    지금 상호배타의 최대 항수는 셋이고(FR-6.3의 검수 정책), 넷째가 생기는 날
+    이 함수가 `"4개 다"`로 정직하게 말하는 편이 `"셋 다"`로 거짓말하는 것보다 낫다.
+    """
+    return {2: "둘 다", 3: "셋 다"}.get(count, f"{count}개 다")
+
+
+def _resolve_exclusive(ctx: typer.Context | None, message: str, *names: str) -> list[str]:
+    """상호배타 파라미터들 중 **버릴 쪽**의 이름 목록을 낸다 (FR-8.4 · 설계 D3).
 
     **값의 존재만 보는 상호배타 검사는 설정 파일을 이길 방법을 없앤다.**
     `cuesift.yaml`에 `triage.review_threshold`가 있으면 `--review-budget`을 친
     사람이 exit 2를 받는데, 그는 `--review-threshold`를 쓴 적이 없다. 그래서
-    이 쌍에서만 FR-8.4 본문의 후반절이 통째로 뒤집힌다.
+    이 쌍들에서만 FR-8.4 본문의 후반절이 통째로 뒤집힌다.
 
-    **양보는 한쪽만 설정에서 왔을 때뿐이다.** 둘 다 설정에서 왔으면 설정
-    파일 자체가 모순이고, 어느 쪽을 버려도 사용자가 적은 정책 하나가 조용히
-    사라진다 - 그것이 D4가 막는 실패다. 둘 다 명령줄이면 원래의 사용법
-    오류다. 두 경우 모두 여기서 exit 2로 끝내므로 반환은 늘 이름 하나다.
+    **양보는 명령줄 출처가 정확히 하나일 때뿐이다.** 둘 이상이면 원래의 사용법
+    오류이고, 하나도 없으면(전부 설정에서 왔으면) 설정 파일 자체가 모순이라
+    어느 쪽을 버려도 사용자가 적은 정책 하나가 조용히 사라진다 - 그것이 D4가
+    막는 실패다. 두 경우 모두 여기서 exit 2로 끝낸다.
+
+    **반환이 `str`이 아니라 `list[str]`인 것은 3자 이상을 받기 때문이다**
+    (FR-6.3의 `--review-budget`·`--review-threshold`·`--review-top-k`).
+    호출부는 `in`으로 판정한다 - `==` 비교를 남겨 두면 문자열과 리스트를
+    비교해 **예외 없이 조용히 `False`가 되고 양보가 통째로 죽는다.**
     """
-    from_first = _from_config(ctx, first)
-    from_second = _from_config(ctx, second)
-    if from_first != from_second:
-        return first if from_first else second
-    if from_first:
+    from_config = {name: _from_config(ctx, name) for name in names}
+    from_cli = [name for name, cfg in from_config.items() if not cfg]
+    if len(from_cli) == 1:
+        return [name for name in names if name not in from_cli]
+    if not from_cli:
         # 출처를 밝힌다(설계 D7). 사용자는 이 옵션들을 친 적이 없다.
-        message = f"{message} (설정 파일에 둘 다 있다)"
+        #
+        # **개수를 `names`에서 센다.** `"둘 다"`로 고정하면 3자 호출에서
+        # 셋이 있는데 "둘"이라고 말한다 - 사용자는 자기 설정 파일에서
+        # 지우지 않은 세 번째 키를 찾지 못한다.
+        message = f"{message} (설정 파일에 {_count_word(len(names))} 있다)"
     _echo(message, err=True)
     raise typer.Exit(2)
 
@@ -1153,7 +1183,7 @@ def translate(
         typer.Option(
             "--review-budget",
             # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
-            help="사람이 검수할 상위 비율 (예: 10% 또는 0.1). --review-threshold와 함께 쓸 수 없다",
+            help="사람이 검수할 상위 비율 (예: 10% 또는 0.1). 비율·임계값·개수 중 하나만 쓴다",
         ),
     ] = None,
     review_threshold: Annotated[
@@ -1165,7 +1195,20 @@ def translate(
             # 라이브러리(`policy.py`)도 범위를 검사하지만 여기서 막으면 오류
             # 메시지가 옵션 이름을 말한다 - `--context-window`·`--limit`이
             # 이미 같은 패턴이다.
-            help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). --review-budget과 함께 쓸 수 없다",
+            help="이 위험도 이상을 검수 큐에 담는다 (0.0~1.0). 비율·임계값·개수 중 하나만 쓴다",
+        ),
+    ] = None,
+    review_top_k: Annotated[
+        int | None,
+        typer.Option(
+            "--review-top-k",
+            # 음수는 click이 막는다 - 오류 메시지가 옵션 이름을 말한다.
+            # **상한을 두지 않는다**(설계 D5). 세그먼트 수보다 큰 값은 전량
+            # 선별이고 오류가 아니다 - 상한을 두면 세그먼트 수를 미리 아는
+            # 사람만 이 옵션을 쓸 수 있다.
+            min=0,
+            # em dash(U+2014)를 쓰지 않는다(전역 제약, cp949 미인코딩).
+            help="사람이 검수할 상위 개수 (예: 50). 비율·임계값·개수 중 하나만 쓴다",
         ),
     ] = None,
     review_out: Annotated[
@@ -1182,8 +1225,7 @@ def translate(
             # 디렉터리에는 `.report.html`도 나가므로, `review.json`이라고 쓰면
             # 바로 아래 줄에 붙어 렌더되는 `--review-format`과 모순된 화면이
             # 된다(리뷰 라운드 1 실측, `--help` 41~45행).
-            help="검수 리포트 출력 디렉터리. --review-budget 또는 "
-            "--review-threshold와 함께 써야 한다",
+            help="검수 리포트 출력 디렉터리. 트리아지 정책 옵션과 함께 써야 한다",
         ),
     ] = None,
     review_format: Annotated[
@@ -1300,39 +1342,51 @@ def translate(
     if no_cache and cache_dir is not None:
         # **명령줄이 이긴다**(FR-8.4 후반절). `_resolve_exclusive`가 설정에서
         # 온 쪽을 골라 주고, 둘 다 같은 출처면 거기서 exit 2로 끝난다.
-        exclusive_loser = _resolve_exclusive(
+        losers = _resolve_exclusive(
             ctx, "--no-cache와 --cache-dir을 함께 줄 수 없다", "no_cache", "cache_dir"
         )
-        if exclusive_loser == "no_cache":
+        if "no_cache" in losers:
             no_cache = False
         else:
             cache_dir = None
-    if review_budget is not None and review_threshold is not None:
+    _policy_options = {
+        "review_budget": review_budget,
+        "review_threshold": review_threshold,
+        "review_top_k": review_top_k,
+    }
+    _given = [name for name, value in _policy_options.items() if value is not None]
+    if len(_given) > 1:
         # FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
         # 합성하면 어느 쪽이 이겼는지가 출력에서 사라진다(설계 D4).
         # 버리는 쪽은 위와 같은 규칙으로 고른다.
-        if (
-            _resolve_exclusive(
-                ctx,
-                "--review-budget과 --review-threshold는 함께 쓸 수 없다",
-                "review_budget",
-                "review_threshold",
-            )
-            == "review_budget"
-        ):
+        #
+        # **주어진 것만 넘긴다.** 셋을 늘 넘기면 주지도 않은 옵션이 양보
+        # 후보가 되어, 명령줄 하나 + 설정 하나인 정상 조합에서 "명령줄이
+        # 정확히 하나"라는 판정이 주지 않은 세 번째 때문에 흔들린다.
+        # **메시지를 `_given`으로 조립한다**(설계 D7). 셋을 고정 문자열로
+        # 나열하면 예산과 임계값만 준 사람이 자기가 친 적도 없는
+        # `--review-top-k`를 오류에서 읽고 그 옵션을 지우려 든다.
+        _flags = ", ".join(_POLICY_FLAGS[name] for name in _given)
+        losers = _resolve_exclusive(
+            ctx,
+            f"{_flags} 중 하나만 쓸 수 있다",
+            *_given,
+        )
+        # **`elif`가 아니라 `if` 셋을 나란히 둔다.** 3자에서는 버릴 것이 둘일 수 있다.
+        if "review_budget" in losers:
             review_budget = None
-        else:
+        if "review_threshold" in losers:
             review_threshold = None
+        if "review_top_k" in losers:
+            review_top_k = None
     if input is not None and media is not None:
         # **명령줄이 이긴다**(FR-8.4 후반절). `cuesift.yaml`의 `input.media`가
         # 위치 인자와 부딪히면 설정 쪽을 버린다 - 위치 인자는 `default_map`에
         # 실리지 않으므로 `_from_config`가 늘 거짓이고, 따라서 설정에서 온
         # `media`만 양보 대상이 된다. 둘 다 명령줄이면 원래의 사용법 오류라
         # `_resolve_exclusive`가 exit 2로 끝낸다.
-        if (
-            _resolve_exclusive(ctx, "자막 파일과 --media를 함께 줄 수 없다", "input", "media")
-            == "input"
-        ):
+        losers = _resolve_exclusive(ctx, "자막 파일과 --media를 함께 줄 수 없다", "input", "media")
+        if "input" in losers:
             input = None
         else:
             media = None
@@ -1379,7 +1433,12 @@ def translate(
         # 오보되고**, 사용자는 멀쩡한 자막을 고치려 든다.
         _echo("--review-threshold를 숫자로 읽지 못했다: nan", err=True)
         raise typer.Exit(2)
-    if review_out is not None and review_budget is None and review_threshold is None:
+    if (
+        review_out is not None
+        and review_budget is None
+        and review_threshold is None
+        and review_top_k is None
+    ):
         # 리포트를 낼 트리아지 정책이 없다. 조용히 무시하면 사용자는 파일이
         # 없다는 사실을 다음 단계(배포 스크립트·CI)에서야 만난다(설계 D10).
         #
@@ -1387,11 +1446,11 @@ def translate(
         # 확인한 명령이 본 실행에서 처음 실패한다. 프로파일 전량 검사가 이미
         # 같은 규칙을 따른다.
         #
-        # **세 항을 모두 본다.** `review_out is not None` 하나로 줄이면 정상
-        # 조합까지 거부하고, 뒤의 두 항 중 하나만 보면 나머지 한 방식이
-        # 사용법 오류로 막힌다 - FR-6.3은 두 방식을 대등하게 둔다.
+        # **네 항을 모두 본다.** `review_out is not None` 하나로 줄이면 정상
+        # 조합까지 거부하고, 뒤의 세 항 중 하나만 빠뜨려도 그 방식이
+        # 사용법 오류로 막힌다 - FR-6.3은 세 방식을 대등하게 둔다.
         #
-        # **뒤의 두 항은 아래 `triage_requested`의 부정과 동치다.** 그것을
+        # **뒤의 세 항은 아래 `triage_requested`의 부정과 동치다.** 그것을
         # 재사용하지 않고 여기서 다시 쓰는 이유는 순서다 - 이 검사는
         # `triage_requested`가 만들어지기 **전에** 끝나야 하고(D11: 조합 오류는
         # 파싱·프로파일 조달보다 앞이다), 변수를 앞으로 끌어올리면 그 정의가
@@ -1399,7 +1458,8 @@ def translate(
         # 동치라는 사실을 여기 적어 두는 것으로 중복을 감수한다 - 한쪽만
         # 고치면 갈라지므로, 고칠 때 둘을 함께 본다.
         _echo(
-            "--review-out은 --review-budget 또는 --review-threshold와 함께 써야 한다",
+            "--review-out은 --review-budget 또는 --review-threshold 또는 "
+            "--review-top-k와 함께 써야 한다",
             err=True,
         )
         raise typer.Exit(2)
@@ -1435,6 +1495,16 @@ def translate(
             # "후보로 뽑을 회색지대"의 정의가 서지 않는다.
             _echo(
                 "--tier1은 --review-threshold와 함께 쓸 수 없다 (--review-budget을 쓴다)",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if review_top_k is not None:
+            # `triage_with_tier1`이 `budget_ratio: float`를 필수 키워드로 받고
+            # 내부 두 자리에서 `select_by_budget`을 부른다(설계 D2). 개수를
+            # 통과시키려면 그 시그니처를 일반화해야 하는데, 이미 머지된 함수의
+            # 표면을 여기서 바꾸면 되돌리기 단위가 커진다.
+            _echo(
+                "--tier1은 --review-top-k와 함께 쓸 수 없다 (--review-budget을 쓴다)",
                 err=True,
             )
             raise typer.Exit(2)
@@ -1523,7 +1593,9 @@ def translate(
             )
             raise typer.Exit(2)
 
-    triage_requested = review_budget is not None or review_threshold is not None
+    triage_requested = (
+        review_budget is not None or review_threshold is not None or review_top_k is not None
+    )
 
     # **파싱을 여기서 한다 - `_translate_one` 안이 아니다.** 예산 문자열이
     # 틀렸으면 LLM을 부르기 전에 exit 2로 끝나야 한다. 루프 안에서 파싱하면
@@ -1547,9 +1619,12 @@ def translate(
         # 사용자가 준 원문을 라벨에 쓴다 - 파싱 결과(`0.1`)를 찍으면 `10%`라고
         # 쓴 사람이 자기 입력을 화면에서 못 찾는다. 이해가 맞았는지는 별도로
         # 출력되는 "실제 N%"가 말한다.
-        policy_label = (
-            f"예산 {review_budget}" if review_budget is not None else f"임계값 {review_threshold}"
-        )
+        if review_budget is not None:
+            policy_label = f"예산 {review_budget}"
+        elif review_threshold is not None:
+            policy_label = f"임계값 {review_threshold}"
+        else:
+            policy_label = f"상위 {review_top_k}개"
 
     resolved_base, resolved_model, api_key = _resolve_llm(ctx, base_url, model)
     targets = [lang.strip() for lang in to.split(",") if lang.strip()]
@@ -1800,6 +1875,7 @@ def translate(
                 triage_profile=profiles.get(target),
                 budget_ratio=budget_ratio,
                 threshold=review_threshold,
+                top_k=review_top_k,
                 policy_label=policy_label,
                 review_out=review_out,
                 review_format=review_format,
@@ -2121,6 +2197,7 @@ def _translate_one(
     triage_profile: SpecProfile | None,
     budget_ratio: float | None,
     threshold: float | None,
+    top_k: int | None,
     policy_label: str | None,
     review_out: Path | None,
     review_format: ReviewFormat,
@@ -2344,6 +2421,7 @@ def _translate_one(
                 translated=translated,
                 budget_ratio=budget_ratio,
                 threshold=threshold,
+                top_k=top_k,
                 policy_label=policy_label,
                 tier1=tier1,
                 reporter=reporter,
@@ -2795,6 +2873,7 @@ def _run_triage(
     translated: TranslationResult,
     budget_ratio: float | None,
     threshold: float | None,
+    top_k: int | None,
     policy_label: str,
     reporter: ProgressReporter,
     tier1: _Tier1Settings | None = None,
@@ -2840,11 +2919,15 @@ def _run_triage(
         policy_kind, policy_value = "budget", budget_ratio
     elif threshold is not None:
         policy_kind, policy_value = "threshold", threshold
+    elif top_k is not None:
+        # **정수를 그대로 싣는다**(설계 D7). float로 바꾸면 `review.json`에
+        # `"value": 50.0`이 나가 개수를 소수로 적는 파일을 도구가 읽는다.
+        policy_kind, policy_value = "top_k", top_k
     else:
         # 호출자가 트리아지를 요청하지 않았는데 여기 도달한 것이다.
         # 조용히 빈 결과를 내면 "트리아지가 돌았고 아무것도 안 걸렸다"로
         # 읽혀 미배선을 정상으로 오인한다.
-        raise ValueError("budget_ratio와 threshold가 둘 다 None이다")
+        raise ValueError("budget_ratio와 threshold와 top_k가 전부 None이다")
 
     # **`kept`가 아니라 `translated.segments`에서 읽는다** (FR-1.4 · 설계 D8).
     # `kept`는 번역 실패분이 빠진 집합이라 전량 실패 실행에서 비고, 빈 이터러블
@@ -3014,6 +3097,8 @@ def _run_triage(
     # 정상이라 어떤 게이트에도 걸리지 않는다.
     if policy_kind == "budget":
         scored = select_by_budget(risks, policy_value)
+    elif policy_kind == "top_k":
+        scored = select_by_count(risks, policy_value)
     else:
         scored = select_by_threshold(risks, policy_value)
 
@@ -3027,9 +3112,10 @@ def _run_triage(
 def _parse_review_budget(raw: str) -> float:
     """`--review-budget` 값을 비율로 바꾼다 (FR-6.3 ① · 설계 §5.2).
 
-    `10%`와 `0.1`을 모두 받는다. **개수 지정(`50`)은 범위 밖으로 거부된다** -
-    라이브러리에 개수 기반 선별 함수가 없고, `k/n`으로 환산하면 `ceil`과 hard
-    fail 소진 때문에 정확히 K개가 나오지 않아 옵션이 거짓말을 한다(설계 D5).
+    `10%`와 `0.1`을 모두 받는다. **개수 지정(`50`)은 범위 밖으로 거부되고
+    `--review-top-k`를 가리킨다** - 개수 축은 `select_by_count`가 환산 없이
+    받는 별도 옵션이다(FR-6.3 ① · 설계 D5). 여기서 `50`을 100으로 나눠
+    받아 주면 50개를 원한 사람이 조용히 50%를 받는다.
 
     **`1`은 100%다.** `%` 유무만 다르고 나머지는 `0.0 <= x <= 1.0` 한 규칙이라
     그 결과다. 규칙을 좁혀(`%` 없는 값에 소수점을 요구해) `1`을 거부하면 `0`도
@@ -3053,7 +3139,8 @@ def _parse_review_budget(raw: str) -> float:
     if not 0.0 <= value <= 1.0:
         raise ValueError(
             f"--review-budget이 0~100% 범위를 벗어났다: {raw!r}. "
-            "개수 지정은 v0.1 범위 밖이다 - 비율로 지정하라 (예: 10%)"
+            "비율로 지정하거나(예: 10%) 개수로 지정하려면 --review-top-k를 쓴다 "
+            "(예: --review-top-k 50)"
         )
     return value
 

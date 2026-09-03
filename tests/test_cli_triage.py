@@ -110,9 +110,44 @@ def test_NaN과_inf는_범위_검사가_거부한다(raw: str) -> None:
         _parse_review_budget(raw)
 
 
-def test_개수를_주면_비율로_지정하라고_안내한다() -> None:
-    with pytest.raises(ValueError, match="비율로 지정하라"):
+def test_개수를_주면_review_top_k를_안내한다() -> None:
+    """**`--review-top-k`를 이름으로 말해야 한다** (FR-6.3 ①).
+
+    `select_by_count`가 생기기 전에는 "개수 지정은 v0.1 범위 밖이다"가 참이었다.
+    지금은 거짓이고, 그 문구가 남으면 CLI가 **이 저장소가 방금 만든 기능을
+    없다고 말한다.** `50`을 친 사람은 십중팔구 50개를 원한 사람이다.
+    """
+    with pytest.raises(ValueError, match="--review-top-k"):
         _parse_review_budget("50")
+
+
+def test_세_정책_옵션의_help가_같은_배타_문구를_말한다() -> None:
+    """세 옵션이 **서로 다른 부분집합**을 말하면 금지된 조합이 어디에도 안 적힌다.
+
+    실제로 `--review-threshold 0.5 --review-top-k 5`가 exit 2인데 두 옵션의
+    help 어디에도 그 금지가 없었다. 셋이 **같은 문구**를 쓰면 어느 것을
+    읽어도 같은 제약을 만난다.
+
+    **렌더가 아니라 click 파라미터를 본다.** `--help` 출력에 단언하면 rich가
+    폭에 따라 문구를 접어 이 게이트가 폭 테스트가 된다 - 옵션 이름이 쪼개진
+    사건과 같은 부류다. 렌더 폭은 `test_cli_progress.py`가 따로 잰다.
+    """
+    import typer
+
+    translate = typer.main.get_command(app).commands["translate"]
+    helps = {
+        param.name: param.help
+        for param in translate.params
+        if param.name in {"review_budget", "review_threshold", "review_top_k"}
+    }
+    assert len(helps) == 3, helps
+    suffixes = {text.split(". ")[-1] for text in helps.values()}
+    # 하나라도 다른 상대를 나열하면 집합의 크기가 1이 아니다.
+    assert len(suffixes) == 1, helps
+    # 문구가 셋을 다 가리켜야 한다 - "둘 중 하나"로 좁히면 대칭이어도 거짓이다.
+    suffix = suffixes.pop()
+    for word in ("비율", "임계값", "개수"):
+        assert word in suffix, suffix
 
 
 def test_두_정책을_함께_주면_exit_2다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,6 +174,10 @@ def test_두_정책을_함께_주면_exit_2다(tmp_path: Path, monkeypatch: pyte
     # 두 옵션 이름이 모두 나와야 사용자가 무엇을 지울지 안다.
     assert "--review-budget" in result.stderr
     assert "--review-threshold" in result.stderr
+    # **치지 않은 세 번째를 말하지 않는다**(설계 D7). 고정 문자열로 셋을
+    # 나열하면 여기가 실패한다 - 사용자는 자기 명령줄에 없는 옵션을
+    # 오류에서 읽고 그것을 지우려 든다.
+    assert "--review-top-k" not in result.stderr
 
 
 def test_예산_파싱_실패는_exit_2다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,7 +186,9 @@ def test_예산_파싱_실패는_exit_2다(tmp_path: Path, monkeypatch: pytest.M
     result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-budget", "50"))
 
     assert result.exit_code == 2, result.output
-    assert "비율로 지정하라" in result.output
+    # 화면에도 개수 축의 옵션 이름이 나와야 한다 - 독스트링만 고치면
+    # 사용자가 보는 문구는 그대로 "v0.1 범위 밖"에 머문다.
+    assert "--review-top-k" in result.output
 
 
 def test_프로파일이_없는_언어는_경고하고_건너뛴다(
@@ -885,3 +926,100 @@ def test_트리아지_요약의_무음_줄은_계층을_나열한다() -> None:
     assert len(줄) == 1
     assert "tier1" in 줄[0]
     assert "translation" not in 줄[0], "무음이 아닌 계층까지 나열하면 범인이 흐려진다"
+
+
+# 개수 축 CLI (FR-6.3 ① · 설계 D1·D2·D6).
+
+
+def test_top_k와_예산을_함께_주면_거부된다(tmp_path: Path) -> None:
+    # D1·D4 - FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
+    result = runner.invoke(
+        app, _args(tmp_path, "minimal.srt", "--review-budget", "10%", "--review-top-k", "5")
+    )
+    assert result.exit_code == 2, result.output
+
+
+def test_top_k와_임계값을_함께_주면_거부된다(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, _args(tmp_path, "minimal.srt", "--review-threshold", "0.5", "--review-top-k", "5")
+    )
+    assert result.exit_code == 2, result.output
+
+
+def test_top_k와_tier1은_함께_쓸_수_없다(tmp_path: Path) -> None:
+    """D2 - `triage_with_tier1`이 `budget_ratio: float`를 필수로 받는다.
+
+    **메시지가 대안을 말해야 한다.** `--review-threshold`의 같은 거부가
+    이미 `(--review-budget을 쓴다)`를 달고 있고, 그것이 없으면 사용자는
+    Tier 1을 포기해야 하는 줄 안다.
+    """
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-top-k", "5", "--tier1"))
+
+    assert result.exit_code == 2, result.output
+    assert normalize_rich_message("--review-budget") in normalize_rich_message(result.output)
+
+
+def test_음수_top_k는_거부된다(tmp_path: Path) -> None:
+    # `min=0`을 typer에 주므로 click이 막고, 메시지가 옵션 이름을 말한다.
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-top-k", "-1"))
+
+    assert result.exit_code == 2, result.output
+
+
+def test_top_k가_정확히_k개를_고른다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """옵션을 받고도 배선이 없으면 조용히 무시된다 - 이 단언이 그것을 막는다.
+
+    `_risk_free`가 신호를 하나도 내지 않으므로 hard fail이 0이고,
+    따라서 선별 개수가 정확히 K다(D6의 잔여분이 발동하지 않는 조건).
+    """
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "3"))
+
+    assert result.exit_code == 0, result.output
+    assert "검수 대상 3개" in result.output
+
+
+def test_top_k_라벨이_화면에_나온다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 사용자가 준 값을 그대로 되돌려 준다. 파싱 결과를 찍으면 자기 입력을
+    # 화면에서 못 찾는다.
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "2"))
+
+    assert "상위 2개" in result.output
+
+
+def test_k가_세그먼트_수보다_커도_동작한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # D5 - 오류로 만들면 세그먼트 수를 미리 아는 사람만 이 옵션을 쓸 수 있다.
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "100"))
+
+    assert result.exit_code == 0, result.output
+    assert "검수 대상 10개" in result.output
+
+
+def test_hard_fail이_top_k를_넘으면_선별도_k를_넘는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D6 - hard fail은 검수 예산을 우회한다(FR-6.2).
+
+    **`cli.py`가 이미 `검수 대상 N개 (실제 x%)`를 출력한다**(착수 조사 P2).
+    새로 만들 표시가 아니라 고정할 그물이다 - 누군가 K로 자르는 "개선"을
+    넣으면 이 단언이 죽는다.
+
+    `EchoProvider`의 **기본** transform(`f"EN:{s}"`)은 한글 원문을 남겨
+    `struct.untranslated`가 10큐 전부 hard fail을 낸다(실측, `_risk_free`
+    독스트링). 그래서 `--review-top-k 1`인데 선별이 10개다.
+
+    **종료 코드를 단언하지 않는다.** 이 테스트가 재려는 것은 선별 개수가
+    K로 잘리지 않는다는 사실 하나이고, hard fail이 `translate`의 종료
+    코드를 바꾸는지는 다른 테스트의 몫이다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "1"))
+
+    assert "검수 대상 10개" in result.output
+    assert "실제 100.0%" in result.output

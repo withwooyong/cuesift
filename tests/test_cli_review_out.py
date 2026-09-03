@@ -914,3 +914,42 @@ def test_프로파일_없는_언어는_리포트도_내지_않는다(
         "프로파일이 없다는 경고가 나가야 한다"
     )
     assert sorted(p.name for p in reports.glob("*.review.json")) == ["minimal.en.review.json"]
+
+
+def test_top_k의_policy_value가_정수로_직렬화된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`review.json`의 `policy.value`는 개수 축에서 정수다 (설계 D7).
+
+    **`50.0`이 아니라 `50`이어야 한다.** `float`로 두면 개수를 소수로 적는
+    파일을 도구가 읽는다. 파이썬 타입이 그대로 JSON 수치가 되므로 이 단언은
+    직렬화 코드가 아니라 **배선이 무엇을 실었는지**를 잰다 - 그래서
+    `TriageOutcome`을 손으로 만들지 않고 CLI를 실제로 돌린다.
+
+    **파이썬은 타입 주석을 강제하지 않으므로 이 테스트가 재는 것은
+    `models.py`의 주석이 아니라 호출부가 정수를 넘기는 계약이다.**
+    `cli.py`의 `policy_kind, policy_value = "top_k", top_k`가
+    `float(top_k)`로 바뀌면 여기서 잡힌다(실측: 그 변이로 FAIL 1건).
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(
+        app,
+        _args(
+            tmp_path,
+            "minimal.srt",
+            "--review-top-k",
+            "3",
+            "--review-out",
+            str(tmp_path / "reports"),
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    # **`policy`는 최상위가 아니라 `summary` 밑이다**(`json_report.build_review`).
+    # 계획서의 코드 블록은 최상위로 적었고 그대로 쓰면 `KeyError`가 난다.
+    policy = _read_review(tmp_path)["summary"]["policy"]
+    assert policy == {"kind": "top_k", "value": 3}
+    # **`== 3`만으로는 부족하다.** 파이썬에서 `3.0 == 3`이 참이라
+    # `3.0`이 나가도 위 단언이 통과한다.
+    assert isinstance(policy["value"], int)

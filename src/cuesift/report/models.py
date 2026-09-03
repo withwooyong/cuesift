@@ -206,6 +206,10 @@ class TriageOutcome:
     kind/value는 정규화된 값이라 `review.json`이 쓴다. 라벨을 kind/value에서
     재생성하면 화면 출력이 `"예산 10.0%"`로 바뀐다.
 
+    **`policy_kind`는 세 축이다** - `"budget"`(비율) · `"threshold"`(점수) ·
+    `"top_k"`(개수, FR-6.3 ①). 앞의 둘만 적으면 개수 축이 문서에 없는 값으로
+    `review.json`에 나가고, 소비자는 `value`를 비율로 읽어 100배 틀린다.
+
     **`segments`는 `risks`와 같은 집합이다**(번역 실패분이 빠진 것). `SegmentRisk`는
     `segment_id`만 갖고 타임코드·원문·번역문은 `Segment`에 있어 FR-7.2가 요구한
     필드를 채우려면 둘이 함께 필요하다.
@@ -215,8 +219,10 @@ class TriageOutcome:
     target_lang: str
     profile_name: str
     policy_label: str
-    policy_kind: str  # "budget" | "threshold"
-    policy_value: float
+    policy_kind: str  # "budget" | "threshold" | "top_k"
+    # **개수 축은 정수를 싣는다**(설계 D7). `float`로 좁히면 `review.json`에
+    # `"value": 50.0`이 나가 개수를 소수로 적는 파일을 도구가 읽는다.
+    policy_value: int | float
     risks: tuple[SegmentRisk, ...]
     segments: tuple[Segment, ...]
     excluded_failures: int

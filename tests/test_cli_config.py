@@ -10,9 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.fakes.provider import EchoProvider
 from typer.testing import CliRunner
 
 from conftest import normalize_rich_message
+from cuesift import cli
 from cuesift.cli import app
 
 runner = CliRunner()
@@ -108,6 +110,25 @@ def test_진리표_둘_다_있으면_CLI가_이긴다(tmp_path: Path) -> None:
 # 통째로 뒤집힌다.
 
 
+def _spy_dry_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """dry-run 리포트가 실제로 받은 인자를 붙잡는다 (FR-8.4 · 설계 D3).
+
+    **`exit_code == 0`만 보는 상호배타 회귀는 양보가 뒤집힌 것을 못 잡는다.**
+    해소된 `cache_dir`은 어디에도 출력되지 않으므로 두 갈래가 같은 화면과 같은
+    종료 코드를 낸다 - 실측으로 호출부를 `in`에서 `==`로 되돌려도 이 파일의
+    회귀가 전부 통과했다. 그래서 화면이 아니라 인자를 본다.
+    """
+    seen: dict[str, object] = {}
+    original = cli._dry_run_report
+
+    def spy(**kwargs: object):
+        seen.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(cli, "_dry_run_report", spy)
+    return seen
+
+
 def test_CLI_예산이_설정의_임계값을_이긴다(tmp_path: Path) -> None:
     cfg = _config(tmp_path, "triage:\n  review_threshold: 0.5\n")
     result = _translate(cfg, _srt(tmp_path), "--review-budget", "10%")
@@ -116,21 +137,37 @@ def test_CLI_예산이_설정의_임계값을_이긴다(tmp_path: Path) -> None:
 
 def test_CLI_임계값이_설정의_예산을_이긴다(tmp_path: Path) -> None:
     # 반대 방향도 본다. 한쪽만 고치면 다른 쪽이 그대로 남는다.
-    cfg = _config(tmp_path, 'triage:\n  review_budget: "10%"\n')
+    #
+    # **설정의 예산을 범위 밖 값으로 둔다.** `"10%"`로 두면 양보가 반대로
+    # 뒤집혀 예산이 살아남아도 정상 값이라 exit 0이 그대로 나온다 - 관측이
+    # 없는 단언이다. `"500%"`는 `_parse_review_budget`이 거부하므로 예산이
+    # 살아남는 순간 exit 2가 되어 뒤집힘이 종료 코드로 드러난다.
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "500%"\n')
     result = _translate(cfg, _srt(tmp_path), "--review-threshold", "0.5")
     assert result.exit_code == 0, result.output
 
 
-def test_CLI_캐시_끄기가_설정의_캐시_경로를_이긴다(tmp_path: Path) -> None:
+def test_CLI_캐시_끄기가_설정의_캐시_경로를_이긴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _spy_dry_run(monkeypatch)
     cfg = _config(tmp_path, "cache:\n  dir: .c\n")
     result = _translate(cfg, _srt(tmp_path), "--no-cache")
     assert result.exit_code == 0, result.output
+    # `--no-cache`가 이겼으므로 설정의 `.c`가 아니라 `None`이 실려야 한다.
+    assert seen["cache_dir"] is None
 
 
-def test_CLI_캐시_경로가_설정의_캐시_끄기를_이긴다(tmp_path: Path) -> None:
+def test_CLI_캐시_경로가_설정의_캐시_끄기를_이긴다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _spy_dry_run(monkeypatch)
     cfg = _config(tmp_path, "cache:\n  enabled: false\n")
     result = _translate(cfg, _srt(tmp_path), "--cache-dir", str(tmp_path / "c"))
     assert result.exit_code == 0, result.output
+    # 명령줄의 경로가 이겼으므로 캐시가 켜진 채 그 경로를 봐야 한다.
+    # 양보가 뒤집히면 `no_cache`가 살아남아 여기가 `None`이 된다.
+    assert seen["cache_dir"] == tmp_path / "c"
 
 
 def test_설정끼리의_상호배타는_여전히_오류다(tmp_path: Path) -> None:
@@ -147,6 +184,19 @@ def test_설정끼리의_캐시_상호배타도_여전히_오류다(tmp_path: Pa
     result = _translate(cfg, _srt(tmp_path))
     assert result.exit_code == 2
     assert normalize_rich_message("설정 파일") in normalize_rich_message(result.stderr)
+    # 2자 쌍은 여전히 "둘 다"다. 개수 문구를 `names`로 세면서 이쪽이
+    # 깨지면 3자 일반화가 기존 쌍의 메시지를 망친 것이다.
+    assert normalize_rich_message("둘 다") in normalize_rich_message(result.stderr)
+
+
+def test_설정에_두_정책만_있으면_문구가_둘_다다(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "10%"\n  review_threshold: 0.5\n')
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2
+    stderr = normalize_rich_message(result.stderr)
+    assert normalize_rich_message("둘 다") in stderr
+    # **주지 않은 세 번째를 말하지 않는다**(설계 D7).
+    assert "--review-top-k" not in stderr
 
 
 def test_명령줄끼리의_상호배타는_여전히_오류다(tmp_path: Path) -> None:
@@ -157,6 +207,30 @@ def test_명령줄끼리의_상호배타는_여전히_오류다(tmp_path: Path) 
     assert normalize_rich_message("설정 파일") not in normalize_rich_message(budget.stderr)
     cache = _translate(cfg, _srt(tmp_path), "--no-cache", "--cache-dir", str(tmp_path / "c"))
     assert cache.exit_code == 2
+
+
+def test_CLI_자막이_설정의_media를_이긴다(tmp_path: Path) -> None:
+    """`input`/`media` 쌍에도 같은 양보가 걸린다 (FR-8.4 후반절).
+
+    **이 쌍만 회귀 테스트가 없었다.** 위치 인자는 `default_map`에 실리지
+    않으므로 `_from_config("input")`은 늘 거짓이고, 따라서 설정에서 온
+    `media`가 양보 대상이 된다. 양보가 죽으면 설정 파일을 쓰는 사용자가
+    명령줄로 준 자막을 잃는다 - FR-8.3의 리뷰가 HIGH로 잡았던 실패다.
+    """
+    cfg = _config(tmp_path, "input:\n  media: 없는영상.mp4\n")
+    result = _translate(cfg, _srt(tmp_path))
+    # 자막이 이겼으므로 없는 영상 파일에 닿지 않고 정상 종료한다.
+    assert result.exit_code == 0, result.output
+
+
+def test_명령줄_자막과_media는_여전히_오류다(tmp_path: Path) -> None:
+    # 둘 다 명령줄이면 원래의 사용법 오류다. 양보를 넓히면 이것이 통과한다.
+    cfg = _config(tmp_path, "source_lang: ko\n")
+    media = tmp_path / "v.mp4"
+    media.write_bytes(b"\x00")
+    result = _translate(cfg, _srt(tmp_path), "--media", str(media))
+    assert result.exit_code == 2
+    assert normalize_rich_message("함께 줄 수 없다") in normalize_rich_message(result.stderr)
 
 
 def test_설정이_필수_옵션을_만족시킨다(tmp_path: Path) -> None:
@@ -488,3 +562,139 @@ def test_진행_False가_falsy라서_삼켜지지_않는다(monkeypatch: pytest.
 
     monkeypatch.setenv("CUESIFT_PROGRESS", "1")
     assert _prefer_env_bool(None, "progress", False, "CUESIFT_PROGRESS") is False
+
+
+# --- FR-6.3 ① · FR-8.4: 설정 키 `triage.review_top_k` (설계 D3) ---
+#
+# **선별이 실제로 도는 실행으로 잰다.** 위의 `_translate`는 `--dry-run`이라
+# 트리아지를 아예 부르지 않아 정책 라벨이 화면에 나오지 않는다(실측).
+# 종료 코드만 단언하면 설정 키를 받고도 조용히 무시되는 배선 누락이 통과한다.
+
+_TEN_CUES = Path(__file__).parent / "fixtures" / "ingest" / "ten_cues.srt"
+
+
+def _risk_free(source: str) -> str:
+    """Tier 0 신호를 **하나도** 내지 않는 번역문 (`test_cli_triage.py`와 같은 규칙).
+
+    신호가 하나라도 끼면 hard fail이 검수 예산을 우회해(FR-6.2) 정책이 무엇을
+    했는지 화면에서 안 보인다 - 그러면 이 절의 개수 단언이 정책이 아니라
+    신호 개수를 재게 된다. 근거는 `test_cli_triage.py::_risk_free`에 있다.
+    """
+    return f"Line {''.join(c for c in source if c.isdigit())} of the talk"
+
+
+def _triage(cfg: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *after: str):
+    """트리아지가 **끝까지 도는** `translate`. 프로바이더만 가짜로 바꾼다.
+
+    `ten_cues.srt`(10큐)를 쓰므로 `50%`는 5개, `--review-top-k 3`은 3개로
+    갈린다 - 두 정책이 같은 개수를 내면 어느 쪽이 이겼는지 화면으로 알 수 없다.
+    """
+    monkeypatch.setattr(
+        "cuesift.cli._build_provider", lambda **_: EchoProvider(transform=_risk_free)
+    )
+    return runner.invoke(
+        app,
+        [
+            "--config",
+            str(cfg),
+            "translate",
+            str(_TEN_CUES),
+            "--to",
+            "en",
+            "--out",
+            str(tmp_path),
+            "--base-url",
+            "http://h/v1",
+            "--model",
+            "m1",
+            "--no-cache",
+            *after,
+        ],
+    )
+
+
+def test_CLI_top_k가_설정의_예산을_이긴다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 세 방식이 대등하다. 한 쌍만 고치면 나머지가 그대로 남는다.
+    cfg = _config(tmp_path, 'triage:\n  review_budget: "50%"\n')
+    result = _triage(cfg, tmp_path, monkeypatch, "--review-top-k", "3")
+    assert result.exit_code == 0, result.output
+    # 양보가 뒤집히면 설정의 5개가 그대로 남는다. 라벨과 개수 둘 다 본다.
+    assert normalize_rich_message("상위 3개") in normalize_rich_message(result.output)
+    assert "검수 대상 3개" in result.output
+
+
+def test_CLI_예산이_설정의_top_k를_이긴다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _config(tmp_path, "triage:\n  review_top_k: 3\n")
+    result = _triage(cfg, tmp_path, monkeypatch, "--review-budget", "50%")
+    assert result.exit_code == 0, result.output
+    assert normalize_rich_message("예산 50%") in normalize_rich_message(result.output)
+    assert "검수 대상 5개" in result.output
+
+
+def test_설정에_세_정책이_전부_있으면_오류다(tmp_path: Path) -> None:
+    # 전부 설정에서 왔으면 설정 파일 자체가 모순이다. 어느 쪽을 버려도
+    # 사용자가 적은 정책 하나가 조용히 사라진다.
+    cfg = _config(
+        tmp_path,
+        'triage:\n  review_budget: "10%"\n  review_threshold: 0.5\n  review_top_k: 3\n',
+    )
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2
+    stderr = normalize_rich_message(result.stderr)
+    assert normalize_rich_message("설정 파일") in stderr
+    # **"둘 다"가 아니라 "셋 다"다.** 셋이 있는데 "둘"이라고 말하면
+    # 사용자는 지우지 않은 세 번째 키를 찾지 못한다.
+    assert normalize_rich_message("셋 다") in stderr
+    for flag in ("--review-budget", "--review-threshold", "--review-top-k"):
+        assert normalize_rich_message(flag) in stderr
+
+
+def test_설정의_top_k만으로_트리아지가_돈다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설정 경유 경로를 끝까지 돌리는 유일한 게이트다 (§8.2 · FR-8.4).
+
+    `click`의 옵션 타입 검증은 명령줄 인자만이 아니라 `default_map`
+    (= `cuesift.yaml`)이 채운 값에도 걸린다. 그래서 설정에서 온 값은 본문
+    로직보다 **먼저** 터질 수 있고, 그 부류는 로더만 부르는 문서 테스트로는
+    잡히지 않는다. 배선이 없으면 키를 받고도 조용히 무시된다.
+    """
+    cfg = _config(tmp_path, "triage:\n  review_top_k: 2\n")
+    result = _triage(cfg, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert normalize_rich_message("상위 2개") in normalize_rich_message(result.output)
+    assert "검수 대상 2개" in result.output
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        # click의 `IntRange`가 `int(2.5) == 2`로 **먼저** 변환해 버리므로
+        # 이 넷은 전부 exit 0으로 돌았다. `0.9`와 `false`는 `k=0`이 되어
+        # **트리아지가 켜진 채 빈 검수 큐**를 냈다 - 사용자는 "정책을 껐다"고
+        # 생각한 자리에서 조용히 아무것도 받지 못한다.
+        ("2.5", "2.5"),
+        ("0.9", "0.9"),
+        ("true", "True"),
+        ("false", "False"),
+    ],
+)
+def test_설정의_top_k가_정수가_아니면_exit_2다(tmp_path: Path, raw: str, shown: str) -> None:
+    cfg = _config(tmp_path, f"triage:\n  review_top_k: {raw}\n")
+    result = _translate(cfg, _srt(tmp_path))
+    assert result.exit_code == 2, result.output
+    stderr = normalize_rich_message(result.stderr)
+    # 어느 키가 어떤 값이라 거부됐는지 둘 다 나와야 원인을 안다.
+    assert normalize_rich_message("triage.review_top_k") in stderr
+    assert normalize_rich_message(shown) in stderr
+
+
+def test_설정의_top_k는_0이면_그대로_통과한다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """엄격 검사가 정상 값까지 막지 않는지 본다. `0`은 "hard fail만 보기"다(D4)."""
+    cfg = _config(tmp_path, "triage:\n  review_top_k: 0\n")
+    result = _triage(cfg, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert normalize_rich_message("상위 0개") in normalize_rich_message(result.output)
+    assert "검수 대상 0개" in result.output

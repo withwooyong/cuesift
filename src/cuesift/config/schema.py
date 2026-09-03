@@ -40,6 +40,25 @@ def negate(value: object) -> bool:
     return not value
 
 
+def require_int(value: object) -> int:
+    """`triage.review_top_k`가 정수인지 본다 (FR-6.3 ① · FR-8.4 · 설계 D5).
+
+    **click의 `IntRange`보다 먼저 도는 유일한 자리다.** `default_map`이 채운
+    값도 옵션 타입 검증을 받지만, 그 검증은 `int(True) == 1`·`int(2.5) == 2`로
+    **먼저 변환**해 버려 `policy.py`의 `bool` 거부에 값이 도달하지 못한다.
+    그래서 `review_top_k: false`가 exit 0으로 돌면서 `k=0`이 되고, 사용자는
+    "정책을 껐다"고 생각한 자리에서 **트리아지가 켜진 채 빈 검수 큐**를 받는다.
+
+    **`bool`을 `int`보다 먼저 막는다.** `bool`은 `int`의 서브클래스라
+    `isinstance(True, int)`가 참이다.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"triage.review_top_k가 참·거짓이다 ({value!r}). 정수를 준다")
+    if not isinstance(value, int):
+        raise ValueError(f"triage.review_top_k가 정수가 아니다 ({value!r})")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Binding:
     """YAML 경로 하나를 CLI 파라미터들에 잇는다.
@@ -75,6 +94,10 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("signals", "tier1", "temperature"), (("translate", "tier1_temperature"),)),
     Binding(("triage", "review_budget"), (("translate", "review_budget"),)),
     Binding(("triage", "review_threshold"), (("translate", "review_threshold"),)),
+    # **변환 함수가 붙은 셋째 행이다.** `review_budget`·`review_threshold`는
+    # 관대한 채로 둔다 - 이미 나간 동작이라 조이면 하위 호환이 깨진다.
+    # 신설되는 이 키만 처음부터 엄격하다.
+    Binding(("triage", "review_top_k"), (("translate", "review_top_k"),), require_int),
     Binding(("review", "out"), (("translate", "review_out"),)),
     Binding(("review", "format"), (("translate", "review_format"),)),
     Binding(("spec", "profile"), (("check", "spec"),)),
