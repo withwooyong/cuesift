@@ -101,9 +101,22 @@ git checkout -b feat/xxx          # 1. 브랜치를 판다
 git push -u origin feat/xxx       # 2. 푸시
 gh pr create --base main          # 3. PR 생성
 gh pr checks --watch              # 4. CI 통과 대기
-gh pr merge --squash              # 5. 머지 (또는 --merge)
+gh pr merge --squash              # 5. 머지. 원격 브랜치는 자동으로 지워진다
 git checkout main && git pull && git branch -d feat/xxx   # 6. 로컬 정리
 ```
+
+**5번이 원격 브랜치를 지우는 것은 플래그가 아니라 리포 설정이다**
+(`gh repo edit --delete-branch-on-merge`, 2026-09-03 켬). 이 설정이 꺼져 있던 동안
+PR 22개 중 **8개의 원격 브랜치가 그대로 남았다** — `--delete-branch`를 매번 붙이는
+규칙으로 뒀다면 같은 비율로 빠뜨렸을 것이다. **사람이 기억해야 하는 것은 규칙이 아니라
+빠뜨릴 자리다.** 6번(로컬 삭제)이 남아 있는 것은 리포 설정이 로컬 브랜치까지는
+지우지 못하기 때문이다.
+
+**잔가지를 지울 때 `git branch -r --merged`로 판정하면 안 된다.** squash 머지는
+브랜치 커밋을 `main`에 남기지 않아 **머지된 브랜치도 전부 "머지 안 됨"으로 나온다.**
+PR 상태(`gh pr list --state all --head <브랜치>`)로 확인하고, 더불어 **머지 이후에
+밀어 넣은 커밋이 없는지**를 본다(브랜치 tip 시각 vs `mergedAt`) — 그런 커밋은
+PR에 담기지 않았으므로 브랜치를 지우면 어디에도 남지 않는다.
 
 **`main`에 직접 푸시하지 않는다.** CI의 `push` 트리거는 `branches: [main]`뿐이라
 직접 푸시하면 **머지된 뒤에야** CI가 돈다 — 게이트가 아니라 사후 통보가 된다.
