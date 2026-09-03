@@ -59,6 +59,34 @@ def require_int(value: object) -> int:
     return value
 
 
+def require_number(value: object) -> object:
+    """`triage.review_threshold`가 숫자로 읽힐 값인지 본다 (FR-6.3 · FR-8.4).
+
+    **`require_int`와 같은 자리, 다른 기준이다.** click의 `FloatRange`도
+    `default_map` 값을 검사하지만 `float(True) == 1.0`·`float("0.5") == 0.5`로
+    **먼저 변환**하므로, 변환이 성공하는 값은 무엇이든 임계값이 되어 버린다.
+    그 결과가 두 증상이었다 - `review_threshold: true`가 exit 0으로 **임계값
+    1.0**(사실상 아무것도 검수하지 않음)이 되고, 리스트를 주면 `float([])`의
+    `TypeError`가 **raw traceback으로** 새어 exit 1이 됐다.
+
+    **`bool`을 `int`보다 먼저 막는다.** `bool`은 `int`의 서브클래스라
+    `isinstance(True, int)`가 참이다 - `signals.weights`가 같은 순서를 쓴다.
+
+    **`str`을 통과시키는 것이 `require_int`와 갈리는 유일한 지점이고, 그것이
+    의도다.** 따옴표 친 `'0.5'`는 click이 파싱해 값이 맞고 의도대로 돈다 -
+    여기서 막으면 정상 동작하던 설정이 exit 2가 된다. `review_top_k`가 문자열
+    까지 거부할 수 있었던 것은 그 키가 신설이라 **깨질 설정이 없었기** 때문이다.
+    숫자가 아닌 문자열(`'abc'`)은 뒤에서 click이 거부한다.
+    """
+    if isinstance(value, bool):
+        raise ValueError(
+            f"triage.review_threshold가 참·거짓이다 ({value!r}). 0.0~1.0 사이 숫자를 준다"
+        )
+    if not isinstance(value, int | float | str):
+        raise ValueError(f"triage.review_threshold가 숫자가 아니다 ({value!r})")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Binding:
     """YAML 경로 하나를 CLI 파라미터들에 잇는다.
@@ -92,11 +120,15 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("signals", "tier1", "max_ratio"), (("translate", "tier1_max_ratio"),)),
     Binding(("signals", "tier1", "samples"), (("translate", "tier1_samples"),)),
     Binding(("signals", "tier1", "temperature"), (("translate", "tier1_temperature"),)),
+    # **`review_budget`에만 변환 함수가 없다.** 옵션 타입이 `str | None`이라
+    # click이 `str(True)`를 그대로 넘기고 `_parse_review_budget`이 숫자로 읽지
+    # 못해 이미 exit 2를 낸다(실측). 여기에 검사를 더하면 같은 값을 두 자리에서
+    # 거부하게 되고, 뒤엣것이 죽어도 앞엣것이 가려 아무도 모른다.
     Binding(("triage", "review_budget"), (("translate", "review_budget"),)),
-    Binding(("triage", "review_threshold"), (("translate", "review_threshold"),)),
-    # **변환 함수가 붙은 셋째 행이다.** `review_budget`·`review_threshold`는
-    # 관대한 채로 둔다 - 이미 나간 동작이라 조이면 하위 호환이 깨진다.
-    # 신설되는 이 키만 처음부터 엄격하다.
+    # 아래 둘은 **기준이 다르다.** `review_threshold`는 문자열을 통과시키고
+    # `review_top_k`는 거부한다 - 옛 키에는 `'0.5'`로 적어 두고 정상 동작하던
+    # 설정이 있을 수 있고, 신설 키에는 없기 때문이다. 근거는 각 함수에 있다.
+    Binding(("triage", "review_threshold"), (("translate", "review_threshold"),), require_number),
     Binding(("triage", "review_top_k"), (("translate", "review_top_k"),), require_int),
     Binding(("review", "out"), (("translate", "review_out"),)),
     Binding(("review", "format"), (("translate", "review_format"),)),
