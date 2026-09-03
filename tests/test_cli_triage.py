@@ -885,3 +885,100 @@ def test_트리아지_요약의_무음_줄은_계층을_나열한다() -> None:
     assert len(줄) == 1
     assert "tier1" in 줄[0]
     assert "translation" not in 줄[0], "무음이 아닌 계층까지 나열하면 범인이 흐려진다"
+
+
+# 개수 축 CLI (FR-6.3 ① · 설계 D1·D2·D6).
+
+
+def test_top_k와_예산을_함께_주면_거부된다(tmp_path: Path) -> None:
+    # D1·D4 - FR-6.3은 "두 방식으로 지정할 수 있다"이지 "동시에"가 아니다.
+    result = runner.invoke(
+        app, _args(tmp_path, "minimal.srt", "--review-budget", "10%", "--review-top-k", "5")
+    )
+    assert result.exit_code == 2, result.output
+
+
+def test_top_k와_임계값을_함께_주면_거부된다(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, _args(tmp_path, "minimal.srt", "--review-threshold", "0.5", "--review-top-k", "5")
+    )
+    assert result.exit_code == 2, result.output
+
+
+def test_top_k와_tier1은_함께_쓸_수_없다(tmp_path: Path) -> None:
+    """D2 - `triage_with_tier1`이 `budget_ratio: float`를 필수로 받는다.
+
+    **메시지가 대안을 말해야 한다.** `--review-threshold`의 같은 거부가
+    이미 `(--review-budget을 쓴다)`를 달고 있고, 그것이 없으면 사용자는
+    Tier 1을 포기해야 하는 줄 안다.
+    """
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-top-k", "5", "--tier1"))
+
+    assert result.exit_code == 2, result.output
+    assert normalize_rich_message("--review-budget") in normalize_rich_message(result.output)
+
+
+def test_음수_top_k는_거부된다(tmp_path: Path) -> None:
+    # `min=0`을 typer에 주므로 click이 막고, 메시지가 옵션 이름을 말한다.
+    result = runner.invoke(app, _args(tmp_path, "minimal.srt", "--review-top-k", "-1"))
+
+    assert result.exit_code == 2, result.output
+
+
+def test_top_k가_정확히_k개를_고른다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """옵션을 받고도 배선이 없으면 조용히 무시된다 - 이 단언이 그것을 막는다.
+
+    `_risk_free`가 신호를 하나도 내지 않으므로 hard fail이 0이고,
+    따라서 선별 개수가 정확히 K다(D6의 잔여분이 발동하지 않는 조건).
+    """
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "3"))
+
+    assert result.exit_code == 0, result.output
+    assert "검수 대상 3개" in result.output
+
+
+def test_top_k_라벨이_화면에_나온다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 사용자가 준 값을 그대로 되돌려 준다. 파싱 결과를 찍으면 자기 입력을
+    # 화면에서 못 찾는다.
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "2"))
+
+    assert "상위 2개" in result.output
+
+
+def test_k가_세그먼트_수보다_커도_동작한다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # D5 - 오류로 만들면 세그먼트 수를 미리 아는 사람만 이 옵션을 쓸 수 있다.
+    _patch_provider(monkeypatch, EchoProvider(transform=_risk_free))
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "100"))
+
+    assert result.exit_code == 0, result.output
+    assert "검수 대상 10개" in result.output
+
+
+def test_hard_fail이_top_k를_넘으면_선별도_k를_넘는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D6 - hard fail은 검수 예산을 우회한다(FR-6.2).
+
+    **`cli.py`가 이미 `검수 대상 N개 (실제 x%)`를 출력한다**(착수 조사 P2).
+    새로 만들 표시가 아니라 고정할 그물이다 - 누군가 K로 자르는 "개선"을
+    넣으면 이 단언이 죽는다.
+
+    `EchoProvider`의 **기본** transform(`f"EN:{s}"`)은 한글 원문을 남겨
+    `struct.untranslated`가 10큐 전부 hard fail을 낸다(실측, `_risk_free`
+    독스트링). 그래서 `--review-top-k 1`인데 선별이 10개다.
+
+    **종료 코드를 단언하지 않는다.** 이 테스트가 재려는 것은 선별 개수가
+    K로 잘리지 않는다는 사실 하나이고, hard fail이 `translate`의 종료
+    코드를 바꾸는지는 다른 테스트의 몫이다.
+    """
+    _patch_provider(monkeypatch, EchoProvider())
+
+    result = runner.invoke(app, _args(tmp_path, "ten_cues.srt", "--review-top-k", "1"))
+
+    assert "검수 대상 10개" in result.output
+    assert "실제 100.0%" in result.output

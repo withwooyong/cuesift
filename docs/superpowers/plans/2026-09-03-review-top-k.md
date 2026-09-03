@@ -584,7 +584,7 @@ FR-6.3의 상호배타가 2자에서 3자로 늘어난다. 반환을 str에서 l
 | `EchoProvider(transform=_risk_free)` | 465행 | **Tier 0 신호를 하나도 내지 않는다.** 선별 정책 자체를 잴 때 쓴다 |
 | `ten_cues.srt` | `tests/fixtures/ingest/` | 10큐. `_risk_free`와 짝이다 |
 
-- [ ] **단계 1: 실패하는 테스트를 쓴다 (G8~G11 · D6 게이트)**
+- [x] **단계 1: 실패하는 테스트를 쓴다 (G8~G11 · D6 게이트)**
 
 `tests/test_cli_triage.py` **끝**에 넣는다. `_risk_free`(465행) 뒤여야 한다.
 
@@ -693,13 +693,13 @@ def test_hard_fail이_top_k를_넘으면_선별도_k를_넘는다(
 않는다**는 사실 하나다. 실행해 보고 종료 코드가 0이 아니면 그 값을 독스트링에 적는다 —
 **추측해서 단언을 쓰지 않는다.**
 
-- [ ] **단계 2: 실패를 확인한다**
+- [x] **단계 2: 실패를 확인한다**
 
 실행: `.venv/Scripts/python.exe -m pytest tests/test_cli_triage.py -q -k top_k`
 
 기대: 전부 **FAIL**. `No such option: --review-top-k`가 나온다.
 
-- [ ] **단계 3: 옵션을 정의한다**
+- [x] **단계 3: 옵션을 정의한다**
 
 `cli.py`의 `review_threshold` 정의(1159행 근처) **바로 아래**에 넣는다.
 
@@ -719,7 +719,7 @@ def test_hard_fail이_top_k를_넘으면_선별도_k를_넘는다(
     ] = None,
 ```
 
-- [ ] **단계 4: 상호배타를 3자로 바꾼다**
+- [x] **단계 4: 상호배타를 3자로 바꾼다**
 
 Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교체한다.
 
@@ -752,7 +752,7 @@ Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교�
 
 **`elif`가 아니라 `if` 셋을 나란히 둔다.** 3자에서는 버릴 것이 둘일 수 있다.
 
-- [ ] **단계 5: `--review-out` 가드와 `--tier1` 가드를 고친다**
+- [x] **단계 5: `--review-out` 가드와 `--tier1` 가드를 고친다**
 
 `cli.py:1382`의 `--review-out` 검사에서 세 번째 항을 더한다. **본문의 긴 주석은 그대로 두고**
 조건과 메시지만 고친다.
@@ -798,7 +798,7 @@ Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교�
             raise typer.Exit(2)
 ```
 
-- [ ] **단계 6: `triage_requested`와 `policy_label`을 넓힌다**
+- [x] **단계 6: `triage_requested`와 `policy_label`을 넓힌다**
 
 `cli.py:1526` 근처:
 
@@ -822,7 +822,7 @@ Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교�
             policy_label = f"상위 {review_top_k}개"
 ```
 
-- [ ] **단계 7: `_translate_one`과 `_run_triage`에 값을 흘린다**
+- [x] **단계 7: `_translate_one`과 `_run_triage`에 값을 흘린다**
 
 네 자리를 고친다. **파라미터 이름은 `top_k`로 통일한다.**
 
@@ -836,7 +836,7 @@ Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교�
 **행 번호는 앞 단계의 편집으로 밀린다.** 번호가 아니라 이름으로 찾는다 —
 `grep -n "threshold=threshold\|threshold: float | None" src/cuesift/cli.py`.
 
-- [ ] **단계 8: 정책 판정과 선별 분기를 넓힌다**
+- [x] **단계 8: 정책 판정과 선별 분기를 넓힌다**
 
 `cli.py:2839`의 판정:
 
@@ -870,7 +870,7 @@ Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교�
 
 `cuesift.triage`에서 가져오는 임포트 줄에 `select_by_count`를 더한다.
 
-- [ ] **단계 9: 테스트가 통과하는지 본다**
+- [x] **단계 9: 테스트가 통과하는지 본다**
 
 ```bash
 .venv/Scripts/python.exe -m pytest tests/test_cli_triage.py -q
@@ -878,7 +878,7 @@ Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교�
 
 기대: 새로 쓴 7건이 전부 통과.
 
-- [ ] **단계 10: 게이트를 실패시켜 본다**
+- [x] **단계 10: 게이트를 실패시켜 본다**
 
 단계 8의 `elif policy_kind == "top_k":` 가지를 잠시 지운다. 그러면 `else`로 떨어져
 `select_by_threshold(risks, 3)`이 불리고 범위 검사(`0.0 <= threshold <= 1.0`)가 터진다.
@@ -886,7 +886,7 @@ Task 2가 `in` 판정으로 고쳐 둔 예산/임계값 분기를 통째로 교�
 기대: `test_top_k가_정확히_k개를_고른다`가 **FAIL**. 확인 후 되돌린다.
 **통과하면 배선이 아무것도 안 재는 것이므로 멈추고 원인을 찾는다.**
 
-- [ ] **단계 11: 전체 게이트와 커밋**
+- [x] **단계 11: 전체 게이트와 커밋**
 
 ```bash
 .venv/Scripts/python.exe -m ruff check .
