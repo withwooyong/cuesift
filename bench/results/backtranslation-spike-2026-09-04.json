@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "kind": "backtranslation-spike",
+    "date": "2026-09-04",
+    "commit": "259ed8f",
+    "purpose": [
+      "이월 18번 — 역번역이 부정을 문맥으로 복원하는 비율",
+      "요구사항정의서 §12 Q4 유보 ① — 새 정답지로 1차(문자 대 임베딩)를 다시 잰다"
+    ],
+    "backend": {
+      "translate": "ollama qwen2.5:3b (temperature 0)",
+      "embedding": "ollama bge-m3 (1024차원)",
+      "note": "로컬만 쟀다. 상용 2칸은 열려 있다"
+    },
+    "sample": {
+      "labels": "새 정답지(PR #32, 제거 전용 주입기)의 negation 라벨",
+      "A": "injected target — 부정이 제거된 번역",
+      "B": "clean target — 같은 세그먼트의 정상 번역",
+      "C": "라벨 없는 세그먼트. source 길이를 A 에 맞춰 골랐다",
+      "per_set_per_pair": 71,
+      "backtranslations": 426
+    },
+    "design": {
+      "restored": "같은 세그먼트에서 n_A >= n_B 이면 역번역이 부정을 복원한 것이다",
+      "eligible": "B 역번역에 부정이 하나라도 있어야 판정할 수 있다. n_B == 0 이면 0>=0 이 늘 참이라 '아무것도 측정되지 않음'을 복원으로 세게 된다",
+      "auc": "위험도 = 1 - 유사도. A 가 양성, C 가 음성",
+      "auc_char": "같은 표본·같은 역번역문에 NFKC + difflib.SequenceMatcher (WP8a 스펙 §3.2와 같은 방식)",
+      "delta": "cos_A - cos_B. TED2020 자막은 원문과 번역이 대응하지 않는 세그먼트가 섞여 있어(en-03247) 절대 코사인이 정렬 잡음을 싣는다. delta 는 같은 세그먼트의 B 를 기준선으로 빼 그것을 상쇄한다"
+    },
+    "negation_detector": {
+      "patterns": [
+        "지않",
+        "지못",
+        "안",
+        "안됨",
+        "못",
+        "없",
+        "아니",
+        "말라",
+        "모르"
+      ],
+      "selftest": "21케이스 전부 통과(오탐 후보 5건 포함)",
+      "limit": "어휘적 부정(무관심·잃다 등)을 담지 않았으므로 복원율은 하한이다. 담기지 않은 어휘로 복원된 건은 자격 미달로 빠진다"
+    },
+    "caveat": "이 파일은 bench/run.py 의 산출물이 아니라 spike 측정 결과다. 같은 디렉터리의 {pair}-{date}.json 과 형식이 다르다"
+  },
+  "results": {
+    "en-ko": {
+      "n_A": 71,
+      "n_C": 71,
+      "n_pairs": 71,
+      "eligible": 55,
+      "ineligible": 16,
+      "restored": 12,
+      "restored_ratio": 0.21818181818181817,
+      "clean_pairs": 39,
+      "restored_clean": 8,
+      "restored_clean_ratio": 0.20512820512820512,
+      "identical": 2,
+      "auc_abs": 0.7581829002182107,
+      "auc_char": 0.568637175163658,
+      "cos_A_mean": 0.6785578836418045,
+      "cos_B_mean": 0.7635031204011794,
+      "cos_C_mean": 0.7896501642586459,
+      "delta_mean": -0.0849452367593749,
+      "delta_negative": 52,
+      "contaminated_A": 18,
+      "delta_restored": -0.004463479820315812,
+      "delta_not_restored": -0.1165196749761978,
+      "auc_excl_restored": 0.7930293626163762
+    },
+    "ja-ko": {
+      "n_A": 71,
+      "n_C": 71,
+      "n_pairs": 71,
+      "eligible": 56,
+      "ineligible": 15,
+      "restored": 10,
+      "restored_ratio": 0.17857142857142858,
+      "clean_pairs": 26,
+      "restored_clean": 3,
+      "restored_clean_ratio": 0.11538461538461539,
+      "identical": 3,
+      "auc_abs": 0.6893473517159294,
+      "auc_char": 0.508629240230113,
+      "cos_A_mean": 0.660238622834317,
+      "cos_B_mean": 0.7264037414792694,
+      "cos_C_mean": 0.7406905367253649,
+      "delta_mean": -0.0661651186449525,
+      "delta_negative": 53,
+      "contaminated_A": 28,
+      "delta_restored": 0.010505615799400615,
+      "delta_not_restored": -0.09466381230309193,
+      "auc_excl_restored": 0.7164627106903717
+    }
+  }
+}
