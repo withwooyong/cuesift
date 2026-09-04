@@ -324,3 +324,66 @@ def test_negation_never_makes_the_text_longer():
         out = _negate(text, profile=profile)
         assert out is not None, text
         assert len(out[0].target_text) <= len(text), text
+
+
+# --- 이월 19: ja 제외어가 표기 변이와 개행에 뚫린다 -----------------------------
+#
+# `_JA_MASEN_EXCLUSIONS`는 문자열 완전 일치라 **같은 말의 다른 표기가 그대로
+# 빠져나간다.** 실측(2026-09-04): 자격 313건 중 4건이 이 경로로 정답지에 들어갔다.
+# 제외 판단 자체는 이미 내려져 있었으므로 이것은 통과시킨 결정이 아니라 결함이다.
+
+
+def _is_spec_clean(text: str, profile) -> bool:
+    """원본이 이미 규격 위반이면 주입기가 규칙과 무관하게 `None`을 낸다.
+
+    그 상태에서는 아래 테스트들이 "제외가 동작해서"가 아니라 "규격에서 죽어서"
+    통과한다 — `_neg_seg` 독스트링의 8000ms 사례와 같은 가짜 통과다.
+    """
+    return not check_text(text, 5000, profile)
+
+
+@pytest.mark.parametrize(
+    ("text", "notation"),
+    [
+        ("そう思っているかも知れません", "かもしれません의 한자 표기"),
+        ("私の体験のごく一部にすぎません", "過ぎません의 히라가나 표기"),
+        # 자막은 어절 중간에 줄바꿈이 들어간다. 개행을 무시하지 않는 매칭은
+        # 이 한 글자에 뚫린다 — 실측 트랙에 실제로 있던 문장이다.
+        ("非線形な閾値効果が現れるかもし\nれません", "개행이 어절을 쪼갬"),
+        ("これが本当のことじゃありませんか？", "ではありませんか의 구어 표기"),
+    ],
+)
+def test_negation_skips_excluded_forms_in_other_notations(text, notation):
+    assert _is_spec_clean(text, PROFILE_JA), f"원본이 규격 위반이면 가짜 통과다: {text!r}"
+    assert _negate(text, profile=PROFILE_JA) is None, notation
+
+
+# --- 이월 19: 「〜ませんか」는 부정을 떼도 뜻이 바뀌지 않는다 ---------------------
+#
+# 부정 의문문은 제안·의뢰·확인이라 긍정형과 뜻이 같다. 라벨이 붙으면 정답지가
+# **거짓을 담는다** — Recall의 분모가 오염된다. 실측 6건(자격 313건 중 1.9%).
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "紙管で教会を 再建しませんか？",  # 제안
+        "あなた方カナダに引き継いでもらえませんか？",  # 의뢰
+        "気に入りませんか？",  # 확인
+        "皆さんも同じような体験してませんか？",  # 확인(구어 축약)
+    ],
+)
+def test_negation_skips_japanese_negative_questions(text):
+    assert _is_spec_clean(text, PROFILE_JA), f"원본이 규격 위반이면 가짜 통과다: {text!r}"
+    assert _negate(text, profile=PROFILE_JA) is None
+
+
+def test_negation_still_accepts_plain_masen_sentences():
+    """제외 규칙이 넓어져도 **평범한 정중체 부정은 자격을 잃지 않아야 한다.**
+
+    이 대조군이 없으면 `ません`을 통째로 배제하는 구현도 위 테스트들을
+    전부 통과한다 — 자격이 0건이 되어 negation 라벨 자체가 사라지는데도.
+    """
+    out = _negate("我々が進化のゴールでもありません", profile=PROFILE_JA)
+    assert out is not None
+    assert out[0].target_text == "我々が進化のゴールでもあります"

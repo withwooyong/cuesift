@@ -69,14 +69,24 @@ _NEGATION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 # `かもしれません → かもしれます`는 의미 반전이 아니라 입력 파손이라, 그대로
 # 라벨을 붙이면 역번역이 "부정이 사라졌다"가 아니라 "문장이 깨졌다"를 잡는다.
 # Q4 spike에서 60건을 눈으로 훑어 12건가량이 이 부류였다.
-_JA_MASEN_EXCLUSIONS = (
-    "かもしれません",
-    "すみません",
-    "いけません",
-    "過ぎません",
-    "ではありませんか",
-    "てなりません",
+#
+# **문자열 완전 일치로 두면 같은 말의 다른 표기가 그대로 빠져나간다.**
+# 한자(`かも知れません`)·히라가나(`にすぎません`)·구어(`じゃありませんか`)가
+# 전부 다른 문자열이라, 제외 판단이 이미 내려진 뒤에도 자격 313건 중 4건이
+# 정답지에 들어갔다(이월 19 실측, 2026-09-04). 표기 변이는 정규식으로 묶는다.
+_JA_MASEN_EXCLUSIONS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"かも(?:知|し)れません"),
+    re.compile(r"すみません"),
+    re.compile(r"いけません"),
+    re.compile(r"(?:過|す)ぎません"),
+    re.compile(r"(?:で(?:は)?|じゃ)ありませんか"),
+    re.compile(r"てなりません"),
 )
+
+# 부정 의문문은 제안·의뢰·확인이라 **긍정형과 뜻이 같다.**
+# 「紙管で教会を再建しませんか？」→「再建しますか？」는 의미 반전이 아니므로
+# 라벨이 거짓이 되고, Recall의 분모가 오염된다. 실측 6건(313건 중 1.9%).
+_JA_NEGATIVE_QUESTION = re.compile(r"ません(?:か|かね|でしょうか)[?？!！」』）)\s]*$")
 
 Injector = Callable[[Segment, Glossary, SpecProfile, random.Random], "tuple[Segment, dict] | None"]
 
@@ -192,10 +202,17 @@ def _negation(seg, glossary, profile, rng):
     """
     text = seg.target_text or ""
 
+    # 개행을 지우고 판정한다. **자막은 어절 중간에 줄바꿈이 들어가**
+    # (`現れるかもし\nれません`) 개행을 그대로 둔 매칭은 한 글자에 뚫린다.
+    # 판정은 boolean뿐이고 치환은 원본 텍스트에 하므로 위치는 어긋나지 않는다.
+    flat = text.replace("\n", "")
+
     # ja 제외어가 하나라도 있으면 문장 전체를 쓰지 않는다. `ません`이 여러 번
     # 나오는 문장에서 "쓸 수 있는 자리만 골라 치환"하면 어느 자리가 라벨의
     # 근거인지 감사 산출물에서 되짚을 수 없다.
-    if any(x in text for x in _JA_MASEN_EXCLUSIONS):
+    if any(x.search(flat) for x in _JA_MASEN_EXCLUSIONS):
+        return None
+    if _JA_NEGATIVE_QUESTION.search(flat):
         return None
 
     for pattern, replacement in _NEGATION_RULES:
