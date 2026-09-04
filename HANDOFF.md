@@ -20,7 +20,7 @@
 | 직전 인수인계 갱신 | ✅ 머지됨 | PR [#29](https://github.com/withwooyong/cuesift/pull/29) · [#30](https://github.com/withwooyong/cuesift/pull/30) |
 | **Q4 spike — 상용 API 행** | ✅ **채웠다** | 아래 "최종 2×2" |
 | **Q4 판정** | ✅ **닫혔다** | 요구사항정의서 §12 Q4가 단일 출처 |
-| **이 문서 + 문서 갱신** | PR — | 코드 변경 0건 — `CHANGELOG.md`를 건드리지 않았다 |
+| **이 문서 + 문서 갱신** | PR [#31](https://github.com/withwooyong/cuesift/pull/31) | 코드 변경 0건 — `CHANGELOG.md`를 건드리지 않았다 |
 
 **이번 세션도 코드를 한 줄도 바꾸지 않았다.** Keep a Changelog는 코드 변경을 적는
 문서이므로 `CHANGELOG.md`에 넣을 것이 없다. 실측 결과는 여기와 §12 Q4에 있다.
