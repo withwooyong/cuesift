@@ -44,9 +44,19 @@ CTX = SignalContext(profile=PROFILE, glossary=GLOSSARY, source_lang="ko", target
 
 
 def _clean_track(n: int = 200) -> list[Segment]:
+    """**3건에 1건꼴로 부정 표현을 넣는다.**
+
+    negation 주입기가 제거 전용이라, 부정 표현이 없는 트랙은 자격이 0건이고
+    `inject`가 "실주입 0건" 가드로 죽는다. 비율을 1/3로 둔 이유는
+    `tests/test_bench_inject.py::_track`과 같다 — 자격률이 `scarcity`
+    정렬 순서를 바꾸기 때문이다.
+    """
     segs = []
     for i in range(n):
         start = i * 5000
+        target = f"We look at climate issue {i} today"
+        if i % 3 == 0:
+            target = f"We do not look at climate issue {i} today"
         segs.append(
             Segment(
                 id=f"s{i:03d}",
@@ -54,7 +64,7 @@ def _clean_track(n: int = 200) -> list[Segment]:
                 start_ms=start,
                 end_ms=start + 4500,
                 source_text=f"기후 변화 문제 {i} 번을 봅니다",
-                target_text=f"We look at climate issue {i} today",
+                target_text=target,
             )
         )
     return segs

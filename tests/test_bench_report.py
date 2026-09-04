@@ -182,6 +182,27 @@ def test_report_includes_negation_sample_bias_caveat():
     assert "CPS 여유가 큰 짧은 세그먼트로 기운다" in md
 
 
+def test_report_carries_the_caveats_that_run_actually_uses():
+    """**caveat 문구를 테스트 안에서 만들면 코드와 갈라져도 통과한다.**
+
+    위아래의 두 caveat 테스트는 문자열을 스스로 지어 넘기므로 렌더링만 검사한다.
+    그래서 주입기가 삽입 전용에서 제거 전용으로 바뀐 뒤에도 `bench.run`의
+    negation caveat은 "부정어 삽입이 CPS를 넘기면"이라는 **일어나지 않는 실패**를
+    편향의 원인으로 제시한 채 남았고, 전 스위트가 통과했다.
+
+    이 테스트만 `bench.run.CAVEATS`를 실제로 임포트해 그 연결을 만든다.
+    """
+    from bench.run import CAVEATS
+
+    md = render_markdown(dataclasses.replace(META, caveats=CAVEATS), RESULTS, DROPS, BASELINE)
+    for note in CAVEATS:
+        assert note in md, note[:40]
+
+    negation_caveat = next(c for c in CAVEATS if "`negation`" in c)
+    assert "제거" in negation_caveat, "주입기는 부정 표현을 제거한다 — 삽입 시절 서술이 남았다"
+    assert "삽입하지 않는다" in negation_caveat
+
+
 def test_report_includes_glossary_tradeoff_caveat():
     """⑤ 용어집 대응률 79.8% 채택 기준이 남기는 대가를 싣는다.
 

@@ -36,10 +36,18 @@ UNMEASURABLE = ("spec.overlap",)
 # 용어집(`bench/glossary.ted.yaml`)의 소관이므로 report.py에는 하드코딩하지
 # 않는다 — 여기서 한 번만 적어 report.py는 그대로 옮겨 싣기만 한다.
 _NEGATION_SAMPLE_BIAS_CAVEAT = (
-    "`negation`은 주입 결과가 규격을 위반하지 않는 세그먼트에만 넣는다. 부정어 삽입이 "
-    "CPS를 넘기면 `spec.violation`이 발화해 **의미 반전이 아니라 길이 증가를 잡은 것**이 "
-    "Recall로 집계되기 때문이다(정정 전 실측: en 79.7% / ja 93.7%가 `spec.violation`으로 "
-    "발화). 그 결과 이 유형의 표본은 CPS 여유가 큰 짧은 세그먼트로 기운다."
+    "`negation`은 **부정 표현을 제거**해 만든다 — 삽입하지 않는다. 삽입은 언어를 알아야 "
+    "하는데 주입기가 `target_lang`을 받지 않아, 일본어 문장에 영어 `not`이 끼워 들어가 "
+    "**ja-ko 라벨 71건 전부가 의미 반전이 아니었다**(en-ko도 61/71이 같은 경로였다. "
+    "2026-09-04 정정). 제거 전용이라 표본은 **원래 부정문이었던 세그먼트**로 기운다 — "
+    "긍정문을 부정문으로 뒤집는 방향은 이 벤치가 재지 않는다. 자격은 en 524건 / ja 313건이고 "
+    "quota는 72건이다."
+)
+_LABEL_REVISION_CAVEAT = (
+    "**2026-07-29 리포트와 이 리포트는 정답지가 다르다.** 위 정정으로 negation 자격 "
+    "세그먼트가 바뀌었고, `inject`는 유형 처리 순서를 **자격 희소도**로 정하므로 "
+    "negation 외 6개 유형의 세그먼트 배정도 함께 달라졌다. 두 리포트의 수치를 직접 빼서 "
+    "비교하면 안 된다."
 )
 _GLOSSARY_TRADEOFF_CAVEAT = (
     "용어집 30개는 en·ja 양쪽에서 대응률 79.8% 이상인 것만 채택했다. 그래도 **용어를 "
@@ -47,7 +55,7 @@ _GLOSSARY_TRADEOFF_CAVEAT = (
     "번역의 다양성을 다 담지 못하기 때문이다. `glossary.miss`는 hard fail이 아니라 예산을 "
     "우회하지 않는다."
 )
-CAVEATS = (_NEGATION_SAMPLE_BIAS_CAVEAT, _GLOSSARY_TRADEOFF_CAVEAT)
+CAVEATS = (_NEGATION_SAMPLE_BIAS_CAVEAT, _LABEL_REVISION_CAVEAT, _GLOSSARY_TRADEOFF_CAVEAT)
 
 
 def _commit() -> str:

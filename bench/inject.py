@@ -20,8 +20,63 @@ from cuesift.spec import SpecProfile, check_text
 
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
-# 부정 표현. 삽입·삭제 양방향으로 쓴다.
-_NEGATIONS_EN = (" not ", " never ")
+# 부정 제거 규칙. **제거만 한다 — 삽입하지 않는다.**
+#
+# 삽입 경로가 언어를 몰라서 일본어 문장에 영어 `not`을 끼워 넣었고, 그 결과
+# **ja-ko 라벨 71건 전부가 의미 반전이 아니었다**(실측). 일본어는 공백 토큰
+# 경계가 없어 삽입 위치조차 무의미했다(`（笑） not この子達は利口です`).
+# en-ko도 61/71이 같은 경로를 타 `He not knew we had to get involved`처럼
+# 문법이 깨진 문장이 정답지에 들어갔다.
+#
+# **제거 전용이면 언어 인자가 필요 없다** — 부정 표현 자체가 언어를 식별하기
+# 때문이다. 영어 문장에 `ません`이 없고 일본어 문장에 `don't`가 없으므로,
+# 매칭되는 규칙이 곧 언어 판정이다. 규칙이 하나도 안 걸리면 자격 미달이다.
+#
+# 순서가 의미를 바꾼다. `ませんでした`가 `ません`보다 **먼저** 와야 하고
+# (뒤집히면 `ますでした`라는 없는 형태가 나온다), 영어 축약형이 ` not `보다
+# 먼저 와야 한다.
+#
+# `\b`는 ASCII 규칙에만 쓴다 — CJK 텍스트에 적용하면 단어 경계가 전부 깨진다.
+_NEGATION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # 영어 — 축약형이 먼저다.
+    (re.compile(r"\bcan(?:'|’)t\b", re.I), "can"),
+    (re.compile(r"\bwon(?:'|’)t\b", re.I), "will"),
+    (re.compile(r"\bdon(?:'|’)t\b", re.I), "do"),
+    (re.compile(r"\bdoesn(?:'|’)t\b", re.I), "does"),
+    (re.compile(r"\bdidn(?:'|’)t\b", re.I), "did"),
+    (re.compile(r"\bisn(?:'|’)t\b", re.I), "is"),
+    (re.compile(r"\baren(?:'|’)t\b", re.I), "are"),
+    (re.compile(r"\bwasn(?:'|’)t\b", re.I), "was"),
+    (re.compile(r"\bweren(?:'|’)t\b", re.I), "were"),
+    (re.compile(r"\bcouldn(?:'|’)t\b", re.I), "could"),
+    (re.compile(r"\bwouldn(?:'|’)t\b", re.I), "would"),
+    (re.compile(r"\bshouldn(?:'|’)t\b", re.I), "should"),
+    (re.compile(r"\bhaven(?:'|’)t\b", re.I), "have"),
+    (re.compile(r"\bhasn(?:'|’)t\b", re.I), "has"),
+    (re.compile(r"\bhadn(?:'|’)t\b", re.I), "had"),
+    (re.compile(r"\bcannot\b", re.I), "can"),
+    (re.compile(r"\bnever\b", re.I), "always"),
+    # ` not `을 통째로 지운다. `\bnot\b`를 빈 문자열로 바꾸면 이중 공백이
+    # 남아 CPS 계산이 원문과 어긋난다.
+    (re.compile(r" not ", re.I), " "),
+    # 일본어 — 정중체 부정만 다룬다.
+    (re.compile("ませんでした"), "ました"),
+    (re.compile("ません"), "ます"),
+)
+
+# `ません`을 기계적으로 `ます`로 바꾸면 **일본어에 없는 형태**가 나오는 자리.
+#
+# `かもしれません → かもしれます`는 의미 반전이 아니라 입력 파손이라, 그대로
+# 라벨을 붙이면 역번역이 "부정이 사라졌다"가 아니라 "문장이 깨졌다"를 잡는다.
+# Q4 spike에서 60건을 눈으로 훑어 12건가량이 이 부류였다.
+_JA_MASEN_EXCLUSIONS = (
+    "かもしれません",
+    "すみません",
+    "いけません",
+    "過ぎません",
+    "ではありませんか",
+    "てなりません",
+)
 
 Injector = Callable[[Segment, Glossary, SpecProfile, random.Random], "tuple[Segment, dict] | None"]
 
@@ -110,39 +165,54 @@ def _spec(seg, glossary, profile, rng):
     }
 
 
+def _restore_leading_case(matched: str, replacement: str) -> str:
+    """치환값의 첫 글자 대소문자를 원본에 맞춘다.
+
+    맞추지 않으면 `Don't → do`가 되어 문두 대문자가 사라진다. 그것은 의미
+    반전이 아니라 **표기 파손**이고, 두 결함이 한 세그먼트에 섞이면 라벨이
+    무엇을 뜻하는지 알 수 없게 된다(스펙 §5.5의 배타성).
+    """
+    if matched[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
 def _negation(seg, glossary, profile, rng):
     """의미 반전. **검출 담당이 없다** — 이 유형의 Recall 0이 Tier 1 투자 근거다.
 
-    **주입 결과가 규격을 위반하면 주입하지 않는다.** 부정어 삽입은 텍스트를
-    늘려 CPS를 넘기는데(실측: en 폭 +10%, ja +20%, 트랙 여유는 SAFETY=1.10이라
-    10%뿐이다), 그러면 spec.violation이 발화해 **의미 반전이 아니라 길이 증가를
-    잡은 것**이 Recall로 집계된다. 스펙 §5.5의 "세그먼트당 최대 1개 오류,
-    라벨은 배타적"에도 어긋난다 — 두 오류를 동시에 넣은 셈이기 때문이다.
+    **부정 표현을 제거만 한다.** 삽입하지 않는 이유는 `_NEGATION_RULES`의
+    주석에 있다 — 삽입 경로가 언어를 몰라 ja-ko 라벨 71건 전부를 무효로 만들었다.
+
+    **부정 표현이 없으면 자격 미달이다.** 삽입 경로를 남겨 두면 어떤 문장이든
+    라벨이 붙어, 정답지가 "의미 반전"이 아니라 "무언가 변형됨"을 뜻하게 된다.
+
+    규격 검사를 남겨 둔 이유는 방어다. 제거는 텍스트를 짧게 만들어 CPS·줄
+    길이 위반을 **원리적으로** 만들지 못하지만, 원본이 이미 위반인 트랙이
+    들어오면 라벨 배타성이 깨진다(스펙 §5.5).
     """
     text = seg.target_text or ""
 
-    def _clean(candidate: str) -> tuple[Segment, dict] | None:
+    # ja 제외어가 하나라도 있으면 문장 전체를 쓰지 않는다. `ません`이 여러 번
+    # 나오는 문장에서 "쓸 수 있는 자리만 골라 치환"하면 어느 자리가 라벨의
+    # 근거인지 감사 산출물에서 되짚을 수 없다.
+    if any(x in text for x in _JA_MASEN_EXCLUSIONS):
+        return None
+
+    for pattern, replacement in _NEGATION_RULES:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        candidate = (
+            text[: match.start()]
+            + _restore_leading_case(match.group(0), replacement)
+            + text[match.end() :]
+        )
         mutated = replace(seg, target_text=candidate)
         if check_text(candidate, mutated.duration_ms, profile):
             return None
-        return mutated
+        return mutated, {"removed": match.group(0)}
 
-    for neg in _NEGATIONS_EN:
-        if neg in text:
-            candidate = text.replace(neg, " ", 1)
-            out = _clean(candidate)
-            if out is None:
-                return None
-            return out, {"removed": neg.strip()}
-
-    tokens = text.split()
-    if len(tokens) < 2:
-        return None
-    tokens.insert(1, "not")
-    out = _clean(" ".join(tokens))
-    if out is None:
-        return None
-    return out, {"inserted": "not"}
+    return None
 
 
 INJECTORS: dict[str, Injector] = {
