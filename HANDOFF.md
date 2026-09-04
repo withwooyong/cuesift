@@ -23,7 +23,7 @@
 | 직전 인수인계 갱신 | ✅ 머지됨 | PR [#30](https://github.com/withwooyong/cuesift/pull/30) · [#31](https://github.com/withwooyong/cuesift/pull/31) |
 | **이월 17번 — negation 정답지 정정** | ✅ **머지됨** | PR [#32](https://github.com/withwooyong/cuesift/pull/32) · 커밋 `7b5bb2a` |
 | **벤치 재측정** | ✅ **두 트랙 완료** | `bench/results/{en-ko,ja-ko}-2026-09-04.{md,json}` |
-| 이 문서 갱신 | 진행 중 | `CHANGELOG.md`는 PR #32에 이미 실렸다 — 중복 추가하지 말 것 |
+| 이 문서 + `CLAUDE.md` 두 줄 | PR [#33](https://github.com/withwooyong/cuesift/pull/33) | 코드 변경 0건. `CHANGELOG.md`는 PR #32에 이미 실렸다 — 중복 추가하지 말 것 |
 
 **이번 세션은 코드를 바꿨다.** 직전 두 세션과 달리 `CHANGELOG.md`에 넣을 것이
 있었고 PR #32에 함께 담았다.
