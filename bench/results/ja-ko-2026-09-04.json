@@ -1,0 +1,214 @@
+{
+  "meta": {
+    "pair": "ja-ko",
+    "seed": 20260729,
+    "manifest_sha256": "f7a3a4b7f4d02532d4eb253fb0e474f7d15f1d14cb26ced39bc37fdbf40c7b9d",
+    "commit": "2a3d019",
+    "sample_size": 5000,
+    "injection_skipped": {
+      "degeneration": 0,
+      "empty": 0,
+      "glossary": 3606,
+      "negation": 1172,
+      "number": 530,
+      "spec": 0,
+      "untranslated": 0
+    },
+    "injected": {
+      "glossary": 72,
+      "negation": 71,
+      "number": 71,
+      "degeneration": 72,
+      "empty": 72,
+      "spec": 71,
+      "untranslated": 71
+    },
+    "unmeasured": [
+      "struct.tag_lost"
+    ],
+    "hard_fail_false_positive_rate": 0.008,
+    "unmeasurable": [
+      "spec.overlap"
+    ],
+    "caveats": [
+      "`negation`은 **부정 표현을 제거**해 만든다 — 삽입하지 않는다. 삽입은 언어를 알아야 하는데 주입기가 `target_lang`을 받지 않아, 일본어 문장에 영어 `not`이 끼워 들어가 **ja-ko 라벨 71건 전부가 의미 반전이 아니었다**(en-ko도 61/71이 같은 경로였다. 2026-09-04 정정). 제거 전용이라 표본은 **원래 부정문이었던 세그먼트**로 기운다 — 긍정문을 부정문으로 뒤집는 방향은 이 벤치가 재지 않는다. 자격은 en 524건 / ja 313건이고 quota는 72건이다.",
+      "**2026-07-29 리포트와 이 리포트는 정답지가 다르다.** 위 정정으로 negation 자격 세그먼트가 바뀌었고, `inject`는 유형 처리 순서를 **자격 희소도**로 정하므로 negation 외 6개 유형의 세그먼트 배정도 함께 달라졌다. 두 리포트의 수치를 직접 빼서 비교하면 안 된다.",
+      "용어집 30개는 en·ja 양쪽에서 대응률 79.8% 이상인 것만 채택했다. 그래도 **용어를 포함한 세그먼트의 약 20%는 깨끗한 트랙에서도 위반으로 잡힌다** — 대응어 목록이 실제 번역의 다양성을 다 담지 못하기 때문이다. `glossary.miss`는 hard fail이 아니라 예산을 우회하지 않는다."
+    ],
+    "corpus_stats": {
+      "total_pairs": 358635,
+      "filtered_out": {
+        "empty": 3386,
+        "duplicate": 4528,
+        "ratio": 87
+      },
+      "kept_after_filter": 350634,
+      "unfittable": 168613,
+      "feasible": 182021,
+      "track_size": 5000
+    }
+  },
+  "results": [
+    {
+      "budget": 0.01,
+      "review_ratio": 0.0566,
+      "recall": 0.494,
+      "lift": 8.72791519434629,
+      "oracle": 0.566,
+      "by_kind": {
+        "degeneration": 1.0,
+        "empty": 1.0,
+        "glossary": 0.0,
+        "negation": 0.014084507042253521,
+        "number": 0.43661971830985913,
+        "spec": 0.0,
+        "untranslated": 1.0
+      }
+    },
+    {
+      "budget": 0.02,
+      "review_ratio": 0.0566,
+      "recall": 0.494,
+      "lift": 8.72791519434629,
+      "oracle": 0.566,
+      "by_kind": {
+        "degeneration": 1.0,
+        "empty": 1.0,
+        "glossary": 0.0,
+        "negation": 0.014084507042253521,
+        "number": 0.43661971830985913,
+        "spec": 0.0,
+        "untranslated": 1.0
+      }
+    },
+    {
+      "budget": 0.05,
+      "review_ratio": 0.0566,
+      "recall": 0.494,
+      "lift": 8.72791519434629,
+      "oracle": 0.566,
+      "by_kind": {
+        "degeneration": 1.0,
+        "empty": 1.0,
+        "glossary": 0.0,
+        "negation": 0.014084507042253521,
+        "number": 0.43661971830985913,
+        "spec": 0.0,
+        "untranslated": 1.0
+      }
+    },
+    {
+      "budget": 0.1,
+      "review_ratio": 0.1,
+      "recall": 0.756,
+      "lift": 7.56,
+      "oracle": 1.0,
+      "by_kind": {
+        "degeneration": 1.0,
+        "empty": 1.0,
+        "glossary": 0.9583333333333334,
+        "negation": 0.028169014084507043,
+        "number": 0.4788732394366197,
+        "spec": 0.8169014084507042,
+        "untranslated": 1.0
+      }
+    },
+    {
+      "budget": 0.2,
+      "review_ratio": 0.2,
+      "recall": 0.838,
+      "lift": 4.1899999999999995,
+      "oracle": 1.0,
+      "by_kind": {
+        "degeneration": 1.0,
+        "empty": 1.0,
+        "glossary": 1.0,
+        "negation": 0.14084507042253522,
+        "number": 0.7183098591549296,
+        "spec": 1.0,
+        "untranslated": 1.0
+      }
+    },
+    {
+      "budget": 0.3,
+      "review_ratio": 0.3,
+      "recall": 0.848,
+      "lift": 2.8266666666666667,
+      "oracle": 1.0,
+      "by_kind": {
+        "degeneration": 1.0,
+        "empty": 1.0,
+        "glossary": 1.0,
+        "negation": 0.19718309859154928,
+        "number": 0.7323943661971831,
+        "spec": 1.0,
+        "untranslated": 1.0
+      }
+    }
+  ],
+  "ablation": {
+    "glossary.miss": 0.0040000000000000036,
+    "length.ratio": -0.061999999999999944,
+    "spec.overlap": 0.0,
+    "spec.violation": 0.07799999999999996,
+    "struct.degeneration": -0.0020000000000000018,
+    "struct.empty": 0.07799999999999996,
+    "struct.number_missing": 0.03400000000000003,
+    "struct.tag_lost": 0.0,
+    "struct.untranslated": 0.026000000000000023
+  },
+  "baseline": {
+    "0.01": [
+      0.05448,
+      0.008863949458339663
+    ],
+    "0.02": [
+      0.05448,
+      0.008863949458339663
+    ],
+    "0.05": [
+      0.05448,
+      0.008863949458339663
+    ],
+    "0.1": [
+      0.09688000000000001,
+      0.012681703355622225
+    ],
+    "0.2": [
+      0.19588,
+      0.016181025925447373
+    ],
+    "0.3": [
+      0.29594000000000004,
+      0.017212681371593444
+    ]
+  },
+  "by_kind_baseline": {
+    "negation": {
+      "0.01": [
+        0.054507042253521126,
+        0.025403312931100572
+      ],
+      "0.02": [
+        0.054507042253521126,
+        0.025403312931100572
+      ],
+      "0.05": [
+        0.054507042253521126,
+        0.025403312931100572
+      ],
+      "0.1": [
+        0.0976056338028169,
+        0.03256263705960164
+      ],
+      "0.2": [
+        0.19267605633802817,
+        0.04725682698706652
+      ],
+      "0.3": [
+        0.2964788732394366,
+        0.052675868042142936
+      ]
+    }
+  }
+}
