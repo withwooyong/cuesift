@@ -41,21 +41,79 @@ git log --oneline -3                          # 최상단이 5d4b607
 
 **질문: OpenAI API 키를 어떻게 전달하고, 어떤 모델을 쓰는가.**
 
-### 키 전달 — 사용자 환경변수를 쓴다
+### 키 전달 — `.claude/settings.local.json`을 쓴다
 
 **스크래치 디렉터리에 두면 안 된다.** 세션마다 경로가 바뀌어 다음 세션이 못 찾는다.
-**리포 안에 두어도 안 된다.** 커밋에 딸려 갈 위험이 있다.
+**리포에 커밋되어도 안 된다** — 다만 `.claude/`는 `.gitignore` 99번째 줄에 걸려 있어
+그 안의 파일은 추적되지 않는다. 이 절이 채택한 위치가 바로 거기다.
 
-```powershell
-setx OPENAI_API_KEY "sk-..."
+**이미 설정돼 있다(2026-09-04).** 재발급도 재설정도 필요 없다.
+
+```json
+{ "env": { "OPENAI_API_KEY": "sk-proj-..." } }
 ```
 
-`setx`는 **새로 뜨는 프로세스부터** 적용된다 — 실행한 뒤 Claude Code를 재시작해야
-읽힌다. 확인은 값을 찍지 말고 길이만 본다.
+Claude Code는 이 파일을 **부모 셸의 환경과 무관하게** 자체적으로 읽어 자식 프로세스에
+넣는다. 확인은 값을 찍지 말고 길이만 본다.
 
 ```powershell
 .venv/Scripts/python.exe -c "import os; k=os.environ.get('OPENAI_API_KEY'); print('len', len(k) if k else None)"
 ```
+
+기대값은 `len 164`이다. `None`이 나오면 Claude Code가 이 파일을 읽기 전에 뜬 것이므로
+재시작한다.
+
+#### `setx`로는 되지 않았다 — 실측
+
+`setx OPENAI_API_KEY "sk-..."`를 실행하고 `SUCCESS`를 받은 뒤 Claude Code를
+exit·재실행했는데도 `len None`이 나왔다. **`SUCCESS`는 레지스트리에 썼다는 뜻일 뿐,
+현재 프로세스 트리에 값이 도달했다는 뜻이 아니다.**
+
+```mermaid
+flowchart TD
+    E[explorer.exe] --> C1["Code.exe (main, PID 10132)<br/>setx 이전인 9-01에 기동"]
+    C1 --> C2["Code.exe × 59<br/>모든 창이 이 main 하나에서 파생"]
+    C2 --> P1["pwsh.exe (통합 터미널)<br/>여기서 setx 를 실행했다"]
+    P1 --> CC["claude.exe<br/>exit 후 재실행해도 부모가 그대로라 옛 환경을 상속"]
+    CC --> P2["pwsh.exe (도구 호출)"]
+```
+
+`setx`는 이미 떠 있는 셸의 환경 블록을 갱신하지 않는다. 정확히는 **`setx` 이후에
+새로 뜨는 셸부터** 적용되므로, Claude Code만 다시 띄워서는 갱신되지 않는다.
+
+| 층 | `setx SUCCESS` 직후 상태 |
+| --- | --- |
+| 레지스트리 `HKCU:\Environment` | 저장됨 (164자) |
+| `Code.exe` main 프로세스 | 옛 환경 |
+| 통합 터미널 `pwsh` | 옛 환경 (그 안에서 `setx`를 실행했다) |
+| `claude.exe` | 옛 환경 (부모에게서 상속) |
+
+**VS Code를 재시작하는 방법은 쓰지 않는 편이 낫다.** `Code.exe` 60개가 main 프로세스
+하나에서 파생되므로 창 하나가 아니라 **열려 있는 모든 프로젝트 창을 닫아야** 환경이
+갱신된다. `.claude/settings.local.json`은 그 대가를 치르지 않는다.
+
+#### 그래도 레지스트리 값이 필요하면
+
+이 세션에서만 임시로 주입하는 구문이다. 명령마다 앞에 붙여야 하고, **한 번 빠뜨리면
+401이 나서 키 문제로 오독된다.**
+
+```powershell
+$env:OPENAI_API_KEY = [Environment]::GetEnvironmentVariable('OPENAI_API_KEY','User'); <명령>
+```
+
+#### `setx`로 넣은 값을 지울 때
+
+**`setx OPENAI_API_KEY ""`를 쓰면 안 된다.** 이 명령은 변수를 지우는 것이 아니라
+**빈 문자열로 남긴다.** 그러면 `Authorization` 헤더가 `Bearer` 뒤에 아무것도 없이
+나가 401이 발생하고, 아래 이월 9번 항목이 경고하는 오독이 그대로 재현된다.
+
+```powershell
+[Environment]::SetEnvironmentVariable('OPENAI_API_KEY', $null, 'User')   # 삭제
+[Environment]::GetEnvironmentVariable('OPENAI_API_KEY','User')           # 확인: 무출력이면 성공
+```
+
+**삭제는 `.claude/settings.local.json` 경로가 동작하는 것을 확인한 뒤에 한다.**
+OpenAI 키는 발급 후 다시 열람할 수 없어, 확인 전에 지우면 복구 수단이 재발급뿐이다.
 
 이 프로젝트가 이미 쓰는 방식과도 맞는다 — STT live 테스트가 `CUESIFT_LIVE_STT_*`
 환경변수를 쓴다(설계 스펙 D10).
@@ -99,7 +157,9 @@ OpenAI 호환 엔드포인트로 `httpx`가 직접 부르며, **파이썬 패키
 
 ### 착수 순서
 
-1. 키를 환경변수에 넣고 Claude Code를 재시작한다
+1. 위의 길이 확인 명령으로 `len 164`를 받는다 — 키는 이미 설정돼 있고
+   `GET /v1/models`로 유효성까지 확인했다(2026-09-04, `200` · 모델 126개).
+   `None`이 나오면 Claude Code를 재시작한다
 2. **표본을 다시 만들지 마라** — 아래 "재현 방법"의 씨앗과 규칙을 그대로 써야
    로컬 행과 비교된다
 3. 상용 행 두 칸을 채우고 아래 판정표에 대입한다
