@@ -28,8 +28,8 @@
 
 | 단계 | 상태 | 산출물 |
 | --- | --- | --- |
-| **이월 18번 — 역번역 복원율 측정** | ✅ **쟀다** | [`bench/results/backtranslation-spike-2026-09-04.json`](bench/results/backtranslation-spike-2026-09-04.json) · 역번역 426건 |
-| **Q4 유보 ① — 로컬 2칸** | ✅ **닫았다** | 같은 실행. 상용 2칸은 열려 있다 |
+| **이월 18번 — 역번역 복원율 측정** | ✅ **쟀다** | PR [#34](https://github.com/withwooyong/cuesift/pull/34) · [`bench/results/backtranslation-spike-2026-09-04.json`](bench/results/backtranslation-spike-2026-09-04.json) · 역번역 426건 |
+| **Q4 유보 ① — 로컬 2칸** | ✅ **닫았다** | 같은 PR·같은 실행. 상용 2칸은 열려 있다 |
 | 직전 인수인계 갱신 | ✅ 머지됨 | PR [#30](https://github.com/withwooyong/cuesift/pull/30) · [#31](https://github.com/withwooyong/cuesift/pull/31) |
 | **이월 17번 — negation 정답지 정정** | ✅ **머지됨** | PR [#32](https://github.com/withwooyong/cuesift/pull/32) · 커밋 `7b5bb2a` |
 | **벤치 재측정** | ✅ **두 트랙 완료** | `bench/results/{en-ko,ja-ko}-2026-09-04.{md,json}` |
