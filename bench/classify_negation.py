@@ -148,12 +148,26 @@ def _classify_en(text: str) -> str:
 
 
 def _classify_ja(text: str) -> str:
+    # **분기 순서가 곧 부류의 우선순위다** (HANDOFF.md:79 의 부류 표).
+    # 한 문장이 여러 부류를 만족할 때 더 심한 결함을 반환한다 - 부류 B·C 는
+    # 비문(`なければなります`·`全く分かります`)이고 부류 D 는 문법에 맞되
+    # 부자연할 뿐이라, D 를 C 보다 앞에 두면 비문이 부자연으로 내려가
+    # 결함의 크기가 과소 보고된다.
+    #
+    # **오늘의 데이터로는 이 순서를 검증할 수 없다.** ja negation 라벨 71건에
+    # 두 부류가 겹치는 세그먼트가 0건이라(2026-09-05 실측) 순서를 뒤집어도
+    # 분포가 15/45/6/5 그대로다. 규칙을 넓히는 날 그 0건이 깨지므로, 순서는
+    # `test_한_문장이_두_부류를_만족하면_더_심한_쪽으로_분류된다` 가 합성
+    # 문자열로 고정한다.
+    #
+    # `multi_negation` 이 마지막인 이유는 부정 표지의 **개수만** 세는 가장
+    # 약한 신호이기 때문이다 - 앞의 셋은 깨진 형태를 특정한다.
     if _JA_BROKEN_ADJECTIVE_NEGATIVE.search(text) or _JA_BROKEN_MODAL_IDIOM.search(text):
         return BROKEN_FIXED_FORM
-    if _JA_UNNATURAL_COPULA.search(text):
-        return UNNATURAL
     if _JA_STRANDED_ADVERB.search(text) and not _JA_NEGATIVE_PREDICATE.search(text):
         return STRANDED_ADVERB
+    if _JA_UNNATURAL_COPULA.search(text):
+        return UNNATURAL
     if len(_JA_NEGATIVE_COUNT.findall(text)) >= 2:
         return MULTI_NEGATION
     return CLEAN
