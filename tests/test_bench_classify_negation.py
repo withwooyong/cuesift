@@ -1,16 +1,17 @@
 """negation 정답지 잡음 분류 (FR-4.2 · 설계 §8.3).
 
 **아래 픽스처는 이월 19번이 원문 대조로 잡은 실제 오탐·미탐이다.**
-`.superpowers/sdd/2026-09-05-backtranslation-signal/task-6-context.md` 의
-판정에 따라 `data/bench/{ja,en}-ko.injected.json`(2026-09-04 감사 산출물,
-gitignore 대상)에서 세그먼트 id 로 직접 재확인한 값을 문자열로 고정한다 -
-data/ 는 CI 에 없으므로 테스트 실행 시점에 그 파일을 읽지 않는다.
+`bench/run.py` 의 `dump_audit` 가 만드는 감사 산출물 `data/bench/{ja,en}-ko.injected.json`
+(2026-09-04 스냅샷, gitignore 대상)에서 세그먼트 id 로 직접 재확인한 값을 문자열로
+고정한다 - data/ 는 CI 에 없으므로 테스트 실행 시점에 그 파일을 읽지 않는다.
 규칙을 다시 짜면 여기서 먼저 걸린다.
 
-미탐 4건 중 「〜ませんか」류(부정 의문형이 자격 자체가 아닌 경우)는 현재
-data/bench/*.json 스냅샷(2026-09-04)의 negation 라벨 71+71건 전체를 훑어도
-해당하는 실제 문장을 찾지 못해 픽스처에서 뺐다 - 지어내지 않았다.
-task-6-report.md 참고.
+미탐 4건 중 「〜ませんか」류(부정 의문형이 자격 자체가 아닌 경우) 픽스처는 의도적으로
+없다. 그 부류는 `bench/inject.py` 의 `_JA_NEGATIVE_QUESTION` 이 **주입 단계에서** 배제해
+애초에 negation 정답지에 들어오지 않는다(이월 19 · 커밋 5541277). 그 배제 자체는
+`tests/test_bench_inject.py` 가 실제 문장 네 건으로 이미 고정한다. **그 배제가 사라지면
+이 파일의 분류기에는 이 부류를 잡는 규칙이 없다** - `classify()` 는 부정 의문형이
+정답지에 아예 오지 않는다는 것을 전제로 짜여 있다.
 """
 
 from __future__ import annotations
