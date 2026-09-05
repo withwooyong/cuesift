@@ -113,6 +113,13 @@ def test_82의_예시로_CLI가_돌면_종료_코드_2가_아니다(tmp_path: Pa
 
     `--dry-run`이라 네트워크를 타지 않는다. 보는 것은 "값이 옳은가"가
     아니라 **"명령줄로서 성립하는가"** 하나다.
+
+    **`--embed-model`을 추가로 준다.** §8.2의 `signals.tier1.enabled: true`가
+    `--tier1`을 켜는데(FR-8.4 바인딩), Task 5(FR-4.2)부터 `--tier1`은
+    `--embed-model`을 요구한다 - `config/schema.py`의 `BINDINGS`에는 아직
+    `embed_base_url`·`embed_model` 자리가 없어(그 확장은 이 태스크의 범위
+    밖이다) 문서의 YAML만으로는 채울 수 없다. CLI로 보충하는 것이 지금
+    실제로 이 예시를 돌리려는 사용자가 해야 하는 일과 같다.
     """
     cfg = tmp_path / "cuesift.yaml"
     cfg.write_text(_section_yaml_blocks()[0], encoding="utf-8")
@@ -120,7 +127,16 @@ def test_82의_예시로_CLI가_돌면_종료_코드_2가_아니다(tmp_path: Pa
     subtitle.write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕\n", encoding="utf-8")
 
     result = CliRunner().invoke(
-        app, ["--config", str(cfg), "translate", str(subtitle), "--dry-run"]
+        app,
+        [
+            "--config",
+            str(cfg),
+            "translate",
+            str(subtitle),
+            "--dry-run",
+            "--embed-model",
+            "bge-m3",
+        ],
     )
 
     assert result.exit_code != 2, result.output

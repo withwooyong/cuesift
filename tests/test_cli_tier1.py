@@ -30,14 +30,24 @@ from typer.testing import CliRunner, Result
 from conftest import normalize_rich_message, strip_rich_decoration
 from cuesift import cli as cli_module
 from cuesift.cli import (
+    _EMBED_NOT_FOUND_PREFIX,
+    _EMBED_UNSUPPORTED_PREFIX,
     _TIER1_BOUND_PREFIX,
     _TIER1_COST_LIMIT,
     _TIER1_DEFAULT_MAX_RATIO,
     _TIER1_DEFAULT_SAMPLES,
     _TIER1_DEFAULT_TEMPERATURE,
+    _TIER1_EMBED_MODEL_REQUIRED,
     _TIER1_WARN_PREFIX,
     EXIT_TRANSLATION_FAILURE,
+    EXIT_UNAVAILABLE,
     app,
+)
+from cuesift.embed import (
+    EmbeddingNotFoundError,
+    EmbeddingUnsupportedError,
+    OpenAICompatibleEmbedder,
+    RetryableEmbeddingError,
 )
 from cuesift.tier1 import triage_with_tier1
 from cuesift.translate import (
@@ -68,7 +78,14 @@ def _no_env(monkeypatch: pytest.MonkeyPatch) -> None:
     `_resolve_llm`이 성공해 합법 조합이 **실제 번역으로 진행**한다 - 네트워크를
     타고, 단언은 엉뚱한 이유로 무너진다.
     """
-    for name in ("CUESIFT_BASE_URL", "CUESIFT_MODEL", "CUESIFT_API_KEY"):
+    for name in (
+        "CUESIFT_BASE_URL",
+        "CUESIFT_MODEL",
+        "CUESIFT_API_KEY",
+        "CUESIFT_EMBED_BASE_URL",
+        "CUESIFT_EMBED_MODEL",
+        "CUESIFT_EMBED_API_KEY",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -255,8 +272,17 @@ def test_합법_조합은_조합_검증을_통과한다(input_srt: Path, extra: 
     빠져나온 것이고, Tier 1 문구가 보이면 통과하지 못한 것이다.
 
     이 테스트가 없으면 "전부 거부"로 바꾼 구현이 스위트를 전원 통과시킨다.
+
+    **`--embed-model`을 함께 준다.** Task 5부터 그것도 조합 검증의 일부다
+    (FR-4.2) - 주지 않으면 이 "합법" 조합도 `--base-url` 층에 닿기 전에
+    Tier 1 층에서 거부된다.
     """
-    result = runner.invoke(app, _args(input_srt, "--tier1", "--review-budget", "10%", *extra))
+    result = runner.invoke(
+        app,
+        _args(
+            input_srt, "--tier1", "--review-budget", "10%", "--embed-model", "test-embed", *extra
+        ),
+    )
     assert _다음_층 in result.output
     assert "--tier1" not in result.output
 
@@ -294,6 +320,23 @@ def test_temperature_0은_거부한다(input_srt: Path) -> None:
     )
     assert result.exit_code == 2
     assert "0보다 커야 한다" in result.output
+
+
+def test_tier1인데_embed_model이_없으면_거부한다(input_srt: Path) -> None:
+    """역번역 신호가 임베딩을 요구하므로 시작 전에 막는다 (설계 §7).
+
+    **뒤로 미루면 비싼 역번역을 수백 회 부른 뒤 유사도 단계에서 전부
+    버리게 된다.** `--embed-model`에 기본값을 두지 않는 것은 §11 R8 때문
+    이다 - `bge-m3`는 개발자 로컬에 우연히 설치된 모델이지 규격이 아니다.
+
+    **`_TIER1_EMBED_MODEL_REQUIRED`를 임포트해 검사한다.** 문구를 이 테스트
+    안에서 다시 지어 넘기면 실제 문구가 바뀌어도 계속 통과해 화면과
+    갈라진다.
+    """
+    result = runner.invoke(app, _args(input_srt, "--tier1", "--review-budget", "10%"))
+    assert result.exit_code == 2
+    assert _TIER1_EMBED_MODEL_REQUIRED in result.output
+    assert "--embed-model" in result.output
 
 
 def test_도움말에_네_옵션이_모두_있다() -> None:
@@ -481,6 +524,33 @@ def _run_plain(
     return runner.invoke(app, _full_args(tmp_path, *extra, cache_dir=cache_dir))
 
 
+# `_run_tier1`이 아직 아무도 안 건드렸을 때 채우는 기본값의 원본 참조다
+# (Task 5 · FR-4.2). **동일성 비교(`is`)로 "아직 원본인가"를 가른다** - 이
+# 파일의 501·404·기타 테스트는 `_run_tier1`을 부르기 **전에**
+# `OpenAICompatibleEmbedder.probe`/`embed`를 이미 바꿔 놓는데, `_run_tier1`이
+# 무조건 다시 덮으면 그 monkeypatch가 조용히 지워진다.
+_ORIGINAL_EMBEDDER_PROBE = OpenAICompatibleEmbedder.probe
+_ORIGINAL_EMBEDDER_EMBED = OpenAICompatibleEmbedder.embed
+
+
+def _patch_default_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`probe()`·`embed()`를 아직 아무도 안 바꿨을 때만 가짜로 채운다 (Task 5).
+
+    `_full_args`의 `--base-url`(`http://h/v1`)은 존재하지 않는 호스트라 실제
+    `OpenAICompatibleEmbedder.probe()`가 그대로 돌면 타임아웃으로 죽는다 -
+    그런데 501·404 같은 probe() **자체**의 동작을 검사하는 테스트는 이
+    함수를 부르기 전에 이미 그 메서드를 바꿔 놨다. **동일성(`is`)으로
+    "아직 원본인가"를 갈라** 그 경우에는 무조건 덮지 않는다 - 덮으면 그
+    monkeypatch가 조용히 지워진다.
+    """
+    if OpenAICompatibleEmbedder.probe is _ORIGINAL_EMBEDDER_PROBE:
+        monkeypatch.setattr(OpenAICompatibleEmbedder, "probe", lambda self: 8)
+    if OpenAICompatibleEmbedder.embed is _ORIGINAL_EMBEDDER_EMBED:
+        monkeypatch.setattr(
+            OpenAICompatibleEmbedder, "embed", lambda self, texts: [[1.0, 0.0] for _ in texts]
+        )
+
+
 def _run_tier1(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -489,8 +559,20 @@ def _run_tier1(
     cache_dir: Path | None = None,
     to: str = "en",
 ) -> Result:
+    """`_full_args`에 `--tier1`을 더해 돌린다.
+
+    **`--embed-model`을 기본으로 채운다.** Task 5부터 `--tier1`이 그것을
+    요구하므로(FR-4.2), 이 헬퍼를 쓰는 기존 테스트 전부가 죽지 않으려면
+    여기서 한 번만 채워야 한다 - 낱개 테스트가 각자 채우면 하나만
+    빠뜨려도 아무 게이트도 안 걸린다. 이미 `extra`에 `--embed-model`이
+    있으면(이 파일의 probe 관련 테스트들) 중복으로 더하지 않는다.
+    """
     _patch_provider(monkeypatch, _clean_echo() if provider is None else provider)
-    return runner.invoke(app, _full_args(tmp_path, "--tier1", *extra, cache_dir=cache_dir, to=to))
+    _patch_default_embedder(monkeypatch)
+    embed_args = () if "--embed-model" in extra else ("--embed-model", "test-embed")
+    return runner.invoke(
+        app, _full_args(tmp_path, "--tier1", *embed_args, *extra, cache_dir=cache_dir, to=to)
+    )
 
 
 def test_tier1을_켜면_cost_includes에_tier1이_실린다(
@@ -756,6 +838,13 @@ def test_샘플마다_다른_캐시_키를_쓴다(tmp_path: Path, monkeypatch: p
     | 정상 `CachingProvider(CountingProvider(raw))` | **3** | 3 | **3** |
     | 순서만 뒤집음 | **2** | 3 | **3** |
 
+    **Task 5부터 위 표에 +1이 붙는다.** `_run_tier1`이 이제 `--embed-model`과
+    함께 동작하는 embedder를 기본으로 채우고, `embedder`가 있으면
+    `llm.backtranslation`이 자동으로 켜진다(`tier1.py` 단일 출처) - 후보
+    1건에 재번역(자가일관성) 2회 + 역번역 1회로 raw 호출이 **4**가 된다.
+    이 테스트의 요점(샘플 N개가 서로 다른 캐시 키를 쓰는가)과는 무관한
+    증가라 절대값만 4로 올린다.
+
     **캐시 엔트리 개수로는 이 결함을 볼 수 없다 - 구조적으로 불가능하다.**
     뒤집힌 배치에서 안쪽 캐시는 `attempt=0` 고정인데 바깥 캐시의 첫 샘플도
     `attempt=0`이라 **둘이 같은 키를 쓴다** - 두 번의 쓰기가 같은 파일에
@@ -780,8 +869,9 @@ def test_샘플마다_다른_캐시_키를_쓴다(tmp_path: Path, monkeypatch: p
 
     assert result.exit_code == 0, result.output
     _assert_tier1_ran(fake)
-    # ① 번역 배치 1회 + Tier 1 후보 1건 x 샘플 2회.
-    assert len(fake.calls) == 3, (
+    # ① 번역 배치 1회 + Tier 1 후보 1건 x 샘플 2회 + 역번역(`llm.backtranslation`) 1회
+    # (Task 5 - `_run_tier1`이 기본으로 채우는 embedder가 그것을 켠다).
+    assert len(fake.calls) == 4, (
         f"샘플이 실제로 나간 횟수가 다르다: {len(fake.calls)}회. "
         "2회여야 할 Tier 1 재번역이 1회로 뭉쳤다면 샘플이 같은 캐시 키를 쓴 것이다"
     )
@@ -993,6 +1083,102 @@ def test_tier1의_맨_ProviderError도_69다(tmp_path: Path, monkeypatch: pytest
     assert "계약을 어긴 서드파티 구현" in result.output
 
 
+def test_임베딩_501이면_역번역_전에_멈춘다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """501은 "모델이 못 한다"이므로 임베딩 모델을 지정하라고 안내한다 (설계 §4.2).
+
+    **probe()가 번역보다 먼저 불려야 한다.** 뒤로 미루면 후보 수만큼 부른
+    역번역이 유사도 단계에서 전부 버려진다 - `fake.calls`가 비어 있다는
+    것으로 번역이 시작조차 하지 않았음을 함께 확인한다.
+    """
+    probe_calls: list[str] = []
+
+    def fake_probe(self: OpenAICompatibleEmbedder) -> int:
+        probe_calls.append("probe")
+        raise EmbeddingUnsupportedError("501: 이 모델은 임베딩을 내지 못한다")
+
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "probe", fake_probe)
+    fake = _clean_echo()
+    result = _run_tier1(tmp_path, monkeypatch, "--embed-model", "qwen2.5:3b", provider=fake)
+
+    assert result.exit_code == 2
+    assert probe_calls == ["probe"]
+    assert not fake.calls, "번역이 이미 시작됐다 - probe가 번역보다 늦게 불렸다"
+    assert _EMBED_UNSUPPORTED_PREFIX in result.output
+
+
+def test_임베딩_404면_다른_메시지다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """없는 것과 못 하는 것은 대응이 정반대다 (설계 §4.2) - 백엔드를 바꿔야
+    하는 404를, 모델만 바꾸면 되는 501과 같은 문구로 뭉뚱그리면 안 된다.
+    """
+
+    def fake_probe(self: OpenAICompatibleEmbedder) -> int:
+        raise EmbeddingNotFoundError("404: 임베딩 엔드포인트가 없다")
+
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "probe", fake_probe)
+    result = _run_tier1(tmp_path, monkeypatch, "--embed-model", "bge-m3")
+
+    assert result.exit_code == 2
+    assert _EMBED_NOT_FOUND_PREFIX in result.output
+    # **501 문구와 겹치지 않는다.** 겹치면 두 예외를 하나로 묶는 변이가
+    # 잡히지 않는다 - 둘 다 참이 되어 어느 쪽이 죽어도 이 단언이 안 는다.
+    assert _EMBED_UNSUPPORTED_PREFIX not in result.output
+
+
+def test_임베딩_기타_오류는_69다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """501·404 둘 다 아닌 임베딩 예외는 '마지막 그물'로 69가 된다 -
+    번역 경로의 맨 `ProviderError`와 같은 이유(D14): traceback으로 죽이는
+    것보다 원인을 알리는 편이 낫다.
+    """
+
+    def fake_probe(self: OpenAICompatibleEmbedder) -> int:
+        raise RetryableEmbeddingError("503: 일시적 장애")
+
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "probe", fake_probe)
+    result = _run_tier1(tmp_path, monkeypatch, "--embed-model", "bge-m3")
+
+    assert result.exit_code == EXIT_UNAVAILABLE
+
+
+def test_임베딩_준비되면_차원_수가_화면에_나온다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe()가 낸 차원 수를 버리면 안 된다 - 그것이 무엇을 확인했는지
+    사용자가 아는 유일한 자리다.
+    """
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "probe", lambda self: 8)
+    result = _run_tier1(tmp_path, monkeypatch, "--embed-model", "test-embed")
+    assert result.exit_code == 0, result.output
+    assert "8차원" in result.output
+
+
+def test_probe가_통과하면_embedder가_triage_with_tier1에_전달된다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI가 만든 embedder가 `triage_with_tier1`에 그대로 내려가야 한다
+    (Task 4 인터페이스). 이 자리를 안 걸면 embedder가 조용히 `None`으로
+    빠지는 회귀를 위 테스트 무엇도 못 잡는다 - 다들 실패 경로거나 probe
+    자체만 본다.
+
+    **후보 0건 조합을 그대로 쓴다**(`_run_tier1`의 기본 `--tier1-*`, 즉
+    `_TIER1_RUNS`를 안 준다). `triage_with_tier1`의 실제 구현을 그대로
+    호출하면서도 `.embed()`를 타지 않으려는 것이다 - 0건이면 "후보가
+    없다" 경로가 embedder를 쓰기 전에 반환한다(`_outcome` 독스트링).
+    """
+    monkeypatch.setattr(OpenAICompatibleEmbedder, "probe", lambda self: 8)
+    real_triage_with_tier1 = triage_with_tier1
+    captured: dict[str, object] = {}
+
+    def _spy(*args: object, **kwargs: object) -> object:
+        captured["embedder"] = kwargs.get("embedder")
+        return real_triage_with_tier1(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli_module, "triage_with_tier1", _spy)
+    result = _run_tier1(tmp_path, monkeypatch, "--embed-model", "test-embed")
+
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured.get("embedder"), OpenAICompatibleEmbedder)
+
+
 # ---------------------------------------------------------------------------
 # `--dry-run`의 Tier 1 호출 상한 (설계 D10)
 #
@@ -1030,7 +1216,9 @@ def _dry_run_args(input_path: Path, tmp_path: Path, *extra: str, to: str = "en")
     """`_full_args`와 같은 골격이되 입력이 `tmp_path`에 만든 파일이다.
 
     `--review-budget`을 빼면 안 된다 - `--tier1`이 트리아지 정책을 요구하므로
-    조합 검증이 exit 2로 끊어 dry-run 분기에 **닿지도 못한다.**
+    조합 검증이 exit 2로 끊어 dry-run 분기에 **닿지도 못한다.** 같은 이유로
+    `--embed-model`도 기본으로 채운다(Task 5 · FR-4.2) - `--tier1`이 없는
+    호출에는 무해하게 무시된다.
     """
     return [
         "translate",
@@ -1045,6 +1233,8 @@ def _dry_run_args(input_path: Path, tmp_path: Path, *extra: str, to: str = "en")
         "m1",
         "--review-budget",
         "10%",
+        "--embed-model",
+        "test-embed",
         "--no-cache",
         "--dry-run",
         *extra,
@@ -1406,10 +1596,15 @@ def test_Tier1_경로의_융합_두_곳도_설정_가중치를_쓴다(
     fake = _clean_echo()
     본것 = _spy_fuse(monkeypatch, tier1_module)
     _patch_provider(monkeypatch, fake)
+    _patch_default_embedder(monkeypatch)
 
     result = runner.invoke(
         app,
-        ["--config", str(cfg), *_full_args(tmp_path, "--tier1", *_TIER1_RUNS)],
+        [
+            "--config",
+            str(cfg),
+            *_full_args(tmp_path, "--tier1", "--embed-model", "test-embed", *_TIER1_RUNS),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1435,10 +1630,15 @@ def test_Tier1_재점수가_1차_융합과_같은_가중치를_쓴다(
     fake = _clean_echo()
     본것 = _spy_fuse(monkeypatch, tier1_module)
     _patch_provider(monkeypatch, fake)
+    _patch_default_embedder(monkeypatch)
 
     result = runner.invoke(
         app,
-        ["--config", str(cfg), *_full_args(tmp_path, "--tier1", *_TIER1_RUNS)],
+        [
+            "--config",
+            str(cfg),
+            *_full_args(tmp_path, "--tier1", "--embed-model", "test-embed", *_TIER1_RUNS),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1471,7 +1671,11 @@ def test_진행_표시가_Tier_1과_리포트_단계까지_덮는다(
     """
     fake = _clean_echo()
     _patch_provider(monkeypatch, fake)
-    result = runner.invoke(app, _full_args(tmp_path, "--tier1", "--progress", *_TIER1_RUNS))
+    _patch_default_embedder(monkeypatch)
+    result = runner.invoke(
+        app,
+        _full_args(tmp_path, "--tier1", "--embed-model", "test-embed", "--progress", *_TIER1_RUNS),
+    )
     assert result.exit_code == 0, result.stderr
     _assert_tier1_ran(fake)
 
