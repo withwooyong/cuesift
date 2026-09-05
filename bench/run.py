@@ -170,7 +170,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=None, help="역번역에 쓸 LLM 모델")
     parser.add_argument("--embed-base-url", default=None, help="비우면 --base-url을 그대로 쓴다")
     parser.add_argument("--embed-model", default=None)
-    parser.add_argument("--cache-dir", type=Path, default=None)
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="역번역·임베딩 캐시 디렉터리 (재실행 시 재사용)",
+    )
     return parser
 
 

@@ -329,9 +329,9 @@ def triage_with_tier1(
     # FR-4.2 하나가 FR-4.1의 기존 사용자를 깬다.
     #
     # `tier1_ctx.embedder is None`으로 판단하는 이유는 이것 하나다: Task 4가
-    # `triage_with_tier1`에 `embedder` 인자를 더해 `Tier1Context`에 실어 주는
-    # 순간 이 조건이 저절로 꺼지고 `llm.backtranslation`이 자동으로 켜진다 -
-    # 이 필터를 다시 손볼 필요가 없다.
+    # `triage_with_tier1`에 더한 `embedder` 인자(위 시그니처 참고)가
+    # `Tier1Context`에 실리면 이 조건이 저절로 꺼지고 `llm.backtranslation`이
+    # 자동으로 켜진다 - 이 필터를 다시 손볼 필요가 없다.
     #
     # **`set`이 아니라 리스트 컴프리헨션으로 순서를 보존한다.** `collect_tier1`의
     # 기본 경로(`enabled=None`, `signals/base.py:249`)는 `_REGISTRY` 삽입 순서를

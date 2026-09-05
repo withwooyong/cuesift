@@ -464,7 +464,9 @@ def test_tier1_비교표에_분모가_실린다():
         tier1={"negation_recall": 0.4507, "clean_recall": 0.60, "clean_total": 35},
         budget=0.30,
     )
-    assert "35" in rendered
+    table_rows = [line for line in rendered.splitlines() if line.startswith("| clean 부분집합")]
+    assert table_rows, "clean 부분집합 표 행이 없다"
+    assert "(n=35)" in table_rows[0], "표 행 자체에 분모가 실려야 한다 (caveat 산문이 아니라)"
     assert "2.9" in rendered or "해상도" in rendered
 
 
