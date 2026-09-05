@@ -12,7 +12,7 @@ import dataclasses
 import json
 
 from bench.measure import BudgetResult
-from bench.report import RunMeta, render_markdown, write_report
+from bench.report import RunMeta, render_markdown, render_tier1_comparison, write_report
 
 # 실측값(Task 7 리포트) — en-ko. ja-ko는 0.9111%.
 _HARD_FAIL_FP_RATE = 0.009556
@@ -449,3 +449,60 @@ def test_ablation_omits_harmful_paragraph_when_no_negative_drops():
     """음수 하락폭이 없으면(모든 신호가 도움이 됨) 문단을 생략한다."""
     md = render_markdown(META, RESULTS, DROPS, BASELINE)
     assert "가장 해로움" not in md
+
+
+# --- 태스크7 브리프 Step 2: Tier 1 비교표 ------------------------------------
+
+
+def test_tier1_비교표에_분모가_실린다():
+    """부분집합 Recall은 분모 없이 쓰면 소수점이 신뢰받는다 (설계 §8.2).
+
+    ja 표본의 정상 반전은 약 35건이라 해상도가 1/35 = 2.9%다.
+    """
+    rendered = render_tier1_comparison(
+        tier0={"negation_recall": 0.1972, "clean_recall": 0.20, "clean_total": 35},
+        tier1={"negation_recall": 0.4507, "clean_recall": 0.60, "clean_total": 35},
+        budget=0.30,
+    )
+    assert "35" in rendered
+    assert "2.9" in rendered or "해상도" in rendered
+
+
+def test_tier1_비교표는_negation_전체와_clean_부분집합을_모두_담는다():
+    """하나만 실리면 이월 19번이 다시 열린다 — 오염된 표본만으로 판단하게 된다."""
+    rendered = render_tier1_comparison(
+        tier0={"negation_recall": 0.10, "clean_recall": 0.20, "clean_total": 35},
+        tier1={"negation_recall": 0.30, "clean_recall": 0.50, "clean_total": 35},
+        budget=0.10,
+    )
+    assert "10.00%" in rendered
+    assert "30.00%" in rendered
+    assert "20.00%" in rendered
+    assert "50.00%" in rendered
+
+
+def test_tier1_비교표의_해상도는_1_나누기_clean_total로_계산된다():
+    """해상도가 상수 문구가 아니라 실제 `1/clean_total`에서 나와야 한다.
+
+    n=4처럼 나눗셈 결과가 딱 떨어지는 값을 골라 "25.0%"가 정확히 나오는지
+    본다 — `"2.9" in rendered or "해상도" in rendered`(브리프 원문 단언)는
+    "해상도"라는 단어가 문구에 항상 있어 계산값이 틀려도 통과한다
+    (실측: `resolution_pct`를 0.0으로 고정해도 위 두 테스트가 전부 통과했다).
+    """
+    rendered = render_tier1_comparison(
+        tier0={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 4},
+        tier1={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 4},
+        budget=0.10,
+    )
+    assert "25.0%" in rendered
+
+
+def test_tier1_비교표는_clean_total이_0이면_해상도_대신_안내한다():
+    """분모가 0이면 나눗셈을 하지 않는다 — `ZeroDivisionError`도, 거짓
+    해상도(`1/0`)도 내지 않는다."""
+    rendered = render_tier1_comparison(
+        tier0={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 0},
+        tier1={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 0},
+        budget=0.10,
+    )
+    assert "해상도를 계산할 수 없다" in rendered

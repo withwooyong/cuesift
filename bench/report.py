@@ -515,6 +515,52 @@ def render_markdown(
     return "\n".join(lines)
 
 
+def render_tier1_comparison(
+    tier0: Mapping[str, float | int],
+    tier1: Mapping[str, float | int],
+    *,
+    budget: float,
+) -> str:
+    """Tier 0 대 Tier 0+1의 negation Recall 비교 (FR-4.2 · 태스크7 브리프 Step 2).
+
+    `tier0`·`tier1`은 각각 `{"negation_recall", "clean_recall",
+    "clean_total"}`을 담는다 — `negation_recall`은 negation 라벨 전체
+    (표기 변이·비문 포함) 기준이고, `clean_recall`은 `bench.classify_negation`이
+    `CLEAN`으로 판정한 **정상 반전** 부분집합만의 Recall이다(이월 19번이
+    이 구분이 없어 오염된 표본을 그대로 썼다).
+
+    **분모 없는 부분집합 Recall은 소수점이 신뢰받는다.** `clean_total`이
+    작으면(ja 표본 실측 약 35건) 해상도가 1/`clean_total`로 성기다 —
+    35건이면 2.9%p 단위로만 값이 바뀌므로 "62.07%"가 진짜 62.07%가 아니라
+    22/35라는 것을 분모 없이는 독자가 알 수 없다. 그래서 분모를 표에
+    항상 함께 낸다.
+    """
+    clean_total = int(tier1.get("clean_total") or tier0.get("clean_total") or 0)
+    resolution_pct = 100.0 / clean_total if clean_total else 0.0
+
+    lines = [
+        f"### Tier 1 비교 (예산 {budget:.0%})",
+        "",
+        "| 지표 | Tier 0 | Tier 0+1 |",
+        "| --- | --- | --- |",
+        f"| negation Recall | {tier0.get('negation_recall', 0.0):.2%} | "
+        f"{tier1.get('negation_recall', 0.0):.2%} |",
+        f"| clean 부분집합 Recall (n={clean_total}) | "
+        f"{tier0.get('clean_recall', 0.0):.2%} | {tier1.get('clean_recall', 0.0):.2%} |",
+        "",
+    ]
+    if clean_total:
+        lines.append(
+            f"**분모가 작으면 해상도가 거칠다.** clean 부분집합은 {clean_total}건이라 "
+            f"해상도가 1/{clean_total} = {resolution_pct:.1f}%다 — 이보다 가는 자리는 "
+            "표본 크기가 아니라 반올림이 만든 착시다."
+        )
+    else:
+        lines.append("**clean 부분집합이 비어 있어 해상도를 계산할 수 없다.**")
+
+    return "\n".join(lines)
+
+
 def write_report(
     meta: RunMeta,
     results: Sequence[BudgetResult],
