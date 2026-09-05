@@ -12,6 +12,7 @@ import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
+from cuesift.embed.provider import Embedder
 from cuesift.progress import ProgressCallback
 from cuesift.risk.fuse import fuse
 from cuesift.segment import Segment, SegmentRisk
@@ -43,6 +44,7 @@ def triage_with_tier1(
     excluded_ids: Collection[str] = (),
     weights: Mapping[str, float] | None = None,
     on_progress: ProgressCallback | None = None,
+    embedder: Embedder | None = None,
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -55,6 +57,11 @@ def triage_with_tier1(
     기본값이라 **출처가 있기 때문이다**(§11 R8 - 출처 없는 수치를 기본값으로
     넣지 않는다). 0.0이면 재번역이 전부 같아 신호가 죽는데, 그 방어는
     `Tier1Context`가 한다.
+
+    **`embedder`가 없으면 `llm.backtranslation`이 예외를 던진다** (FR-4.2 ·
+    설계 D6). 여기서 미리 막지 않는 이유는 어느 tier 1 수집기가 켜졌는지를
+    이 함수가 모르기 때문이다 - 자가일관성만 도는 실행에는 임베딩이 필요
+    없다. 가용성 탐지는 CLI가 한다.
 
     **`weights`는 두 `fuse` 호출에 모두 간다**(FR-8.4 · 설계 §4.3 ②).
     ②만 넘기고 ⑥을 두면 사용자 가중치로 고른 후보를 기본 가중치로 다시
@@ -230,6 +237,7 @@ def triage_with_tier1(
         provider_for=_provider_factory(provider, cache_dir=cache_dir, identity=identity),
         samples=samples,
         temperature=temperature,
+        embedder=embedder,
     )
 
     # ① Tier 0 - 비용 0, 전량
