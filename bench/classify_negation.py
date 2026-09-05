@@ -42,13 +42,27 @@ _EN_NEGATION = re.compile(r"\bnot\b|n't\b|\bnever\b|\bno\b|\bnothing\b|\bnone\b"
 # 빠졌다(원문은 "연구를 하지 않았습니다").
 _EN_NPI = re.compile(r"\bany\w*\b|\beither\b|\bat all\b|\byet\b", re.IGNORECASE)
 
+# en-01164 "I don't know, but we certainly can if we don't try." 실측 -
+# can't 하나만 제거되고 don't 가 둘 남아 부정 표지 카운트(len(negations)>=2)
+# 로 multi_negation 이 걸린다(HANDOFF.md:185).
+
 # --- 일본어(CJK) 패턴 : 단어 경계가 없다. 뒤따르는 글자를 배제해 이웃 어절을
 # 물지 않게 한다(이월19 오탐 5건 - 「しか」가 「しかし」를 잡았다) ---
 
 # 접속사 「しかし」제외. 「しか」단독은 부정 술어와 호응해야 하는 부사(~만)다.
-_JA_SHIKA_STRANDED = re.compile(r"しか(?!し)")
+# 「全く」・「ほとんど」도 같은 성질의 호응부사(HANDOFF.md:79 부류 C - 표본
+# 71건 중 11건, 전체 313건 중 30건)이지만 「しかし」같은 충돌어가 없어
+# 부정선행배제가 필요 없다. ja-02266 "全く分かります"(원문은 "전혀
+# 모릅니다")・ja-03950 "ほとんど登場しました"(원문은 "언급이 거의
+# 없었습니다") 실측.
+_JA_STRANDED_ADVERB = re.compile(r"しか(?!し)|全く|ほとんど")
 
 # 「しか」가 호응해야 하는 부정 술어 어미. 이 중 하나가 있으면 정상 반전이다.
+# 「ません」·「ない」는 실측 픽스처(ja-01114 등)로 검증됐다. 「ぬ」·「ず」
+# 종결 분기는 문어체 부정 종결(예: 「知らず」)을 놓치지 않으려는 일반화이며
+# **실측 픽스처 중 이 분기를 실제로 태운 것은 없다.** 제거하면 문어체 부정
+# 종결을 놓쳐 stranded_adverb 오탐이 늘 수 있으므로 남겨두되, 근거 없음을
+# 여기 남긴다.
 _JA_NEGATIVE_PREDICATE = re.compile(r"ません|ない|ぬ(?:、|。|$)|ず(?:、|。|$)")
 
 # 형용사 연용형(く) 뒤에 부정 「ありません」대신 긍정 「あります」가 붙은
@@ -58,6 +72,26 @@ _JA_NEGATIVE_PREDICATE = re.compile(r"ません|ない|ぬ(?:、|。|$)|ず(?:�
 # 아닌 부사 활용과 문자열로는 구분되지 않는다 - 실측 픽스처 밖의 위양성
 # 가능성을 배제하지 못한다.
 _JA_BROKEN_ADJECTIVE_NEGATIVE = re.compile(r"く(?:あります|ありました)")
+
+# 부정 고정형 관용구가 긍정으로 깨진 경우(HANDOFF.md:79 부류 B, 형용사가
+# 아니라 동사 활용). 「なければなりません」(반드시 ~해야 한다)이
+# 「なければなります」로, 「とは限りません」(반드시 ~는 아니다)이
+# 「とは限ります」로 깨진다 - 둘 다 부정 조동사 자리만 긍정으로 치환된
+# 같은 유형의 결함이다. ja-00711 "注意しなければなります"・ja-04583
+# "変わらなければなります"・ja-02250 "だけとは限ります"・ja-01891
+# "そうとは限ります" 실측. ja-01750 "なければ なります" 처럼 공백이 낀
+# 표기도 있어(자막 포맷 변이) 공백을 허용한다 - 개행은 아니므로
+# _strip_newlines 대상이 아니고 여기서 직접 흡수해야 한다.
+_JA_BROKEN_MODAL_IDIOM = re.compile(r"なければ\s*なります|とは限ります")
+
+# 코퍼스 「ではありません/でもありません」이 부정 조동사만 긍정으로 치환된
+# 깨진형(HANDOFF.md:79 부류 D - 표본 71건 중 11건, 전체 313건 중 62건으로
+# 결함 세 부류 중 가장 크다). 비문은 아니고 부자연한 것 - broken_fixed_form
+# 과 달리 문법적으로는 성립해 별도 카테고리(unnatural)로 둔다.
+# ja-02039 "これは地下水ではあります"・ja-02488 "言うまでもあります"
+# (でも 변이)・ja-04450 "わけでもあります" 실측. 「じゃ」구어형은 71건
+# 표본에서 발견되지 않아 이 정규식에 넣지 않았다 - 지어내지 않는다.
+_JA_UNNATURAL_COPULA = re.compile(r"で[はも]あります")
 
 # 부정 표지 총계. 2회 이상이면 중복 부정으로 의미가 흔들린 것으로 본다.
 # 「かないますし」처럼 고정 관용구(適う 활용)에 우연히 "ない" 부분 문자열이
@@ -90,10 +124,6 @@ def classify(source_text: str, mutated_text: str, lang: str) -> str:
 
     source_text 는 현재 규칙에서 쓰이지 않는다 - 모듈 docstring의 인터페이스
     계약 설명을 참고.
-
-    "unnatural" 은 이월19 실측 픽스처가 없어 이 버전의 규칙에서는 아직
-    생성되지 않는다 - 근거 없이 규칙을 만들지 않는다(이 저장소의 원칙,
-    "가중치는 튜닝하지 않는다"와 같은 이유).
     """
     del source_text  # 인터페이스 계약 유지용 - 위 독스트링 참고
 
@@ -118,9 +148,11 @@ def _classify_en(text: str) -> str:
 
 
 def _classify_ja(text: str) -> str:
-    if _JA_BROKEN_ADJECTIVE_NEGATIVE.search(text):
+    if _JA_BROKEN_ADJECTIVE_NEGATIVE.search(text) or _JA_BROKEN_MODAL_IDIOM.search(text):
         return BROKEN_FIXED_FORM
-    if _JA_SHIKA_STRANDED.search(text) and not _JA_NEGATIVE_PREDICATE.search(text):
+    if _JA_UNNATURAL_COPULA.search(text):
+        return UNNATURAL
+    if _JA_STRANDED_ADVERB.search(text) and not _JA_NEGATIVE_PREDICATE.search(text):
         return STRANDED_ADVERB
     if len(_JA_NEGATIVE_COUNT.findall(text)) >= 2:
         return MULTI_NEGATION
