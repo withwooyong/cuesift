@@ -15,7 +15,13 @@ from pathlib import Path
 from cuesift.progress import ProgressCallback
 from cuesift.risk.fuse import fuse
 from cuesift.segment import Segment, SegmentRisk
-from cuesift.signals.base import SignalContext, Tier1Context, collect_all, collect_tier1
+from cuesift.signals.base import (
+    SignalContext,
+    Tier1Context,
+    collect_all,
+    collect_tier1,
+    registry,
+)
 from cuesift.store.provider import CachingProvider
 from cuesift.translate.provider import Provider
 from cuesift.triage.policy import gray_zone, select_by_budget, select_tier1_candidates
@@ -304,7 +310,23 @@ def triage_with_tier1(
         return scored
 
     # ⑤ Tier 1 - 후보에만
-    tier1 = collect_tier1(candidates, tier1_ctx, on_progress=on_progress)
+    #
+    # **기본 집합을 여기서 직접 계산한다.** `collect_tier1(enabled=None)`은
+    # 등록된 tier=1 신호 전부를 돈다(`signals/base.py`의 `tier == 1` 분기) -
+    # `llm.backtranslation`(FR-4.2)이 등록되자 이 경로의 유일한 호출자인
+    # 여기가 임베딩 백엔드를 강제로 요구하게 됐다. **이 필터가 없으면**
+    # 임베딩 백엔드가 없는(= 아직 `embedder`를 안 쓴) 호출자의
+    # `llm.self_consistency`(FR-4.1)까지 `ValueError`로 함께 죽는다 -
+    # FR-4.2 하나가 FR-4.1의 기존 사용자를 깬다.
+    #
+    # `tier1_ctx.embedder is None`으로 판단하는 이유는 이것 하나다: Task 4가
+    # `triage_with_tier1`에 `embedder` 인자를 더해 `Tier1Context`에 실어 주는
+    # 순간 이 조건이 저절로 꺼지고 `llm.backtranslation`이 자동으로 켜진다 -
+    # 이 필터를 다시 손볼 필요가 없다.
+    default_tier1 = {name for name, c in registry().items() if c.tier == 1}
+    if tier1_ctx.embedder is None:
+        default_tier1.discard("llm.backtranslation")
+    tier1 = collect_tier1(candidates, tier1_ctx, enabled=default_tier1, on_progress=on_progress)
 
     # ⑥ 재융합 - Tier 0 신호에 Tier 1 신호를 더해 다시 계산한다.
     # 이름은 "re-scored"다 - 두 신호 출처를 **더한다**(신호 소실 없음)는
