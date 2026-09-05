@@ -325,7 +325,31 @@ def _dump_raw(
     return path
 
 
+def _make_stdout_lossy() -> None:
+    """콘솔 인코딩이 좁아도 출력이 죽지 않게 한다 (2026-09-05 실측).
+
+    **이 저장소는 한국어 출력이 규약인데 Windows 콘솔의 기본 인코딩은
+    cp949다.** 리포트 문자열의 엠대시(U+2014) 하나가 `print`를
+    `UnicodeEncodeError`로 죽였고, 그것이 벤치 전체를 exit 1로 끝냈다 -
+    한 시간 48분의 LLM 호출 뒤였다.
+
+    `errors="replace"`가 정답인 이유는 **콘솔 출력이 부수 효과이기 때문**이다.
+    사람이 읽으라고 찍는 한 줄이 측정을 죽이면 안 되고, 물음표로 바뀐 글자
+    하나는 파일에 남는 리포트에 영향이 없다.
+
+    `reconfigure`는 파이썬 3.7+의 `TextIOWrapper` 메서드다. 리다이렉트된
+    stdout에도 걸린다 - 파이프로 넘길 때가 오히려 인코딩이 좁아지는 자리다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            # `encoding`은 건드리지 않는다 - 환경이 UTF-8이면 그대로 두는 것이
+            # 맞고, 좁은 인코딩일 때만 대체 문자로 흘려보내면 된다.
+            reconfigure(errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_stdout_lossy()
     args = build_arg_parser().parse_args(argv)
 
     target_lang = args.pair.split("-")[0]
@@ -497,8 +521,15 @@ def main(argv: list[str] | None = None) -> int:
                 comparison = render_tier1_comparison(
                     tier0=tier0_scores, tier1=tier1_scores, budget=budget
                 )
-                print(comparison)
+                # **모으는 것이 먼저고 찍는 것이 나중이다.** 순서가 반대면
+                # `print`의 실패가 데이터 수집을 막는다 - 2026-09-05 실행에서
+                # 실제로 그랬다. cp949 콘솔이 이 문자열의 엠대시(U+2014)를
+                # 인코딩하지 못해 `print`가 죽었고, 그 예산 지점의 비교표가
+                # 목록에 들어가지 못해 아래 `if tier1_comparisons:`가 거짓이
+                # 되면서 리포트 재작성까지 통째로 건너뛰었다. 한 시간 48분의
+                # LLM 호출이 원자료로만 남았다(`finally` 덕분에 그것은 살았다).
                 tier1_comparisons.append(comparison)
+                print(comparison)
         finally:
             # 예산 루프가 도중에 죽어도(위 주석) 지금까지 모은 것은 남긴다.
             # `raw_records`가 비어도(첫 예산에서 죽음) 빈 목록으로라도 쓴다 —

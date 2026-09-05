@@ -10,12 +10,21 @@
 
 from __future__ import annotations
 
+import io
 import json
+import sys
 
 import pytest
 from bench.classify_negation import CLEAN
 from bench.inject import Label
-from bench.run import _collect_raw, _dump_raw, _resolve_embed_key, build_arg_parser
+from bench.report import render_tier1_comparison
+from bench.run import (
+    _collect_raw,
+    _dump_raw,
+    _make_stdout_lossy,
+    _resolve_embed_key,
+    build_arg_parser,
+)
 
 from cuesift.segment import Segment, SegmentRisk, Signal
 from cuesift.signals.backtranslation import BackTranslation
@@ -165,3 +174,46 @@ def test_임베딩_키가_없으면_번역_키로_폴백한다(monkeypatch):
     monkeypatch.setenv("CUESIFT_API_KEY", "TRANSLATE-SECRET")
     monkeypatch.delenv("CUESIFT_EMBED_API_KEY", raising=False)
     assert _resolve_embed_key() == "TRANSLATE-SECRET"
+
+
+def test_좁은_인코딩_콘솔에서도_비교표를_찍을_수_있다():
+    """cp949 stdout이 리포트 문자열을 만나도 `print`가 죽으면 안 된다.
+
+    **2026-09-05 실행에서 실제로 죽었다.** 벤치가 한 시간 48분 동안 LLM을
+    부른 뒤, 비교표의 엠대시(U+2014) 하나가 Windows 기본 콘솔 인코딩인
+    cp949를 넘지 못해 `UnicodeEncodeError`로 exit 1이 됐다. 그 지점이
+    `tier1_comparisons.append`보다 앞이라 리포트 재작성까지 함께 날아갔다.
+
+    아래 첫 단언이 파괴 실험을 겸한다 - 비교표에서 좁은 인코딩이 못 내는
+    문자가 사라지면 이 테스트가 먼저 실패해 알려 준다. 문자를 없애는 것이
+    해법이 아니라는 뜻은 아니지만, **없앴다는 사실이 조용히 묻히면 안 된다.**
+    """
+    rendered = render_tier1_comparison(
+        tier0={"negation_recall": 0.1972, "clean_recall": 0.20, "clean_total": 35},
+        tier1={"negation_recall": 0.4507, "clean_recall": 0.60, "clean_total": 35},
+        budget=0.30,
+    )
+
+    narrow = io.TextIOWrapper(io.BytesIO(), encoding="cp949", newline="")
+    with pytest.raises(UnicodeEncodeError):
+        print(rendered, file=narrow)
+
+    # `_make_stdout_lossy`가 하는 일이 이것이다 - 인코딩은 그대로 두고
+    # 오류 처리만 바꾼다.
+    narrow.reconfigure(errors="replace")
+    print(rendered, file=narrow)
+
+
+def test_stdout을_손실_허용으로_바꾼다(capsys):
+    """`_make_stdout_lossy`가 실제로 `errors`를 바꾸는지 본다.
+
+    **이름만 있고 아무것도 안 하는 함수가 되지 않게 한다.** 위 테스트는
+    `reconfigure`를 직접 부르므로 이 함수가 비어 있어도 통과한다.
+    """
+    with capsys.disabled():
+        before = sys.stdout.errors
+        _make_stdout_lossy()
+        assert sys.stdout.errors == "replace"
+        # 다른 테스트에 영향을 주지 않도록 되돌린다. pytest가 stdout을
+        # 가로채므로 원래 값이 "replace"였을 수도 있다 - 그때도 무해하다.
+        sys.stdout.reconfigure(errors=before)
