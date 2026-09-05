@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from cuesift.embed import Embedder
 from cuesift.glossary import Glossary
 from cuesift.progress import ProgressCallback, ProgressUpdate
 from cuesift.segment import Segment, Signal
@@ -91,6 +92,17 @@ class Tier1Context:
     provider_for: Callable[[int], Provider]
     samples: int
     temperature: float
+    embedder: Embedder | None = None
+    """임베딩 계층 (FR-4.2 · 설계 §4).
+
+    **팩토리가 아니라 값을 직접 담는다.** `provider_for(attempt)`가 팩토리인
+    것은 자가일관성이 시도마다 캐시를 갈라야 하기 때문인데, 임베딩은
+    결정론적이라 가를 것이 없다.
+
+    기본값이 `None`인 것은 기존 호출자를 깨지 않기 위해서다. 배선이 빠진
+    채로 `llm.backtranslation`이 돌면 그 신호가 예외를 던진다 - 조용히
+    `None`을 내면 신호가 전 구간 0건으로 끝나고 그것이 "안전"으로 읽힌다.
+    """
 
     def __post_init__(self) -> None:
         # 0이면 재번역이 전부 동일해 자가일관성 점수가 **항상 0.0**이 된다.

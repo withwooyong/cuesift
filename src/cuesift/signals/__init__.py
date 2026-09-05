@@ -32,4 +32,4 @@ __all__ = [
 ]
 
 # 임포트만으로 레지스트리에 등록된다. ruff가 미사용으로 지우지 않도록 아래에 지시자를 붙인다.
-from cuesift.signals import derived, llm, structural  # noqa: E402,F401
+from cuesift.signals import backtranslation, derived, llm, structural  # noqa: E402,F401
