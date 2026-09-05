@@ -15,6 +15,7 @@ from pathlib import Path
 from cuesift.progress import ProgressCallback
 from cuesift.risk.fuse import fuse
 from cuesift.segment import Segment, SegmentRisk
+from cuesift.signals.backtranslation import BackTranslation
 from cuesift.signals.base import (
     SignalContext,
     Tier1Context,
@@ -323,9 +324,21 @@ def triage_with_tier1(
     # `triage_with_tier1`에 `embedder` 인자를 더해 `Tier1Context`에 실어 주는
     # 순간 이 조건이 저절로 꺼지고 `llm.backtranslation`이 자동으로 켜진다 -
     # 이 필터를 다시 손볼 필요가 없다.
-    default_tier1 = {name for name, c in registry().items() if c.tier == 1}
+    #
+    # **`set`이 아니라 리스트 컴프리헨션으로 순서를 보존한다.** `collect_tier1`의
+    # 기본 경로(`enabled=None`, `signals/base.py:249`)는 `_REGISTRY` 삽입 순서를
+    # 그대로 쓰는데, 여기서 `set`을 거치면 그 순서가 해시 시드에 종속된다 -
+    # `collect_tier1`의 `for name in names` 루프(`:268`)가 LLM 호출 순서와
+    # `SegmentRisk.signals` 배열 순서를 그대로 결정하므로, 신호가 둘 이상이 되는
+    # 날(Task 4) `review.json`의 신호 순서·캐시 기록 순서가 실행마다 갈려
+    # NFR-3(재현성)을 어긴다. 오늘 신호가 하나뿐이라 관측되지 않을 뿐이다.
+    default_tier1 = [name for name, c in registry().items() if c.tier == 1]
     if tier1_ctx.embedder is None:
-        default_tier1.discard("llm.backtranslation")
+        # 문자열을 하드코딩하지 않는다 - `BackTranslation.name`이 바뀌면
+        # 이 조건도 같이 바뀐다. `signals.backtranslation`은 `tier1.py`를
+        # import하지 않으므로 순환이 생기지 않는다(신호 등록 시점에
+        # `signals/__init__.py`가 이미 이 모듈을 당겨 온 뒤다).
+        default_tier1 = [name for name in default_tier1 if name != BackTranslation.name]
     tier1 = collect_tier1(candidates, tier1_ctx, enabled=default_tier1, on_progress=on_progress)
 
     # ⑥ 재융합 - Tier 0 신호에 Tier 1 신호를 더해 다시 계산한다.

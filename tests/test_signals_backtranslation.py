@@ -11,6 +11,7 @@ from collections.abc import Sequence
 import pytest
 from tests.fakes.provider import EchoProvider
 
+from cuesift.glossary import Glossary, GlossaryEntry
 from cuesift.segment import Segment
 from cuesift.signals.backtranslation import BackTranslation
 from cuesift.signals.base import SignalContext, Tier1Context
@@ -40,9 +41,9 @@ def _segment(source: str, target: str | None) -> Segment:
     )
 
 
-def _ctx(embedder, provider) -> Tier1Context:
+def _ctx(embedder, provider, glossary: Glossary | None = None) -> Tier1Context:
     signal = SignalContext(
-        profile=load_builtin("ted-en"), glossary=None, source_lang="ko", target_lang="en"
+        profile=load_builtin("ted-en"), glossary=glossary, source_lang="ko", target_lang="en"
     )
     return Tier1Context(
         signal=signal,
@@ -115,10 +116,20 @@ def test_역번역은_방향을_뒤집는다():
 def test_용어집을_넘기지_않는다():
     # 용어집이 원문 어휘를 강제하면 오류 문장의 역번역도 원문에 가까워져
     # 유사도 격차가 줄고 신호가 둔해진다 (설계 D2).
+    #
+    # **`glossary=None`인 픽스처만으로는 이 테스트가 공허하다** (리뷰 Important 1).
+    # `ctx.signal.glossary`가 애초에 `None`이면 `_backtranslate`가
+    # `glossary=None` 대신 `glossary=ctx.signal.glossary`를 넘기도록 바뀌어도
+    # `prompt.py`의 `if glossary is not None: ... if entries:`가 여전히 빈
+    # 블록만 만들어 단언이 그대로 통과한다. **항목이 실제로 있고, 그 항목이
+    # 역번역 대상 문자열("It rains")에 실제로 등장하도록** 픽스처를 채워야
+    # 버그가 들어오면 "용어집 (반드시 이 대응어를 쓴다):" 블록이 실제로
+    # 프롬프트에 나타나 이 단언이 깨진다.
     seg = _segment("비가 온다", "It rains")
     provider = EchoProvider(transform=lambda s: s)
     embedder = FakeEmbedder({"비가 온다": [1.0, 0.0], "It rains": [1.0, 0.0]})
-    BackTranslation().collect_tier1(seg, _ctx(embedder, provider))
+    glossary = Glossary(entries=(GlossaryEntry(source="rains", targets=("비",)),))
+    BackTranslation().collect_tier1(seg, _ctx(embedder, provider, glossary=glossary))
     sent = "\n".join(m.content for m in provider.last_messages)
     assert "용어집" not in sent
 
@@ -140,6 +151,32 @@ def test_detail에_역번역문과_코사인이_실린다():
     assert signal is not None
     assert signal.detail["back_translation"] == "It rains"
     assert signal.detail["cosine"] == pytest.approx(1.0)
+
+
+def test_역번역이_실패하면_None이다():
+    # 재시도·개별 폴백이 전부 파싱에 실패해 target_text가 None으로 남는
+    # 경로다 (리뷰 Important 4). `garbage=True`는 `RetryableProviderError`를
+    # 던지지 않고 파싱 불가능한 텍스트를 반환하므로 `InvalidResponseError`
+    # 경로(배치 실패 -> 개별 폴백도 실패)를 타고, 실제 대기(sleep) 없이
+    # 빠르게 끝난다.
+    seg = _segment("비가 온다", "It rains")
+    embedder = FakeEmbedder({})
+    provider = EchoProvider(garbage=True)
+    assert BackTranslation().collect_tier1(seg, _ctx(embedder, provider)) is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_역번역이_빈_문자열이거나_공백뿐이면_None이다(blank: str):
+    # 빈 문자열과 공백뿐인 문자열을 모두 덮는다 (리뷰 Important 4 · Minor 6).
+    # 공백뿐인 역번역이 그대로 임베더에 가면 영벡터가 나올 수 있고 `cosine`이
+    # 거기서 `ValueError`를 던져 벤치 실행이 죽는다 - `backtranslation.py`의
+    # `if not back or not back.strip()`가 이 값을 걸러야 embedder.embed가
+    # 아예 불리지 않는다. `FakeEmbedder({})`(빈 조회표)로 두어, 걸러지지
+    # 않으면 `KeyError`로 이 사실이 드러나게 했다.
+    seg = _segment("비가 온다", "It rains")
+    embedder = FakeEmbedder({})
+    provider = EchoProvider(transform=lambda s: blank)
+    assert BackTranslation().collect_tier1(seg, _ctx(embedder, provider)) is None
 
 
 def test_hard_fail이_아니다():
@@ -176,22 +213,31 @@ def test_역번역과_정방향_번역이_같은_캐시를_쓰지_않는다():
     성질이 깨진다"고 경고한다. 역번역이 그 조건에 정확히 해당하는데도
     안전한 이유는 **번역 방향이 반대라 messages_sha가 다르기** 때문이다.
 
-    **누군가 역번역을 같은 방향으로 바꾸면 이 테스트가 실패해야 한다.**
-    바뀌면 정방향 번역 캐시에 히트해 역번역문이 번역문과 같아지고,
-    코사인이 1.0에 붙어 신호가 전 구간 0점이 된다.
+    **`CacheRequest` 두 개를 손으로 지어 키만 비교하면 이 신호의 실제
+    코드를 한 줄도 거치지 않는다** (리뷰 Important 2). 그러면
+    `_backtranslate`가 방향을 뒤집지 않도록 바뀌어도 이 테스트는 여전히
+    `build_messages_for`가 각기 다른 인자로 만든 두 프롬프트를 비교할
+    뿐이라 통과해 버린다 - 실제 방향 게이트는 `test_역번역은_방향을_뒤집는다`
+    하나뿐이었다. **`BackTranslation.collect_tier1`을 실제로 돌려 프로바이더가
+    받은 메시지(`provider.last_messages`)로 역방향 키를 만든다.**
     """
     from cuesift.store.cache import CacheRequest
 
+    seg = _segment("비가 온다", "It rains")
+    provider = EchoProvider(transform=lambda s: s)
+    embedder = FakeEmbedder({"비가 온다": [1.0, 0.0], "It rains": [1.0, 0.0]})
+    BackTranslation().collect_tier1(seg, _ctx(embedder, provider))
+
+    backward = CacheRequest(
+        identity="test|model",
+        temperature=0.0,
+        max_tokens=None,
+        messages=tuple(provider.last_messages),
+    )
     forward = CacheRequest(
         identity="test|model",
         temperature=0.0,
         max_tokens=None,
         messages=tuple(build_messages_for("ko", "en", "비가 온다")),
-    )
-    backward = CacheRequest(
-        identity="test|model",
-        temperature=0.0,
-        max_tokens=None,
-        messages=tuple(build_messages_for("en", "ko", "It rains")),
     )
     assert forward.key != backward.key

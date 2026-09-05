@@ -50,9 +50,12 @@ class BackTranslation:
             )
 
         back = self._backtranslate(seg, ctx)
-        # 역번역이 실패했거나 빈 문자열이면 판정 불가다. 빈 문자열의
-        # 임베딩은 영벡터가 될 수 있고 `cosine`이 거기서 예외를 낸다.
-        if not back:
+        # 역번역이 실패했거나 빈 문자열·공백뿐인 문자열이면 판정 불가다.
+        # **`.strip()`이 아니면 무엇이 깨지는가.** 공백뿐인 문자열도
+        # 임베더에 가면 영벡터가 나올 수 있고, `cosine`이 영벡터에서
+        # `ValueError`를 던져 벤치 실행 전체가 죽는다(공백뿐인 번역은
+        # `test_tier1.py`의 실제 트랙에서도 나오는 현상이다 - 가정이 아니다).
+        if not back or not back.strip():
             return None
 
         vector_source, vector_back = ctx.embedder.embed([seg.source_text, back])
