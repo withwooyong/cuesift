@@ -311,6 +311,14 @@ _EMBED_UNSUPPORTED_PREFIX = "임베딩 모델"
 # 상호 배타적인 문자열이어야 두 예외를 뭉뚱그리는 변이를 실제로 잡는다.
 _EMBED_NOT_FOUND_PREFIX = "이 백엔드에는 임베딩 엔드포인트가 없다"
 
+# `probe()`가 성공했을 때 내는 한 줄의 템플릿 (설계 §7).
+#
+# **리터럴로 두면 안 된다.** 테스트가 `"8차원"`처럼 문구를 자기 안에서 다시
+# 지으면 이 템플릿 자체가 바뀌어도(예: "차원"이 "dims"가 되거나 괄호가
+# 없어져도) 계속 통과해 화면과 갈라진다 - 위 세 상수와 같은 이유다. 테스트는
+# 이 템플릿을 임포트해 `.format(...)`으로 기대값을 짓는다.
+_EMBED_READY_TEMPLATE = "임베딩 준비됨 ({model}, {dimensions}차원)"
+
 app = typer.Typer(
     name="cuesift",
     # em dash(U+2014)를 쓰지 않는다. 이 문자열은 `--help`로 출력되는데
@@ -1969,7 +1977,7 @@ def translate(
             raise typer.Exit(EXIT_UNAVAILABLE) from exc
         # **차원 수를 버리지 않는다.** `probe()`가 무엇을 확인했는지
         # 사용자가 알 수 있는 유일한 자리다.
-        _echo(f"임베딩 준비됨 ({resolved_embed_model}, {dimensions}차원)")
+        _echo(_EMBED_READY_TEMPLATE.format(model=resolved_embed_model, dimensions=dimensions))
 
     # **숫자 크기로 합치지 않는다.** 우선순위는 `_EXIT_PRIORITY`가 갖는다.
     #

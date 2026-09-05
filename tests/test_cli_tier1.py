@@ -31,6 +31,7 @@ from conftest import normalize_rich_message, strip_rich_decoration
 from cuesift import cli as cli_module
 from cuesift.cli import (
     _EMBED_NOT_FOUND_PREFIX,
+    _EMBED_READY_TEMPLATE,
     _EMBED_UNSUPPORTED_PREFIX,
     _TIER1_BOUND_PREFIX,
     _TIER1_COST_LIMIT,
@@ -1144,11 +1145,15 @@ def test_임베딩_준비되면_차원_수가_화면에_나온다(
 ) -> None:
     """probe()가 낸 차원 수를 버리면 안 된다 - 그것이 무엇을 확인했는지
     사용자가 아는 유일한 자리다.
+
+    **`_EMBED_READY_TEMPLATE`을 임포트해 기대값을 짓는다.** `"8차원"`을 이
+    테스트 안에서 다시 지으면 템플릿 자체가 바뀌어도(괄호가 없어지거나
+    "차원"이 다른 말로 바뀌어도) 계속 통과해 화면과 갈라진다.
     """
     monkeypatch.setattr(OpenAICompatibleEmbedder, "probe", lambda self: 8)
     result = _run_tier1(tmp_path, monkeypatch, "--embed-model", "test-embed")
     assert result.exit_code == 0, result.output
-    assert "8차원" in result.output
+    assert _EMBED_READY_TEMPLATE.format(model="test-embed", dimensions=8) in result.output
 
 
 def test_probe가_통과하면_embedder가_triage_with_tier1에_전달된다(
@@ -1177,6 +1182,95 @@ def test_probe가_통과하면_embedder가_triage_with_tier1에_전달된다(
 
     assert result.exit_code == 0, result.output
     assert isinstance(captured.get("embedder"), OpenAICompatibleEmbedder)
+
+
+# --- `_resolve_embed`·`_resolve_embed_key` 단위 테스트 (인계 파일 판정 1·2) ---
+#
+# **`_run_tier1`을 거치지 않는다.** 위쪽 CLI 스위트는 전부 종료 코드로
+# 판정하는데, 인계 파일이 못 박은 대로 "값이 어느 쪽에서 오든 나오고
+# 종료 코드는 그대로라 CLI 레벨 단언으로는 이 구멍이 드러나지 않는다."
+# `tests/test_cli_config.py`의 `_resolve_llm` 4층 테스트·
+# `tests/test_cli_transcribe.py`의 `_resolve_stt_key` 테스트와 같은 형식을
+# 이 함수 쌍에도 적용한다.
+
+
+class _FakeCtx:
+    """`get_parameter_source`만 흉내 낸다 (`test_cli_config.py`의 것과 동형).
+
+    이 파일에서 새로 정의하는 것은 테스트 파일 사이의 교차 임포트가
+    이 저장소의 관례가 아니기 때문이다 - 각 테스트 파일이 자기 픽스처를
+    스스로 갖는다.
+    """
+
+    def __init__(self, source_name: str) -> None:
+        self._source_name = source_name
+
+    def get_parameter_source(self, name: str) -> object:
+        return type("Src", (), {"name": self._source_name})()
+
+
+def test_임베딩_설정보다_환경변수가_우선한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_resolve_embed`도 `_resolve_llm`·`_resolve_stt`와 같은 3층 우선순위를
+    지켜야 한다(설계 D3 · 인계 파일 판정 1). `_prefer_env`를 `or`로 되돌려도
+    값은 어느 쪽에서 오든 나오고 종료 코드도 그대로라, CLI 레벨 단언만으로는
+    이 구멍이 드러나지 않는다 - 아래 파괴 실험이 그것을 실측한다.
+    """
+    monkeypatch.setenv("CUESIFT_EMBED_BASE_URL", "http://env-embed")
+    monkeypatch.setenv("CUESIFT_EMBED_MODEL", "env-model")
+    base, model = cli_module._resolve_embed(
+        _FakeCtx("DEFAULT_MAP"), "http://config-embed", "config-model", "http://translate-base"
+    )
+    assert base == "http://env-embed"
+    assert model == "env-model"
+
+
+def test_임베딩_CLI가_환경변수를_이긴다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUESIFT_EMBED_BASE_URL", "http://env-embed")
+    monkeypatch.setenv("CUESIFT_EMBED_MODEL", "env-model")
+    base, model = cli_module._resolve_embed(
+        _FakeCtx("COMMANDLINE"), "http://cli-embed", "cli-model", "http://translate-base"
+    )
+    assert base == "http://cli-embed"
+    assert model == "cli-model"
+
+
+def test_임베딩_base_url이_없으면_번역_base_url로_폴백한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`model`에는 없는 폴백이 `base_url`에만 있다 - 번역과 같은 로컬 백엔드를
+    쓰는 것이 기본 상정이다.
+    """
+    monkeypatch.delenv("CUESIFT_EMBED_BASE_URL", raising=False)
+    monkeypatch.setenv("CUESIFT_EMBED_MODEL", "m")
+    base, model = cli_module._resolve_embed(None, None, None, "http://translate-base")
+    assert base == "http://translate-base"
+    assert model == "m"
+
+
+def test_임베딩_키를_빈_문자열로_두면_LLM_키가_폴백되지_않는다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`tests/test_cli_transcribe.py`의 STT 쌍둥이와 같은 형식이다. **폴백을
+    끌 수 있어야 한다** - `or`로 쓰면 `CUESIFT_EMBED_API_KEY=""`가 "없음"과
+    뭉뚱그려져 번역용 키가 다른 호스트일 수 있는 임베딩 엔드포인트의
+    `Authorization` 헤더에 실린다.
+    """
+    monkeypatch.setenv("CUESIFT_EMBED_API_KEY", "")
+    monkeypatch.setenv("CUESIFT_API_KEY", "sk-llm-secret")
+    assert cli_module._resolve_embed_key() is None
+
+
+def test_임베딩_키가_없으면_LLM_키로_폴백한다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """폴백 자체는 유지한다 - 설정하지 않았을 때만 작동해야 한다."""
+    monkeypatch.delenv("CUESIFT_EMBED_API_KEY", raising=False)
+    monkeypatch.setenv("CUESIFT_API_KEY", "sk-shared")
+    assert cli_module._resolve_embed_key() == "sk-shared"
+
+
+def test_임베딩_키가_설정되면_LLM_키를_보지_않는다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUESIFT_EMBED_API_KEY", "sk-embed-only")
+    monkeypatch.delenv("CUESIFT_API_KEY", raising=False)
+    assert cli_module._resolve_embed_key() == "sk-embed-only"
 
 
 # ---------------------------------------------------------------------------
