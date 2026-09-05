@@ -117,6 +117,16 @@ class EchoProvider:
         self.returned.append(completion)
         return completion
 
+    @property
+    def last_messages(self) -> list[ChatMessage]:
+        """마지막 호출의 메시지 목록 (Task 3 · FR-4.2).
+
+        `calls[-1]`의 얇은 별칭이다 - 캐시 격리 회귀 테스트가 "번역 방향이
+        뒤집혔는가"를 마지막 요청 하나만 보고 판정하면 되므로, 매번
+        `calls[-1]`을 쓰는 것보다 이름이 그 의도를 드러낸다.
+        """
+        return self.calls[-1]
+
 
 class AlwaysZeroProvider:
     """실물 `qwen2.5:3b`의 id 추종 실패를 재현한다 (Ruling P13).

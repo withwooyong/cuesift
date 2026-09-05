@@ -263,6 +263,124 @@ def test_Tier1_신호가_최종_점수와_신호목록에_반영된다(signal_ct
         assert by_id[seg_id].risk_score > 0.0
 
 
+def test_embedder가_없으면_backtranslation은_기본_집합에서_빠진다(signal_ctx):
+    """FR-4.2가 FR-4.1의 기존 사용자를 깨면 안 된다 (컨트롤러 판정).
+
+    `llm.backtranslation`이 `signals/__init__.py`에 등록되자 `collect_tier1`의
+    기본 집합(`enabled=None` -> tier==1 전부)에 들어갔고, 이 파일의 유일한
+    호출자인 `triage_with_tier1`은 `Tier1Context.embedder`를 배선할 방법이
+    아직 없다(Task 4 전). **이 필터가 없으면** 임베딩 백엔드가 없는 호출자의
+    `llm.self_consistency`(FR-4.1, 임베딩과 무관)까지 `ValueError`로 함께
+    죽는다 - 그래서 여기서는 예외 없이 끝나야 하고, 신호 목록에
+    `llm.self_consistency`는 있어야 하며 `llm.backtranslation`은 없어야 한다.
+    """
+    segments = [
+        Segment(
+            id="0",
+            index=0,
+            start_ms=0,
+            end_ms=1000,
+            source_text="3개 있다",
+            target_text="There are some",
+        ),
+        *(
+            Segment(
+                id=str(i),
+                index=i,
+                start_ms=i * 1000,
+                end_ms=(i + 1) * 1000,
+                source_text=f"원문{i}",
+                target_text=f"Target {i}",
+            )
+            for i in range(1, 10)
+        ),
+    ]
+    provider = _VaryingProvider()
+    messages: list[str] = []
+
+    # embedder를 넘길 방법이 아직 없다 - Task 4 전이므로 항상 None이다.
+    # 이 호출이 예외 없이 끝나는 것 자체가 이 회귀의 본체다.
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        warn=messages.append,
+    )
+
+    by_id = {r.segment_id: r for r in risks}
+    for seg_id in ("1", "2"):
+        names = [s.name for s in by_id[seg_id].signals]
+        assert "llm.self_consistency" in names
+        assert "llm.backtranslation" not in names
+
+
+class _FakeEmbedder:
+    """반대편 테스트 전용 - 임베딩 품질은 검사 대상이 아니다.
+
+    영벡터를 피하려고 두 번째 성분을 항상 1.0으로 둔다. `cosine`이
+    영벡터에서 `ValueError`를 던지므로(`backtranslation.py` 독스트링),
+    벡터 품질과 무관하게 신호가 실행되는지만 확인하면 된다.
+    """
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[float(len(t)) + 1.0, 1.0] for t in texts]
+
+    def close(self) -> None:
+        pass
+
+
+def test_embedder를_넘기면_llm_backtranslation이_기본_집합에서_실행된다(signal_ctx):
+    """Task 3 리뷰가 Task 4로 넘긴 반대편 확인 (task-4-context.md §3).
+
+    `test_embedder가_없으면_backtranslation은_기본_집합에서_빠진다`는 한쪽만
+    덮는다 - `tier1_ctx.embedder is None`이 항상 참을 내도 그 테스트는
+    통과한다. 여기서는 실제로 `embedder`를 넘겨 `llm.backtranslation`이
+    기본 집합에 복귀해 **실행까지** 되는 것을 확인한다.
+    """
+    segments = [
+        Segment(
+            id="0",
+            index=0,
+            start_ms=0,
+            end_ms=1000,
+            source_text="3개 있다",
+            target_text="There are some",
+        ),
+        *(
+            Segment(
+                id=str(i),
+                index=i,
+                start_ms=i * 1000,
+                end_ms=(i + 1) * 1000,
+                source_text=f"원문{i}",
+                target_text=f"Target {i}",
+            )
+            for i in range(1, 10)
+        ),
+    ]
+    provider = _VaryingProvider()
+    messages: list[str] = []
+
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=provider,
+        max_ratio=0.2,
+        samples=3,
+        warn=messages.append,
+        embedder=_FakeEmbedder(),
+    )
+
+    by_id = {r.segment_id: r for r in risks}
+    for seg_id in ("1", "2"):
+        names = [s.name for s in by_id[seg_id].signals]
+        assert "llm.backtranslation" in names
+
+
 def test_max_ratio가_0이면_LLM을_안_부른다(signal_ctx):
     """비용을 완전히 끄는 경로가 있어야 한다."""
     segments = _plain_segments(10)

@@ -106,7 +106,9 @@ def test_weights는_기본값_위에_얹힌다(tmp_path: Path) -> None:
     # 명시하지 않은 신호는 1.0을 유지한다(설계 §5.1). 전량 지정을 요구하면
     # v0.2에서 신호가 늘 때 기존 설정 파일이 전부 거부된다(FR-6.5).
     assert cfg.weights["glossary.miss"] == 1.0
-    assert len(cfg.weights) == 10
+    # DEFAULT_WEIGHTS가 11종(Tier 0 9종 + Tier 1 2종: self_consistency·
+    # backtranslation)이므로 이 개수도 함께 늘어난다 (FR-4.2).
+    assert len(cfg.weights) == 11
 
 
 def test_모르는_신호_이름을_거부한다(tmp_path: Path) -> None:

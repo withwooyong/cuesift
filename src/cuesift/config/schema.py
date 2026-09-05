@@ -145,6 +145,13 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(("stt", "model"), (("transcribe", "stt_model"), ("translate", "stt_model"))),
     # `translate`에만 간다 - `transcribe`는 영상이 위치 인자다.
     Binding(("input", "media"), (("translate", "media"),)),
+    # **`llm`·`stt`와 나란한 별도 섹션이다**(FR-4.2 · 설계 §7). `signals.tier1.*`
+    # 밑에 두지 않는 것은 그 자리가 실행 파라미터(수치)이고 이 둘은 접속
+    # 정보(엔드포인트)라 성격이 다르기 때문이다 - `stt`가 `llm` 밑에 있지
+    # 않은 것과 같은 이유(위 주석 D7). `transcribe`에는 안 간다 - 임베딩은
+    # `--tier1`(번역 경로)에만 쓰인다.
+    Binding(("embed", "base_url"), (("translate", "embed_base_url"),)),
+    Binding(("embed", "model"), (("translate", "embed_model"),)),
 )
 
 # 파라미터로 가지 않지만 허용해야 하는 키 (설계 §5 3행·17행).

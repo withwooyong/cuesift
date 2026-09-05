@@ -113,6 +113,13 @@ def test_82의_예시로_CLI가_돌면_종료_코드_2가_아니다(tmp_path: Pa
 
     `--dry-run`이라 네트워크를 타지 않는다. 보는 것은 "값이 옳은가"가
     아니라 **"명령줄로서 성립하는가"** 하나다.
+
+    **CLI 인자로 보충하지 않는다.** §8.2의 `signals.tier1.enabled: true`가
+    `--tier1`을 켜는데(FR-8.4 바인딩), Task 5(FR-4.2)부터 `--tier1`은
+    `--embed-model`을 요구한다 - §8.2가 `embed:` 절(`base_url`·`model`)을
+    직접 담아야 한다. CLI로 보충하면 "문서만 복사해도 돈다"는 이 게이트의
+    본디 취지가 무너진다 - 실제로 한 번 그렇게 했다가 §8.2가 여전히
+    `embed:` 없이 남아 있는 것을 리뷰가 잡았다.
     """
     cfg = tmp_path / "cuesift.yaml"
     cfg.write_text(_section_yaml_blocks()[0], encoding="utf-8")

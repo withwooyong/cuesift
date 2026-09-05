@@ -46,6 +46,13 @@ import typer
 
 from cuesift import __version__
 from cuesift.config import Config, load_config
+from cuesift.embed import (
+    Embedder,
+    EmbeddingError,
+    EmbeddingNotFoundError,
+    EmbeddingUnsupportedError,
+    OpenAICompatibleEmbedder,
+)
 from cuesift.glossary import Glossary, load_glossary
 from cuesift.ingest import IngestError, IngestResult, load_subtitle, write_subtitle
 from cuesift.progress import ProgressReporter, clear_active, env_flag, install, resolve_style
@@ -284,6 +291,33 @@ _TIER1_WARN_PREFIX = "Tier 1: "
 #
 # **출력 문자열이라 em dash를 쓰지 않는다**(전역 제약, cp949 미인코딩).
 _TIER1_BOUND_PREFIX = "Tier 1 재번역 요청 최대 "
+
+# `--tier1`인데 `--embed-model`이 없을 때 내는 문구 (FR-4.2 · 설계 §7).
+#
+# **리터럴로 두면 안 된다.** 테스트가 이 문자열을 자기 안에서 다시 지어
+# 넘기면 문구가 바뀌어도 계속 통과해 화면과 갈라진다 - 실제로 리포트
+# caveat 두 건이 이렇게 갈린 전례가 있다(이 파일 CLAUDE.md 규율 참고).
+_TIER1_EMBED_MODEL_REQUIRED = "--tier1은 --embed-model을 요구한다 (FR-4.2)"
+
+# 임베딩 probe() 501 - 경로는 있고 모델이 못 한다(설계 §4.2).
+#
+# **404 접두와 절대 겹치면 안 된다.** 겹치면 두 예외를 하나로 묶는 변이가
+# 두 메시지를 모두 살려 게이트가 무연산이 된다. 사용자가 취할 행동도
+# 정반대다 - 이쪽은 `--embed-model`을 바꾸면 되고, 저쪽은
+# `--embed-base-url`(백엔드) 자체를 바꿔야 한다.
+_EMBED_UNSUPPORTED_PREFIX = "임베딩 모델"
+
+# 임베딩 probe() 404 - 엔드포인트 자체가 없다(설계 §4.2). 위 접두와
+# 상호 배타적인 문자열이어야 두 예외를 뭉뚱그리는 변이를 실제로 잡는다.
+_EMBED_NOT_FOUND_PREFIX = "이 백엔드에는 임베딩 엔드포인트가 없다"
+
+# `probe()`가 성공했을 때 내는 한 줄의 템플릿 (설계 §7).
+#
+# **리터럴로 두면 안 된다.** 테스트가 `"8차원"`처럼 문구를 자기 안에서 다시
+# 지으면 이 템플릿 자체가 바뀌어도(예: "차원"이 "dims"가 되거나 괄호가
+# 없어져도) 계속 통과해 화면과 갈라진다 - 위 세 상수와 같은 이유다. 테스트는
+# 이 템플릿을 임포트해 `.format(...)`으로 기대값을 짓는다.
+_EMBED_READY_TEMPLATE = "임베딩 준비됨 ({model}, {dimensions}차원)"
 
 app = typer.Typer(
     name="cuesift",
@@ -860,6 +894,58 @@ def _build_stt_provider(*, base_url: str, model: str, api_key: str | None) -> St
     return OpenAICompatibleSttProvider(base_url=base_url, model=model, api_key=api_key)
 
 
+def _resolve_embed(
+    ctx: typer.Context | None,
+    base_url: str | None,
+    model: str | None,
+    translate_base_url: str,
+) -> tuple[str, str]:
+    """임베딩 접속 설정을 해결한다 (FR-4.2 · 설계 §7).
+
+    우선순위는 위 `_resolve_llm`·`_resolve_stt`와 같다 - **CLI 옵션 >
+    환경변수 > 설정 파일**. `model`이 없는 경우는 호출부(조합 검증 블록)가
+    `--tier1`을 켜기 전에 이미 exit 2로 막았으므로 여기서는 다시 검사하지
+    않는다 - 두 번 검사하면 한쪽만 고쳐졌을 때 메시지가 갈릴 수 있다.
+
+    **`base_url`에만 폴백이 있다.** 임베딩은 대개 번역과 같은 로컬 백엔드가
+    떠 있는 서버에서 나오므로, 번역용 `--base-url`을 그대로 못 쓰게 하면
+    사용자가 같은 주소를 두 번 쳐야 한다. `model`에는 이 폴백이 없다 -
+    번역 모델과 임베딩 모델은 이름이 겹칠 근거가 없다(§11 R8 - 추측 금지).
+    """
+    resolved_base = (
+        _prefer_env(ctx, "embed_base_url", base_url, "CUESIFT_EMBED_BASE_URL") or translate_base_url
+    )
+    resolved_model = _prefer_env(ctx, "embed_model", model, "CUESIFT_EMBED_MODEL")
+    assert resolved_model is not None  # 호출부가 이미 보장했다.
+    return resolved_base, resolved_model
+
+
+def _resolve_embed_key() -> str | None:
+    """임베딩용 API 키. 없으면 번역용 키로 폴백한다 (`_resolve_stt_key`와 같은 모양).
+
+    **번역용 키를 그대로 넘기면 안 된다.** `--embed-base-url`이 `--base-url`과
+    다른 호스트일 수 있으므로, `or`로 무조건 폴백하면 자격증명이 의도하지
+    않은 서버의 `Authorization` 헤더에 실린다 - `CUESIFT_EMBED_API_KEY=""`가
+    그것을 끄는 탈출로여야 하고, 그러려면 반환이 `""`가 아니라 `None`이어야
+    한다(빈 키를 실으면 401이 나고 그것은 Fatal이라 "키가 틀렸다"로 오독된다).
+    """
+    key = os.environ.get("CUESIFT_EMBED_API_KEY")
+    if key is None:
+        # 설정하지 않았을 때만 폴백한다. 같은 조직의 키를 쓰는 경우가 흔하다.
+        key = os.environ.get("CUESIFT_API_KEY")
+    return key or None
+
+
+def _build_embedder(*, base_url: str, model: str, api_key: str | None) -> Embedder:
+    """임베더를 만든다. **테스트가 monkeypatch하는 지점이다.**
+
+    `_build_provider`·`_build_stt_provider`의 형제다. 본문에서
+    `OpenAICompatibleEmbedder(...)`를 직접 만들면 CLI 테스트가 네트워크를
+    타거나 `httpx` 내부를 패치해야 한다.
+    """
+    return OpenAICompatibleEmbedder(base_url=base_url, model=model, api_key=api_key)
+
+
 def _output_path(
     input_path: Path,
     out_dir: Path | None,
@@ -1325,6 +1411,23 @@ def translate(
         str | None,
         typer.Option("--stt-model", help="STT 모델 이름. 없으면 CUESIFT_STT_MODEL"),
     ] = None,
+    embed_base_url: Annotated[
+        str | None,
+        typer.Option(
+            "--embed-base-url",
+            help="임베딩 엔드포인트. 없으면 CUESIFT_EMBED_BASE_URL, 그것도 없으면 --base-url",
+        ),
+    ] = None,
+    embed_model: Annotated[
+        str | None,
+        # **기본값을 두지 않는다**(§11 R8). `bge-m3`는 개발자 로컬에 우연히
+        # 설치된 모델이지 규격이 아니고, 여기 기본값을 넣으면 출처 없는
+        # 수치가 조용히 비용에 실린다. `--tier1`에는 명시적으로 필수다.
+        typer.Option(
+            "--embed-model",
+            help="임베딩 모델 이름. 없으면 CUESIFT_EMBED_MODEL. --tier1에 필수입니다",
+        ),
+    ] = None,
     progress: Annotated[
         bool | None,
         # **3상이다.** 기본값 `None`이 "지정 안 함"이고, 그때 자동 감지가
@@ -1592,6 +1695,19 @@ def translate(
                 err=True,
             )
             raise typer.Exit(2)
+        # `llm.backtranslation`이 임베딩을 요구한다(설계 §7). **여기서 막지
+        # 않으면** 후보 수만큼 역번역 LLM을 부른 뒤 유사도 계산 단계에서
+        # `embedder is None`을 뒤늦게 발견해 그 호출이 전부 버려진다.
+        # `_resolve_llm`(base-url·model)보다 앞이라 이 검사가 통과하지
+        # 못하면 번역조차 시작하지 않는다.
+        #
+        # **비용 한도 검사보다 뒤에 둔다.** 앞에 두면 숫자 조합 자체가
+        # 잘못된 실행에서도 이 메시지가 먼저 나가 "어느 층이 거부했는지"를
+        # 보는 위쪽 조합 검증 테스트들의 문구 단언이 갈린다 - 이 검사는
+        # 숫자 조합이 전부 옳을 때만 마지막으로 확인하는 관문이다.
+        if not _prefer_env(ctx, "embed_model", embed_model, "CUESIFT_EMBED_MODEL"):
+            _echo(_TIER1_EMBED_MODEL_REQUIRED, err=True)
+            raise typer.Exit(2)
 
     triage_requested = (
         review_budget is not None or review_threshold is not None or review_top_k is not None
@@ -1816,6 +1932,53 @@ def translate(
     # 캐시가 켜진 줄 알고 매 실행 새 호출을 내면서 화면은 "캐시 꺼짐"을 말한다.
     resolved_cache_dir = None if no_cache else (cache_dir or DEFAULT_CACHE_DIR)
 
+    # **여기서 만든다 - 언어별 루프 안이 아니다.** `embedder`는 상태가 없어
+    # 대상 언어 전체가 하나를 공유해도 무방하고, 루프 안에서 만들면
+    # `probe()`가 언어 수만큼 반복돼 쓸모없는 호출이 는다.
+    #
+    # **`probe()`를 여기서 부르는 것이 설계 §7의 요점이다.** 번역 루프
+    # (`_translate_one`)보다 앞이라, 확인에 실패하면 어떤 언어의 번역도
+    # 시작되지 않는다 - 뒤로 미루면 후보 수만큼 부른 역번역이 유사도 계산
+    # 단계에서 전부 버려진다.
+    embedder: Embedder | None = None
+    if tier1:
+        embed_base, resolved_embed_model = _resolve_embed(
+            ctx, embed_base_url, embed_model, resolved_base
+        )
+        embedder = _build_embedder(
+            base_url=embed_base, model=resolved_embed_model, api_key=_resolve_embed_key()
+        )
+        try:
+            dimensions = embedder.probe()
+        except EmbeddingUnsupportedError as exc:
+            # 501 - 경로는 있고 모델이 못 한다. `--embed-model`을 바꾸면 된다.
+            # **404 절과 절대 합치면 안 된다**(위 `_EMBED_UNSUPPORTED_PREFIX`
+            # 주석) - 사용자가 취할 행동이 정반대다.
+            _echo(
+                f"{_EMBED_UNSUPPORTED_PREFIX} '{resolved_embed_model}'이"
+                f" 임베딩을 내지 못한다: {exc}",
+                err=True,
+            )
+            raise typer.Exit(2) from exc
+        except EmbeddingNotFoundError as exc:
+            # 404 - 엔드포인트 자체가 없다. `--embed-base-url`(백엔드)을
+            # 바꿔야 한다. 501 절보다 **먼저 잡히면 안 된다** - 둘 다
+            # `EmbeddingError`의 형제라 순서는 무관하지만, 상속 관계가 있는
+            # `EmbeddingError` 전체 그물보다는 반드시 앞에 와야 한다.
+            _echo(f"{_EMBED_NOT_FOUND_PREFIX}: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        except EmbeddingError as exc:
+            # **마지막 그물이다**(`ProviderError`의 마지막 절과 같은 이유-
+            # `_translate_one`의 `except ProviderError` 참고). 오늘은
+            # `RetryableEmbeddingError`(503·타임아웃)·`FatalEmbeddingError`
+            # (401·400)만 도달 가능하다. traceback으로 죽이는 것보다 69로
+            # 막고 원인을 알리는 편이 낫다.
+            _echo(f"임베딩 백엔드에 연결할 수 없다: {exc}", err=True)
+            raise typer.Exit(EXIT_UNAVAILABLE) from exc
+        # **차원 수를 버리지 않는다.** `probe()`가 무엇을 확인했는지
+        # 사용자가 알 수 있는 유일한 자리다.
+        _echo(_EMBED_READY_TEMPLATE.format(model=resolved_embed_model, dimensions=dimensions))
+
     # **숫자 크기로 합치지 않는다.** 우선순위는 `_EXIT_PRIORITY`가 갖는다.
     #
     # **오늘은 `max()`와 같은 답을 낸다.** `(70, 69, 66, 3)`이 값의 내림차순과
@@ -1860,6 +2023,7 @@ def translate(
                     temperature=effective_temperature,
                     cache_dir=resolved_cache_dir,
                     identity=_cache_identity(provider),
+                    embedder=embedder,
                 )
             code = _translate_one(
                 result=result,
@@ -2854,6 +3018,11 @@ class _Tier1Settings:
     **`identity`도 raw에서 뽑아야 한다.** `CachingProvider`는 `cache_identity`를
     위임하지 **않으므로**(Ruling R40 - 위임하면 이중 래핑이 조용히 켜진다)
     감싼 뒤에 물으면 `None`이 나와 Tier 1 캐시가 통째로 꺼진다.
+
+    **`embedder`는 언어마다 새로 만들지 않는다.** `counting`과 달리 누적기가
+    아니라 상태가 없으므로(FR-4.2) 대상 언어 전체가 하나를 공유해도 비용
+    계측이 부풀지 않는다 - 오히려 언어마다 새로 만들면 `probe()`를
+    언어 수만큼 반복해 쓸모없는 호출이 는다.
     """
 
     counting: CountingProvider
@@ -2862,6 +3031,7 @@ class _Tier1Settings:
     temperature: float
     cache_dir: Path | None
     identity: str | None
+    embedder: Embedder | None = None
 
 
 def _run_triage(
@@ -3064,6 +3234,7 @@ def _run_triage(
             excluded_ids=failed_ids,
             weights=weights,
             on_progress=reporter.update,
+            embedder=tier1.embedder,
         )
         reporter.done()
         return _outcome(

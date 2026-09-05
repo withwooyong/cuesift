@@ -12,10 +12,18 @@ import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
+from cuesift.embed.provider import Embedder
 from cuesift.progress import ProgressCallback
 from cuesift.risk.fuse import fuse
 from cuesift.segment import Segment, SegmentRisk
-from cuesift.signals.base import SignalContext, Tier1Context, collect_all, collect_tier1
+from cuesift.signals.backtranslation import BackTranslation
+from cuesift.signals.base import (
+    SignalContext,
+    Tier1Context,
+    collect_all,
+    collect_tier1,
+    registry,
+)
 from cuesift.store.provider import CachingProvider
 from cuesift.translate.provider import Provider
 from cuesift.triage.policy import gray_zone, select_by_budget, select_tier1_candidates
@@ -36,6 +44,7 @@ def triage_with_tier1(
     excluded_ids: Collection[str] = (),
     weights: Mapping[str, float] | None = None,
     on_progress: ProgressCallback | None = None,
+    embedder: Embedder | None = None,
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -48,6 +57,11 @@ def triage_with_tier1(
     기본값이라 **출처가 있기 때문이다**(§11 R8 - 출처 없는 수치를 기본값으로
     넣지 않는다). 0.0이면 재번역이 전부 같아 신호가 죽는데, 그 방어는
     `Tier1Context`가 한다.
+
+    **`embedder`가 없으면 `llm.backtranslation`이 예외를 던진다** (FR-4.2 ·
+    설계 D6). 여기서 미리 막지 않는 이유는 어느 tier 1 수집기가 켜졌는지를
+    이 함수가 모르기 때문이다 - 자가일관성만 도는 실행에는 임베딩이 필요
+    없다. 가용성 탐지는 CLI가 한다.
 
     **`weights`는 두 `fuse` 호출에 모두 간다**(FR-8.4 · 설계 §4.3 ②).
     ②만 넘기고 ⑥을 두면 사용자 가중치로 고른 후보를 기본 가중치로 다시
@@ -223,6 +237,7 @@ def triage_with_tier1(
         provider_for=_provider_factory(provider, cache_dir=cache_dir, identity=identity),
         samples=samples,
         temperature=temperature,
+        embedder=embedder,
     )
 
     # ① Tier 0 - 비용 0, 전량
@@ -304,7 +319,35 @@ def triage_with_tier1(
         return scored
 
     # ⑤ Tier 1 - 후보에만
-    tier1 = collect_tier1(candidates, tier1_ctx, on_progress=on_progress)
+    #
+    # **기본 집합을 여기서 직접 계산한다.** `collect_tier1(enabled=None)`은
+    # 등록된 tier=1 신호 전부를 돈다(`signals/base.py`의 `tier == 1` 분기) -
+    # `llm.backtranslation`(FR-4.2)이 등록되자 이 경로의 유일한 호출자인
+    # 여기가 임베딩 백엔드를 강제로 요구하게 됐다. **이 필터가 없으면**
+    # 임베딩 백엔드가 없는(= 아직 `embedder`를 안 쓴) 호출자의
+    # `llm.self_consistency`(FR-4.1)까지 `ValueError`로 함께 죽는다 -
+    # FR-4.2 하나가 FR-4.1의 기존 사용자를 깬다.
+    #
+    # `tier1_ctx.embedder is None`으로 판단하는 이유는 이것 하나다: Task 4가
+    # `triage_with_tier1`에 더한 `embedder` 인자(위 시그니처 참고)가
+    # `Tier1Context`에 실리면 이 조건이 저절로 꺼지고 `llm.backtranslation`이
+    # 자동으로 켜진다 - 이 필터를 다시 손볼 필요가 없다.
+    #
+    # **`set`이 아니라 리스트 컴프리헨션으로 순서를 보존한다.** `collect_tier1`의
+    # 기본 경로(`enabled=None`, `signals/base.py:249`)는 `_REGISTRY` 삽입 순서를
+    # 그대로 쓰는데, 여기서 `set`을 거치면 그 순서가 해시 시드에 종속된다 -
+    # `collect_tier1`의 `for name in names` 루프(`:268`)가 LLM 호출 순서와
+    # `SegmentRisk.signals` 배열 순서를 그대로 결정하므로, 신호가 둘 이상이 되는
+    # 날(Task 4) `review.json`의 신호 순서·캐시 기록 순서가 실행마다 갈려
+    # NFR-3(재현성)을 어긴다. 오늘 신호가 하나뿐이라 관측되지 않을 뿐이다.
+    default_tier1 = [name for name, c in registry().items() if c.tier == 1]
+    if tier1_ctx.embedder is None:
+        # 문자열을 하드코딩하지 않는다 - `BackTranslation.name`이 바뀌면
+        # 이 조건도 같이 바뀐다. `signals.backtranslation`은 `tier1.py`를
+        # import하지 않으므로 순환이 생기지 않는다(신호 등록 시점에
+        # `signals/__init__.py`가 이미 이 모듈을 당겨 온 뒤다).
+        default_tier1 = [name for name in default_tier1 if name != BackTranslation.name]
+    tier1 = collect_tier1(candidates, tier1_ctx, enabled=default_tier1, on_progress=on_progress)
 
     # ⑥ 재융합 - Tier 0 신호에 Tier 1 신호를 더해 다시 계산한다.
     # 이름은 "re-scored"다 - 두 신호 출처를 **더한다**(신호 소실 없음)는
