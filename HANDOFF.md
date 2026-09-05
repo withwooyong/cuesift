@@ -1,6 +1,18 @@
 # Session Handoff
 
-> Last updated: 2026-09-04 (KST) · PR [#35](https://github.com/withwooyong/cuesift/pull/35) 머지됨
+> Last updated: 2026-09-06 (KST) · PR [#37](https://github.com/withwooyong/cuesift/pull/37) 머지됨
+> **FR-4.2 를 구현했고 실측이 설계 결함을 드러냈다. 신호는 맞고 후보 선정이 틀렸다.**
+> 역번역 신호는 의미 반전을 정확히 가려낸다(코사인 0.69 대 0.78). **그런데 Tier 1 을
+> 파이프라인에 얹으면 negation Recall 이 오히려 떨어진다** — 예산 10% 에서
+> 1.41% → 0.00%, 30% 에서 19.72% → 18.31% 다.
+> 원인은 `select_tier1_candidates` 가 Tier 0 위험도 순위로 후보를 고르는 데 있다.
+> Tier 0 는 의미 반전을 원리적으로 못 잡으므로 negation 을 무작위 위치에 놓고,
+> 그래서 **71건 중 2~4건만 Tier 1 이 본다.** 상세와 재현 코드는 아래 이월 21번이
+> 단일 출처다. **FR-4.2 는 ✅ 가 아니라 🟡 이고 v0.1 은 여전히 42개 중 41개다.**
+> **이월 20번은 닫혔다** — 원자료 형식이 생겨 세그먼트별 역번역문·코사인·`selected`
+> 가 남는다. 이제 라벨 몇 건이 바뀌어도 전체를 다시 돌릴 필요가 없다.
+> 아래는 직전 세션의 기록이다.
+>
 > **이월 19번을 닫았다. ja negation 정답지의 잡음은 자격 313건 중 129건(41.2%)이다.**
 > 이월 항목이 적은 "표본 8건에서 2건"(25%)의 **1.6배**이고 부류도 둘이 아니라 다섯이었다.
 > **그중 10건은 어색한 문장이 아니라 정답지가 스스로의 판단을 배신한 것이라 고쳤다** —
@@ -39,6 +51,10 @@
 
 | 단계 | 상태 | 산출물 |
 | --- | --- | --- |
+| **FR-4.2 — 역번역 유사도 신호** | 🟡 **부분 구현 · 머지됨** | PR [#37](https://github.com/withwooyong/cuesift/pull/37) · 커밋 `51280e9` · `src/cuesift/embed/` · `signals/backtranslation.py` · 테스트 1808 → **1889** |
+| **이월 20번 — 역번역 원자료 형식** | ✅ **닫혔다** | 같은 PR. `{pair}.backtranslation.json` 이 9개 필드와 메타 4종을 담는다 |
+| **이월 21번 — Tier 1 후보 선정 결함** | 🔴 **열었다** | 같은 PR. [아래 절](#이월-21번--tier-1-실측-신호는-맞고-후보-선정이-틀렸다)이 단일 출처 |
+| **Tier 1 실측 (en-ko)** | ✅ **돌렸다** | [`bench/results/en-ko-2026-09-05.md`](bench/results/en-ko-2026-09-05.md) · 역번역 496건. **`ja-ko` 는 돌리지 않았다** — 순위 분석이 같은 결과를 예고했다 |
 | **이월 19번 — 정답지 잡음 계수 + A·F 픽스** | ✅ **머지됨** | PR [#35](https://github.com/withwooyong/cuesift/pull/35) · 커밋 `5541277` · `bench/inject.py` · 테스트 1799 → 1808 |
 | **이월 18번 — 역번역 복원율 측정** | ✅ **쟀다** | PR [#34](https://github.com/withwooyong/cuesift/pull/34) · [`bench/results/backtranslation-spike-2026-09-04.json`](bench/results/backtranslation-spike-2026-09-04.json) · 역번역 426건 |
 | **Q4 유보 ① — 로컬 2칸** | ✅ **닫았다** | 같은 PR·같은 실행. 상용 2칸은 열려 있다 |
@@ -46,6 +62,10 @@
 | **이월 17번 — negation 정답지 정정** | ✅ **머지됨** | PR [#32](https://github.com/withwooyong/cuesift/pull/32) · 커밋 `7b5bb2a` |
 | **벤치 재측정** | ✅ **두 트랙 완료** | `bench/results/{en-ko,ja-ko}-2026-09-04.{md,json}` |
 | 이 문서 + `CLAUDE.md` 두 줄 | PR [#33](https://github.com/withwooyong/cuesift/pull/33) | 코드 변경 0건. `CHANGELOG.md`는 PR #32에 이미 실렸다 — 중복 추가하지 말 것 |
+
+**이 문서의 갱신은 PR #37 과 별개 PR 이다.** 인수인계 문서는 자기 자신이 실릴
+PR 의 번호를 알 수 없어, 번호는 머지 뒤 두 번째 PR 로만 채울 수 있다. 이번에도
+그렇게 했다 — 표의 `#37` 행들이 그 결과다.
 
 **이번 세션은 코드를 바꿨다.** 직전 두 세션과 달리 `CHANGELOG.md`에 넣을 것이
 있었고 PR #32에 함께 담았다.
