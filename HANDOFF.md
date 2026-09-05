@@ -491,12 +491,36 @@ negation이 아닌 247건의 점수가 올라가면서, 원래 선별됐던 nega
 밀어냈다.
 
 **재현**: 위 두 표 중 코사인 분포는 `data/bench/en-ko.backtranslation.json`(자막
-원문 포함, `.gitignore` 대상이라 커밋되지 않음)을 다시 돌려야 재현된다. 순위 분석은
-**LLM 호출이 필요 없다** — Tier 0만으로 회색지대 순위를 계산하면 되므로 몇 분이면
-끝난다. **재현 스크립트의 구체적 경로는 이 문서를 작성한 세션의 근거 문서
-(`task-8-context.md`)에 없어 적지 못한다** — 다음 세션이 짤 때는 `bench/run.py`가
-이미 계산해 두는 회색지대 후보 목록과 Tier 0 위험도 순위를 그대로 활용하면 된다.
-`ja-ko`는 이번에 돌리지 않았다 — Tier 0 순위 분석이 이미 같은 결과를 예고했고, 두
+원문 포함, `.gitignore` 대상이라 커밋되지 않음)을 다시 돌려야 재현된다. 반면
+**순위 분석은 LLM 호출이 필요 없다** — Tier 0만으로 회색지대 순위를 계산하면
+되므로 몇 분이면 끝난다. 아래가 그 전부이며, 이월 19번의 분류 스크립트와 같은
+이유로 리포에 넣지 않는다(일회성 측정이다).
+
+```python
+profile = load_builtin(f"ted-{lang}")                      # lang = "en" | "ja"
+glossary = load_glossary(Path("bench/glossary.ted.yaml"), lang)
+ctx = SignalContext(profile=profile, glossary=glossary, source_lang="ko", target_lang=lang)
+segments = load_track(Path(f"data/bench/{lang}-ko.clean.json"))
+mutated, labels, _ = inject(segments, glossary, profile, rate=0.10, seed=20260729)
+signals = collect_all(mutated, ctx)
+risks = [fuse(s.id, signals[s.id]) for s in mutated]
+neg = {lb.segment_id for lb in labels if lb.kind == "negation"}
+
+scored = select_by_budget(risks, budget)                   # budget = 0.10 | 0.30
+gz = gray_zone(scored)                                     # 컷라인 아래, 위험도 내림차순
+cap = int(len(scored) * 0.05)                              # TIER1_MAX_RATIO
+pos = [i for i, r in enumerate(gz) if r.segment_id in neg]
+
+# 판정은 둘이다. 중앙값이 len(gz)의 절반 근처인가,
+# 그리고 cap 적중(sum(p < cap for p in pos))이 무작위 기대값
+# len(pos) * cap / len(gz) 와 다른가.
+```
+
+**핵심은 무작위 기대값과의 비교다.** 적중 건수만 보면 "적지만 있긴 하다"로
+읽히는데, 기대값과 나란히 놓아야 **선정이 무작위와 구별되지 않는다**는 것이
+드러난다.
+
+`ja-ko`는 이번에 돌리지 않았다 — 위 순위 분석이 이미 같은 결과를 예고했고, 두
 시간을 더 써서 얻는 것은 확증뿐이다.
 
 **다시 열 조건**: FR-4.2 재착수 시 `select_tier1_candidates`의 후보 선정 방식
