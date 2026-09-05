@@ -99,6 +99,7 @@ def render_markdown(
     baseline: Mapping[float, tuple[float, float]],
     *,
     by_kind_baseline: Mapping[str, Mapping[float, tuple[float, float]]] | None = None,
+    tier1_comparisons: Sequence[str] | None = None,
 ) -> str:
     lines: list[str] = [
         f"# 벤치마크 결과 — {meta.pair}",
@@ -487,6 +488,17 @@ def render_markdown(
         for note in meta.caveats:
             lines.append(f"- {note}")
 
+    # 리뷰 지적 1(Task 7 수정 라운드 1) — `render_tier1_comparison`의 출력은
+    # 집계 수치만 담아 자막 원문이 없다. CC BY-NC-ND 4.0에 걸리지 않으므로
+    # `bench/results/`에 커밋할 수 있는 유일한 Tier 1 산출물인데, 호출자가
+    # 콘솔에 `print`만 하면 스크롤백이 닫히는 순간 사라진다. `None`(또는
+    # 빈 시퀀스)이면 `--tier1` 없는 실행과 완전히 같은 출력을 낸다 —
+    # 새 절 자체가 생기지 않는다.
+    if tier1_comparisons:
+        lines += ["", "## Tier 1 비교"]
+        for block in tier1_comparisons:
+            lines += ["", block]
+
     lines += ["", "## 신호별 기여도 (ablation)", "", "| 신호 | Recall 하락폭 |", "| --- | --- |"]
     for name, drop in sorted(drops.items(), key=lambda kv: -kv[1]):
         lines.append(f"| `{name}` | {drop:+.1%} |")
@@ -569,18 +581,31 @@ def write_report(
     out_dir: Path,
     *,
     by_kind_baseline: Mapping[str, Mapping[float, tuple[float, float]]] | None = None,
+    tier1_comparisons: Sequence[str] | None = None,
 ) -> tuple[Path, Path]:
     """`{pair}-{date}.md`와 같은 이름의 `.json`을 낸다.
 
     `by_kind_baseline`은 유형별 무작위 기준선(예: `negation`이 무작위보다
     못하다는 실측)을 실을 때만 넘긴다 — 없으면 그 절을 조용히 생략한다.
+
+    `tier1_comparisons`는 `render_tier1_comparison`이 낸 블록들이다(리뷰
+    지적 1) — 같은 `{stem}.md`/`.json`을 다시 써서 갱신하므로, `--tier1`
+    실행은 이 함수를 두 번 부를 수 있다(Tier 0 리포트를 먼저 쓰고, Tier 1이
+    끝나면 비교표를 더해 같은 경로를 덮어쓴다).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{meta.pair}-{date.today().isoformat()}"
 
     md_path = out_dir / f"{stem}.md"
     md_path.write_text(
-        render_markdown(meta, results, drops, baseline, by_kind_baseline=by_kind_baseline),
+        render_markdown(
+            meta,
+            results,
+            drops,
+            baseline,
+            by_kind_baseline=by_kind_baseline,
+            tier1_comparisons=tier1_comparisons,
+        ),
         encoding="utf-8",
     )
 
@@ -596,6 +621,7 @@ def write_report(
                     kind: {str(b): list(v) for b, v in d.items()}
                     for kind, d in (by_kind_baseline or {}).items()
                 },
+                "tier1_comparisons": list(tier1_comparisons or []),
             },
             ensure_ascii=False,
             indent=2,

@@ -20,7 +20,14 @@ from scripts.fetch_ted2020 import load_manifest
 
 from bench.classify_negation import CLEAN, classify
 from bench.inject import Label, inject
-from bench.measure import ablation, check_invariants, label_counts, measure, random_baseline
+from bench.measure import (
+    _recall,
+    ablation,
+    check_invariants,
+    label_counts,
+    measure,
+    random_baseline,
+)
 from bench.report import RunMeta, render_tier1_comparison, write_report
 from bench.track_io import dump_audit, load_track
 from cuesift.embed import (
@@ -181,8 +188,28 @@ def _build_embedder(args: argparse.Namespace) -> Embedder:
     같은 이유).
     """
     base_url = args.embed_base_url or args.base_url
-    api_key = os.environ.get("CUESIFT_EMBED_API_KEY") or os.environ.get("CUESIFT_API_KEY")
-    return OpenAICompatibleEmbedder(base_url=base_url, model=args.embed_model, api_key=api_key)
+    return OpenAICompatibleEmbedder(
+        base_url=base_url, model=args.embed_model, api_key=_resolve_embed_key()
+    )
+
+
+def _resolve_embed_key() -> str | None:
+    """임베딩용 API 키. 없으면 번역용 키로 폴백한다 (`cli._resolve_stt_key`와 같은 모양).
+
+    **`or`가 아니라 `if key is None`으로 폴백한다** (리뷰 지적 4). `or`는
+    빈 문자열(`CUESIFT_EMBED_API_KEY=""`)도 "설정 안 함"으로 뭉뚱그려
+    번역용 키로 폴백시킨다 — `--embed-base-url`이 `--base-url`과 **다른
+    호스트**일 때 번역용 키가 그 호스트의 `Authorization` 헤더에 실린다.
+    실측(리뷰어): `CUESIFT_API_KEY=TRANSLATE-SECRET`·`CUESIFT_EMBED_API_KEY=""`를
+    두면 `or` 버전은 `'TRANSLATE-SECRET'`을 냈고, `cli._resolve_embed_key`와
+    같은 이 패턴은 `None`을 낸다(빈 키를 실으면 401이 나고 그것은 Fatal이라
+    "키가 틀렸다"로 오독된다 — CLI 쪽 독스트링과 같은 근거).
+    """
+    key = os.environ.get("CUESIFT_EMBED_API_KEY")
+    if key is None:
+        # 설정하지 않았을 때만 폴백한다. 같은 조직의 키를 쓰는 경우가 흔하다.
+        key = os.environ.get("CUESIFT_API_KEY")
+    return key or None
 
 
 def _negation_classes(
@@ -201,13 +228,6 @@ def _negation_classes(
         for lb in labels
         if lb.kind == "negation"
     }
-
-
-def _recall(selected_ids: set[str], error_ids: set[str]) -> float:
-    """검수 큐가 포함한 오류의 비율. `bench/measure.py`의 `_recall`과 같은 공식이다."""
-    if not error_ids:
-        return 0.0
-    return len(selected_ids & error_ids) / len(error_ids)
 
 
 def _negation_recall_scores(
@@ -243,6 +263,11 @@ def _collect_raw(
     213회 재실행이 필요했다). `llm.backtranslation` 신호가 실린
     `SegmentRisk`만 골라 세그먼트별 레코드를 남기면, 라벨 교체는 이 파일을
     다시 훑는 것으로 끝난다.
+
+    **`selected`가 없으면 원자료만으로 Recall@Budget을 되계산할 수 없다**
+    (리뷰 지적 6) — 후보였는지는 남아도 그 예산에서 실제로 큐에 담겼는지가
+    없으면, 라벨을 고친 뒤 이 파일만 다시 훑어서는 새 Recall을 낼 수 없고
+    결국 재실행이 필요해져 이월 20이 다시 열린다.
     """
     by_id = {seg.id: seg for seg in mutated}
     label_by_id = {lb.segment_id: lb.kind for lb in labels}
@@ -265,6 +290,7 @@ def _collect_raw(
                 "label_kind": label_by_id.get(risk.segment_id),
                 "negation_class": negation_classes.get(risk.segment_id),
                 "budget_ratio": budget,
+                "selected": risk.selected,
             }
         )
     return records
@@ -433,42 +459,80 @@ def main(argv: list[str] | None = None) -> int:
 
         negation_classes = _negation_classes(mutated, labels, target_lang)
         raw_records: list[dict[str, object]] = []
-        for budget in TIER1_BUDGETS:
-            tier1_risks = triage_with_tier1(
-                mutated,
-                ctx,
-                budget_ratio=budget,
-                provider=provider,
-                max_ratio=TIER1_MAX_RATIO,
-                warn=print,
-                embedder=embedder,
-                cache_dir=args.cache_dir,
-                identity=provider.cache_identity,
+        tier1_comparisons: list[str] = []
+        try:
+            # 스펙 §5.7과 같은 원칙(위 316행 "측정 전에 감사 산출물을
+            # 남긴다")을 예산 루프에도 적용한다(리뷰 지적 3) — 로컬 Ollama가
+            # 긴 입력에서 `ReadTimeout`을 낸 전례(`TIER1_MAX_RATIO` 주석)가
+            # 있어 30% 예산 도중 죽으면, `finally` 없이는 이미 끝난 10% 예산의
+            # 역번역 결과까지 통째로 사라진다 — 이월 20이 열린 것이 정확히
+            # 이 실패 경로였다.
+            for budget in TIER1_BUDGETS:
+                tier1_risks = triage_with_tier1(
+                    mutated,
+                    ctx,
+                    budget_ratio=budget,
+                    provider=provider,
+                    max_ratio=TIER1_MAX_RATIO,
+                    warn=print,
+                    embedder=embedder,
+                    cache_dir=args.cache_dir,
+                    identity=provider.cache_identity,
+                )
+                tier1_selected = {r.segment_id for r in tier1_risks if r.selected}
+                tier1_scores = _negation_recall_scores(tier1_selected, labels, negation_classes)
+                raw_records.extend(
+                    _collect_raw(tier1_risks, mutated, labels, negation_classes, budget)
+                )
+
+                # Tier 0만으로의 같은 예산 — 위 `risks`(Tier 0 융합 결과, 예산
+                # 미적용)에 같은 예산을 적용해 비교 기준을 낸다. 새로 수집하지
+                # 않는다 — 이미 계산돼 있는 것을 재사용하지 않으면 Tier 0와
+                # Tier 1이 서로 다른 신호 스냅샷을 비교하게 된다.
+                tier0_selected = {
+                    r.segment_id for r in select_by_budget(risks, budget) if r.selected
+                }
+                tier0_scores = _negation_recall_scores(tier0_selected, labels, negation_classes)
+
+                comparison = render_tier1_comparison(
+                    tier0=tier0_scores, tier1=tier1_scores, budget=budget
+                )
+                print(comparison)
+                tier1_comparisons.append(comparison)
+        finally:
+            # 예산 루프가 도중에 죽어도(위 주석) 지금까지 모은 것은 남긴다.
+            # `raw_records`가 비어도(첫 예산에서 죽음) 빈 목록으로라도 쓴다 —
+            # "시도했으나 0건"과 "아예 안 돌았다"를 파일 존재로 구분한다.
+            raw_path = _dump_raw(
+                raw_records,
+                args.audit_dir or track_path.parent,
+                args.pair,
+                model=args.model,
+                embed_model=args.embed_model,
+                commit=commit,
             )
-            tier1_selected = {r.segment_id for r in tier1_risks if r.selected}
-            tier1_scores = _negation_recall_scores(tier1_selected, labels, negation_classes)
-            raw_records.extend(_collect_raw(tier1_risks, mutated, labels, negation_classes, budget))
+            print(f"Tier 1 원자료 -> {raw_path}")
 
-            # Tier 0만으로의 같은 예산 — 위 `risks`(Tier 0 융합 결과, 예산
-            # 미적용)에 같은 예산을 적용해 비교 기준을 낸다. 새로 수집하지
-            # 않는다 — 이미 계산돼 있는 것을 재사용하지 않으면 Tier 0와
-            # Tier 1이 서로 다른 신호 스냅샷을 비교하게 된다.
-            tier0_selected = {r.segment_id for r in select_by_budget(risks, budget) if r.selected}
-            tier0_scores = _negation_recall_scores(tier0_selected, labels, negation_classes)
+            if tier1_comparisons:
+                # 리뷰 지적 1 — `render_tier1_comparison`의 출력은 집계
+                # 수치만 담아 CC BY-NC-ND 제약을 받지 않는다. 콘솔 `print`만
+                # 남기면 스크롤백이 닫히는 순간 사라지므로, 커밋 가능한
+                # `bench/results/`의 리포트 파일에도 같은 내용을 싣는다.
+                # 같은 경로(`{pair}-{date}.md`/`.json`)를 다시 써 Tier 0
+                # 리포트를 Tier 1 비교로 확장한다.
+                tier1_md_path, tier1_json_path = write_report(
+                    meta,
+                    results,
+                    drops,
+                    baseline,
+                    args.out_dir,
+                    by_kind_baseline=by_kind_baseline,
+                    tier1_comparisons=tier1_comparisons,
+                )
+                print(f"리포트(Tier 1 포함) -> {tier1_md_path}\n              {tier1_json_path}")
 
-            print(render_tier1_comparison(tier0=tier0_scores, tier1=tier1_scores, budget=budget))
-
-        raw_path = _dump_raw(
-            raw_records,
-            args.audit_dir or track_path.parent,
-            args.pair,
-            model=args.model,
-            embed_model=args.embed_model,
-            commit=commit,
-        )
-        print(f"Tier 1 원자료 -> {raw_path}")
-        embedder.close()
-        provider.close()
+            embedder.close()
+            provider.close()
 
     return 0
 

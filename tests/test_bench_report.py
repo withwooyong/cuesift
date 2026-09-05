@@ -506,3 +506,48 @@ def test_tier1_비교표는_clean_total이_0이면_해상도_대신_안내한다
         budget=0.10,
     )
     assert "해상도를 계산할 수 없다" in rendered
+
+
+# --- 리뷰 지적 1: Tier 1 비교표를 write_report에 배선 ------------------------
+
+
+def test_render_markdown은_tier1_comparisons를_실을_수_있다():
+    """`render_tier1_comparison`의 출력을 콘솔뿐 아니라 리포트 본문에도
+    실어야 한다(리뷰 지적 1) — 집계 수치만 담아 CC BY-NC-ND 제약을 받지
+    않는 유일한 Tier 1 산출물인데, `print`만 하면 스크롤백이 닫히는 순간
+    사라진다."""
+    block = render_tier1_comparison(
+        tier0={"negation_recall": 0.10, "clean_recall": 0.20, "clean_total": 35},
+        tier1={"negation_recall": 0.30, "clean_recall": 0.50, "clean_total": 35},
+        budget=0.10,
+    )
+    md = render_markdown(META, RESULTS, DROPS, BASELINE, tier1_comparisons=[block])
+    assert "## Tier 1 비교" in md
+    assert block in md
+
+
+def test_render_markdown은_tier1_comparisons가_없으면_절_자체가_없다():
+    """`--tier1` 없는 실행(또는 기본값 `None`)은 새 절이 아예 생기지 않아야
+    기존 리포트(`test_report_contains_reproduction_header` 등)와 완전히
+    같은 출력을 낸다."""
+    md = render_markdown(META, RESULTS, DROPS, BASELINE)
+    assert "## Tier 1 비교" not in md
+
+
+def test_write_report_round_trips_tier1_comparisons(tmp_path):
+    """JSON 산출물에 `tier1_comparisons`가 그대로 실려야 Tier 1 수치가
+    재현된다 — 콘솔 출력이 사라진 뒤에도 이 파일 하나로 재구성 가능해야
+    이월 20이 닫힌다."""
+    block = "### Tier 1 비교 (예산 10%)\n\n| 지표 | Tier 0 | Tier 0+1 |"
+    _, json_path = write_report(META, RESULTS, DROPS, BASELINE, tmp_path, tier1_comparisons=[block])
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["tier1_comparisons"] == [block]
+
+
+def test_write_report_tier1_comparisons_기본값은_빈_목록이다(tmp_path):
+    """`tier1_comparisons`를 안 주면(기존 호출부 전부) JSON에 빈 목록이
+    실린다 — `None`이 그대로 실려 소비자가 매번 `or []`를 해야 하는 것보다
+    낫다."""
+    _, json_path = write_report(META, RESULTS, DROPS, BASELINE, tmp_path)
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["tier1_comparisons"] == []
