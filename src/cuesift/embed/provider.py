@@ -41,8 +41,6 @@ class FatalEmbeddingError(EmbeddingError):
 class Embedder(Protocol):
     """텍스트를 벡터로 만든다 (FR-4.2)."""
 
-    name: str
-
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """입력 순서 그대로 벡터를 낸다.
 
