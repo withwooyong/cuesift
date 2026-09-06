@@ -534,26 +534,26 @@ git commit -m "구현: 후보 선정에 우선순위 통로를 연다 (설계 D6
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
 
-`tests/test_tier1.py` 맨 끝에 덧붙인다. 이 파일의 기존 헬퍼(가짜 `Provider`·`SignalContext` 조립)를 그대로 재사용한다. 아래는 그 헬퍼 이름을 확인한 뒤 맞춰 쓴다.
+`tests/test_tier1.py` 맨 끝에 덧붙인다. **아래 이름들은 실제 파일을 확인해 맞춰 둔 것이므로 그대로 쓴다.** `signal_ctx` 는 `@pytest.fixture`(25행)이므로 반드시 **테스트 함수의 인자로 받아야** 하고, 언어를 바꾸는 테스트는 `dataclasses.replace` 로 파생시킨다(`SignalContext` 는 `frozen=True` 데이터클래스다). 파일 상단에 `from dataclasses import replace` 를 더한다.
 
 ```python
-def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다():
+def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다signal_ctx):
     """설계 D2 - 원문 또는 번역문에 표지가 있으면 우선 집합이다."""
     reports: list[CandidateReport] = []
     segments = _segments_with_texts(
         # (source_text, target_text) 20건 중 뒤 두 건만 부정을 담는다.
         [("맑은 날입니다", "It is sunny")] * 18
-        + [("가지 않았습니다", "did not go"), ("없습니다", "there is none")]
+        + [("가지 않았습니다", "did not go"), ("아무도 없습니다", "there is none")]
     )
     triage_with_tier1(
         segments,
-        _ctx(source_lang="ko", target_lang="en"),
+        signal_ctx,
         budget_ratio=0.1,
-        provider=_stub_provider(),
+        provider=EchoProvider(),
         max_ratio=0.1,
-        warn=lambda _: None,
+        warn=_ignore,
         on_candidates=reports.append,
-        embedder=_stub_embedder(),
+        embedder=_FakeEmbedder(),
     )
     assert len(reports) == 1
     # cap = floor(20 * 0.1) = 2 이므로 표지 보유 두 건이 그대로 후보다.
@@ -561,19 +561,19 @@ def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다():
     assert len(reports[0].candidate_ids) == 2
 
 
-def test_미지원_언어면_경고가_나가고_우선_집합이_빈다():
+def test_미지원_언어면_경고가_나가고_우선_집합이_빈다signal_ctx):
     """설계 D5 - 조용히 되돌아가면 무음 열화다 (Q3)."""
     warnings: list[str] = []
     reports: list[CandidateReport] = []
     triage_with_tier1(
         _segments_with_texts([("맑은 날입니다", "Il fait beau")] * 20),
-        _ctx(source_lang="fr", target_lang="de"),
+        replace(signal_ctx, source_lang="fr", target_lang="de"),
         budget_ratio=0.1,
-        provider=_stub_provider(),
+        provider=EchoProvider(),
         max_ratio=0.1,
         warn=warnings.append,
         on_candidates=reports.append,
-        embedder=_stub_embedder(),
+        embedder=_FakeEmbedder(),
     )
     assert any(_POLARITY_UNSUPPORTED in w for w in warnings)
     assert reports[0].priority_ids == frozenset()
@@ -581,21 +581,21 @@ def test_미지원_언어면_경고가_나가고_우선_집합이_빈다():
     assert len(reports[0].candidate_ids) == 2
 
 
-def test_한쪽만_미지원이면_지원되는_쪽으로_판정한다():
+def test_한쪽만_미지원이면_지원되는_쪽으로_판정한다signal_ctx):
     warnings: list[str] = []
     reports: list[CandidateReport] = []
     triage_with_tier1(
         _segments_with_texts(
             [("맑은 날입니다", "Il fait beau")] * 18
-            + [("가지 않았습니다", "x"), ("없습니다", "y")]
+            + [("가지 않았습니다", "x"), ("아무도 없습니다", "y")]
         ),
-        _ctx(source_lang="ko", target_lang="de"),
+        replace(signal_ctx, target_lang="de"),
         budget_ratio=0.1,
-        provider=_stub_provider(),
+        provider=EchoProvider(),
         max_ratio=0.1,
         warn=warnings.append,
         on_candidates=reports.append,
-        embedder=_stub_embedder(),
+        embedder=_FakeEmbedder(),
     )
     assert any(_POLARITY_UNSUPPORTED in w for w in warnings)
     # ko 는 지원되므로 원문 표지로 두 건이 잡힌다.
@@ -608,20 +608,29 @@ def test_경고_문구를_테스트가_지어_넘기지_않는다():
     assert "—" not in _POLARITY_UNSUPPORTED  # cp949 에 없는 em dash 금지
 
 
-def test_on_candidates가_없으면_아무것도_안_부른다():
+def test_on_candidates가_없으면_아무것도_안_부른다signal_ctx):
     """콜백은 선택이다. 기존 호출부가 손대지 않은 채 돌아야 한다."""
     triage_with_tier1(
         _segments_with_texts([("맑은 날입니다", "It is sunny")] * 20),
-        _ctx(source_lang="ko", target_lang="en"),
+        signal_ctx,
         budget_ratio=0.1,
-        provider=_stub_provider(),
+        provider=EchoProvider(),
         max_ratio=0.1,
-        warn=lambda _: None,
-        embedder=_stub_embedder(),
+        warn=_ignore,
+        embedder=_FakeEmbedder(),
     )
 ```
 
-**헬퍼가 없으면 만든다.** `_segments_with_texts(pairs)` 는 `(source_text, target_text)` 쌍 목록으로 `Segment` 를 만든다. `id` 는 `f"s{i:03d}"`, `index` 는 `i`, `start_ms` 는 `i * 2000`, `end_ms` 는 `i * 2000 + 1500` 으로 겹치지 않게 둔다. `_ctx`·`_stub_provider`·`_stub_embedder` 는 파일에 이미 있는 것을 쓰고, 없으면 기존 테스트에서 쓰는 조립 방식을 그대로 옮긴다.
+**새로 만드는 헬퍼는 `_segments_with_texts(pairs)` 하나뿐이다.** `(source_text, target_text)` 쌍 목록으로 `Segment` 를 만들고, `id` 는 `f"s{i:03d}"`, `index` 는 `i`, `start_ms` 는 `i * 2000`, `end_ms` 는 `i * 2000 + 1500` 으로 겹치지 않게 둔다.
+
+**나머지 넷은 파일에 이미 있으므로 만들지 않는다.** 계획서를 처음 쓸 때 지어낸 이름들이 실제와 달랐고, 아래가 실측으로 확인한 이름이다.
+
+| 쓸 것 | 위치와 성질 |
+| --- | --- |
+| `signal_ctx` | 25행의 `@pytest.fixture`. `load_builtin("en")` · ko->en 고정이고 **인자를 받지 않는다** |
+| `EchoProvider()` | `from tests.fakes.provider import EchoProvider` 로 이미 임포트돼 있다 |
+| `_FakeEmbedder()` | 같은 파일 320행 |
+| `_ignore` | 31행. 경고 사유에 관심 없는 테스트가 쓰는 공용 자리표시자다 |
 
 **이 테스트를 쓰기 전에 두 세그먼트가 회색지대에 있는지부터 확인한다.** 부정을 담은 문장이 `spec.violation`(길이 초과)이나 `length.ratio` 를 건드리면 hard fail 이나 컷라인 위로 올라가 우선 집합에서 빠지고, 그러면 테스트가 **극성 판정이 아니라 Tier 0 신호를 재게 된다.** 아래 한 줄을 먼저 돌려 확인하고, 신호가 걸리면 문장을 짧고 규격에 맞게 고친다.
 
@@ -1088,6 +1097,8 @@ PR 본문에는 **무엇을 · 근거 문서 · 게이트 수치**를 담는다.
 | C5 | 1 | Step 6 의 비교 정규식이 버그였다 | 포섭된 둘(`ませんでし`·`ないで`) 말고 `ずに` 까지 함께 뺐다. 올바른 비교는 차이 0건이다. 결론(패턴 유지)은 보수적으로 옳았다 |
 | C6 | 3 | `("없습니다", "there is none")` → `("아무도 없습니다", "there is none")` | 4자 대 13자는 `length.ratio` 를 건드려 위험도가 오르고, 그러면 그 세그먼트가 **컷라인 위로 선별돼 회색지대에서 빠진다.** 우선 집합에 들어가야 할 것이 후보 대상에서 사라진다 |
 | C7 | 4 | `tier0_risks` → `risks`, `negation_ids` 를 새로 만든다, `select_by_budget` 은 이미 임포트돼 있다, 테스트에 렌더러 임포트를 더한다 | 계획서를 쓸 때 `bench/run.py` 의 실제 변수명을 확인하지 않았다 |
+| C8 | 2 | 변이 매핑 표만 고치고 **코드와 테스트는 그대로 둔다** | 계획서는 `if r.segment_id in priority` → `if True` 가 `test_회색지대_밖_ID는_무시된다` 를 죽인다고 적었으나, `hard`·`picked` 는 `gray_zone()` 이 먼저 걸러 그 필터에 닿지 않으므로 변이가 생존한다. 그 테스트를 실제로 죽이는 변이는 `ordered = gray_zone(risks)` → `ordered = _sorted_desc(risks)` 이고, 돌려서 확인했다(1 failed). **테스트는 진짜 게이트이며 틀린 것은 서술뿐이었다** |
+| C9 | 3 | 테스트 헬퍼 이름 네 건을 실제 이름으로 바꾸고, `signal_ctx` 를 함수 인자로 받게 한다 | 계획서가 지어낸 `_ctx(source_lang=..., target_lang=...)`·`_stub_provider()`·`_stub_embedder()`·`warn=lambda _: None` 은 파일에 없다. 실제는 픽스처 `signal_ctx`(인자 없음)·`EchoProvider()`·`_FakeEmbedder()`·`_ignore` 이며, 픽스처는 인자로 받지 않으면 `NameError` 가 난다. 언어를 바꾸는 두 테스트는 `dataclasses.replace` 로 파생시킨다 |
 
 **공통 원인은 하나다.** 계획서에 한글 문자열·정규식·변수명을 **실행해 보지 않고**
 적었다. C1·C3·C6·C7 이 전부 그 부류다. 이 리포에 문자열을 박을 때는 실행으로
