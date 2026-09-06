@@ -944,13 +944,15 @@ Expected: PASS
                         ),
                         negation_hits=len(candidate_id_set & negation_ids),
                         negation_in_gray_zone=_negation_in_gray_zone(
-                            tier0_risks, budget, negation_ids
+                            risks, budget, negation_ids
                         ),
                     )
                 )
 ```
 
-`negation_ids` 는 `{lb.segment_id for lb in labels if lb.kind == "negation"}` 이다. 이미 있으면 재사용한다.
+**`risks` 가 Tier 0 융합 결과의 실제 이름이다**(`bench/run.py:388`). 517~522행 주석이 이미 그 변수를 「Tier 0 융합 결과, 예산 적용 전」으로 부르고 있으니 그대로 쓴다.
+
+**`negation_ids` 는 새로 만든다.** `{lb.segment_id for lb in labels if lb.kind == "negation"}` 인데, 같은 식이 248행에 있기는 하나 `_negation_recall_scores` **함수 안**이라 Tier 1 루프 스코프 밖이다.
 
 `_negation_in_gray_zone` 헬퍼를 `bench/run.py` 에 만든다.
 
@@ -969,13 +971,15 @@ def _negation_in_gray_zone(
 
 임포트를 더한다.
 
-```python
-from bench.report import render_tier1_candidates
-from cuesift.tier1 import CandidateReport, triage_with_tier1
-from cuesift.triage.policy import gray_zone, select_by_budget
-```
+**셋 다 이미 있는 줄을 넓히는 것이지 새 줄이 아니다.** 새로 쓰면 중복 임포트가 되어 ruff 가 잡는다.
 
-`triage_with_tier1` 은 이미 임포트돼 있으므로 `CandidateReport` 만 그 줄에 더한다.
+| 줄 | 지금 | 고친 뒤 |
+| --- | --- | --- |
+| `bench/run.py:31` | `from bench.report import RunMeta, render_tier1_comparison, write_report` | `render_tier1_candidates` 를 더한다 |
+| `bench/run.py:46` | `from cuesift.tier1 import triage_with_tier1` | `CandidateReport` 를 더한다 |
+| `bench/run.py:48` | `from cuesift.triage import select_by_budget` | `gray_zone` 을 더한다 |
+
+**`cuesift.triage.policy` 가 아니라 `cuesift.triage` 에서 가져온다.** 이 리포는 패키지에서 임포트하는 것이 관례이고 `triage/__init__.py` 가 `gray_zone` 을 재수출한다.
 
 - [ ] **Step 6: 통과를 확인하고 커밋한다**
 
@@ -1099,6 +1103,8 @@ PR 본문에는 **무엇을 · 근거 문서 · 게이트 수치**를 담는다.
 | C7 | 4 | `tier0_risks` → `risks`, `negation_ids` 를 새로 만든다, `select_by_budget` 은 이미 임포트돼 있다, 테스트에 렌더러 임포트를 더한다 | 계획서를 쓸 때 `bench/run.py` 의 실제 변수명을 확인하지 않았다 |
 | C8 | 2 | 변이 매핑 표만 고치고 **코드와 테스트는 그대로 둔다** | 계획서는 `if r.segment_id in priority` → `if True` 가 `test_회색지대_밖_ID는_무시된다` 를 죽인다고 적었으나, `hard`·`picked` 는 `gray_zone()` 이 먼저 걸러 그 필터에 닿지 않으므로 변이가 생존한다. 그 테스트를 실제로 죽이는 변이는 `ordered = gray_zone(risks)` → `ordered = _sorted_desc(risks)` 이고, 돌려서 확인했다(1 failed). **테스트는 진짜 게이트이며 틀린 것은 서술뿐이었다** |
 | C9 | 3 | 테스트 헬퍼 이름 네 건을 실제 이름으로 바꾸고, `signal_ctx` 를 함수 인자로 받게 한다 | 계획서가 지어낸 `_ctx(source_lang=..., target_lang=...)`·`_stub_provider()`·`_stub_embedder()`·`warn=lambda _: None` 은 파일에 없다. 실제는 픽스처 `signal_ctx`(인자 없음)·`EchoProvider()`·`_FakeEmbedder()`·`_ignore` 이며, 픽스처는 인자로 받지 않으면 `NameError` 가 난다. 언어를 바꾸는 두 테스트는 `dataclasses.replace` 로 파생시킨다 |
+| C10 | 4 | `tier0_risks` → `risks`, 임포트 셋을 **새 줄이 아니라 기존 줄 확장**으로, `negation_ids` 는 새로 만든다 | 계획서를 쓸 때 `bench/run.py` 의 실제를 확인하지 않았다. Tier 0 융합 결과는 388행의 `risks` 이고, `select_by_budget` 은 48행에 이미 임포트돼 있어 새 줄을 쓰면 중복이 된다. `negation_ids` 는 248행에 같은 식이 있으나 `_negation_recall_scores` 함수 안이라 Tier 1 루프 스코프 밖이다. `gray_zone` 은 `cuesift.triage` 가 재수출한다 |
+| C11 | 3 | 리뷰 두 라운드의 반영 결과 | I-1 `kept` 주석이 일어나지 않는 실패를 서술했다. I-2 `cap` 산식이 복제돼 갈라져도 안 죽었다 - `policy.py` 에 `tier1_cap()` 을 내고 세 곳이 쓰게 했다. I-3 미지원 언어 테스트 데이터가 `length.ratio` 때문에 회색지대 밖이었다. I-4 `candidate_ids` 는 **선정 집합을 유지하고 독스트링에 명시**했다 - 설계 §3.2~§3.4 의 기대값이 전부 선정 집합 기준이라 분모를 바꾸면 리포트가 설계 표와 대조되지 않는다 |
 
 **공통 원인은 하나다.** 계획서에 한글 문자열·정규식·변수명을 **실행해 보지 않고**
 적었다. C1·C3·C6·C7 이 전부 그 부류다. 이 리포에 문자열을 박을 때는 실행으로
