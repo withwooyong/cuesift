@@ -178,6 +178,24 @@ def gray_zone(risks: Sequence[SegmentRisk]) -> list[SegmentRisk]:
     return [r for r in _sorted_desc(risks) if not r.hard_fail and not r.selected]
 
 
+def tier1_cap(total: int, max_ratio: float) -> int:
+    """Tier 1 상한 - 전체 대비 내림(floor) (FR-4.3).
+
+    **공유 함수로 뽑은 이유** - `select_tier1_candidates`가 회색지대 안에서
+    쓰는 상한과, `tier1.py`의 `CandidateReport.cap`·`explain_zero_bound`가
+    "왜 0인지" 설명할 때 쓰는 상한이 각자 계산되면 한쪽만 고쳐도 다른 쪽이
+    조용히 다른 수를 낸다(`gray_zone()`을 공유 함수로 뽑은 것과 같은 이유,
+    2라운드 리뷰 C3). 실측(3라운드 리뷰 I-2) - 공유 전에는 `tier1.py` 쪽
+    산식만 `math.ceil(...) + 1`로 바꿔도 전체 스위트(1930건)가 그대로
+    통과했다 - `cap`·`gray_zone_size`를 단언하는 테스트가 없었기 때문이다.
+
+    **왜 내림(`floor`)인지는 `select_tier1_candidates`의 독스트링(아래
+    "내림한다" 문단)이 단일 출처다** - 여기서 다시 설명하면 그 문단과
+    갈라질 자리가 생긴다.
+    """
+    return math.floor(total * max_ratio)
+
+
 def select_tier1_candidates(
     risks: Sequence[SegmentRisk],
     max_ratio: float,
@@ -254,7 +272,7 @@ def select_tier1_candidates(
     # 내림이면 n < 1/max_ratio일 때 cap이 0이 되어 Tier 1이 통째로 꺼진다
     # (0.25 비율은 n<4, 0.10은 n<10에서 빈 목록). 이것은 **명시되면 설계**이고,
     # 조용하면 사고다 — 주석으로 비용을 기록해 다음 사람이 설계를 읽을 수 있게.
-    cap = math.floor(len(risks) * max_ratio)
+    cap = tier1_cap(len(risks), max_ratio)
     if cap <= 0:
         return []
 
