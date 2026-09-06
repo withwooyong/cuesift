@@ -85,6 +85,21 @@ def test_개행을_지우면_오히려_잃는_것도_잡는다():
     assert has_polarity_marker("안\n갔다", "ko")
 
 
+def test_개행이_배제_룩어헤드를_뚫지_못한다():
+    # 원본을 보면 개행이 배제 글자를 가려 룩어헤드가 통과한다.
+    # D4 가 막으려던 오탐이 되살아나므로 ja 는 원본 패스에서 뺀다.
+    assert not has_polarity_marker("しか\nし、それは違います", "ja")
+    assert not has_polarity_marker("無\n限に広がる", "ja")
+    assert not has_polarity_marker("不\n思議な話", "ja")
+
+
+def test_원본_패스_언어는_지원_언어의_부분집합이다():
+    # 실제 상수를 임포트해 검사한다. 목록을 지어 넘기면 코드와 갈라진다.
+    from cuesift.polarity import _RAW_PASS
+
+    assert supported_languages() >= _RAW_PASS
+
+
 def test_어휘_목록을_테스트가_지어_넘기지_않는다():
     # 실제 패턴을 임포트해 검사한다. 테스트 안에서 만든 정규식을 검사하면
     # 코드와 갈라져도 통과한다 (리포트 caveat 전례).

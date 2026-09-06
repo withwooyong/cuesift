@@ -63,6 +63,24 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 
+# 원본도 함께 보는 언어 (설계 D4, 2026-09-06 2차 개정).
+#
+# **ja 를 넣으면 무엇이 깨지는가.** ja 패턴은 단어 경계가 없는 대신
+# `しか(?!し)`·`無[^限]`·`不[^思]` 같은 **배제 룩어헤드**로 오탐을 막는데,
+# 원본을 보면 개행이 배제 글자를 가려 룩어헤드가 통과해 버린다
+# (실측: `しか\nし` 가 표지로 잡힌다. `無\n限`·`不\n思` 도 같다).
+# D4 가 막으려던 바로 그 오탐이 되살아난다.
+#
+# **ko·en 은 반대로 원본이 필요하다.** 두 패턴은 `\s`·`\b` 로 구분자에
+# 기대므로 개행을 지우면 매칭을 잃는다 - `do` + 개행 + `not` 이 `donot` 이
+# 되고(실측 en 번역문 52건), `안` + 개행 + `갔다` 가 `안갔다` 가 된다
+# (실측 en 원문 5건 · ja 원문 6건).
+#
+# **ja 를 빼도 잃는 것이 없다는 것은 실측이다** - 원본 패스가 ja 번역문에서
+# 새로 잡는 것은 0건이고, 농축 배수도 en 4.55x/4.46x · ja 3.31x/3.26x 로
+# 전면 OR 과 소수점까지 같다.
+_RAW_PASS = frozenset({"ko", "en"})
+
 
 def supported_languages() -> frozenset[str]:
     """극성 표지 목록이 있는 언어 (설계 D5).
@@ -85,6 +103,8 @@ def has_polarity_marker(text: str | None, lang: str) -> bool:
       한국어 `안` + 개행 + `갔다` 도 `안갔다` 가 되어 `안\\s` 를 잃는다.
     - 원본만 보면 **CJK 가 샌다** - 자막은 어절 중간에서 줄바꿈되므로
       `かもしれま` + 개행 + `せん` 이 `ません` 을 쪼갠다(이월 19번 실측).
+    - **원본 패스는 ko·en 에만 적용한다**(`_RAW_PASS`). ja 는 배제 룩어헤드가
+      개행에 뚫린다 - 자세한 것은 그 상수의 주석이 단일 출처다.
 
     판정은 boolean 이라 위치가 어긋날 걱정이 없다 - 그래서 두 번 봐도 된다.
 
@@ -97,6 +117,6 @@ def has_polarity_marker(text: str | None, lang: str) -> bool:
     pattern = _PATTERNS.get(lang)
     if pattern is None:
         return False
-    if pattern.search(text):
+    if lang in _RAW_PASS and pattern.search(text):
         return True
     return pattern.search(text.replace("\n", "").replace("\r", "")) is not None
