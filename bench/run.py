@@ -28,7 +28,7 @@ from bench.measure import (
     measure,
     random_baseline,
 )
-from bench.report import RunMeta, render_tier1_comparison, write_report
+from bench.report import RunMeta, render_tier1_candidates, render_tier1_comparison, write_report
 from bench.track_io import dump_audit, load_track
 from cuesift.embed import (
     Embedder,
@@ -43,9 +43,9 @@ from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
 from cuesift.signals.backtranslation import BackTranslation
 from cuesift.spec import load_builtin
-from cuesift.tier1 import triage_with_tier1
+from cuesift.tier1 import CandidateReport, triage_with_tier1
 from cuesift.translate.openai_compat import OpenAICompatibleProvider
-from cuesift.triage import select_by_budget
+from cuesift.triage import gray_zone, select_by_budget
 
 BUDGETS = (0.01, 0.02, 0.05, 0.10, 0.20, 0.30)
 # FR-3.5는 이번 측정에서 빠진다(스펙 §5.3). 리포트에 미측정으로 표기한다.
@@ -252,6 +252,18 @@ def _negation_recall_scores(
         "clean_recall": _recall(selected_ids, clean_ids),
         "clean_total": len(clean_ids),
     }
+
+
+def _negation_in_gray_zone(
+    risks: Sequence[SegmentRisk], budget: float, negation_ids: set[str]
+) -> int:
+    """회색지대 안 negation 건수 - 무작위 기대값의 분자다.
+
+    **`gray_zone`을 직접 부른다.** 술어를 여기서 복제하면 `triage/`가
+    제외 조건을 하나 더 넣을 때 이 수가 조용히 틀린다 (2라운드 리뷰 C3 전례).
+    """
+    scored = select_by_budget(risks, budget)
+    return sum(1 for r in gray_zone(scored) if r.segment_id in negation_ids)
 
 
 def _collect_raw(
@@ -497,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
             # 역번역 결과까지 통째로 사라진다 — 이월 20이 열린 것이 정확히
             # 이 실패 경로였다.
             for budget in TIER1_BUDGETS:
+                candidate_reports: list[CandidateReport] = []
                 tier1_risks = triage_with_tier1(
                     mutated,
                     ctx,
@@ -507,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
                     embedder=embedder,
                     cache_dir=args.cache_dir,
                     identity=provider.cache_identity,
+                    on_candidates=candidate_reports.append,
                 )
                 tier1_selected = {r.segment_id for r in tier1_risks if r.selected}
                 tier1_scores = _negation_recall_scores(tier1_selected, labels, negation_classes)
@@ -525,6 +539,23 @@ def main(argv: list[str] | None = None) -> int:
 
                 comparison = render_tier1_comparison(
                     tier0=tier0_scores, tier1=tier1_scores, budget=budget
+                )
+                # **`negation_in_gray_zone`은 라벨에서 센다.** 후보 안 건수만
+                # 세면 분모가 없어 무작위 기대값을 낼 수 없다(설계 D10).
+                report = candidate_reports[0]
+                candidate_id_set = set(report.candidate_ids)
+                tier1_comparisons.append(
+                    render_tier1_candidates(
+                        budget=budget,
+                        cap=report.cap,
+                        gray_zone_size=report.gray_zone_size,
+                        candidates=len(report.candidate_ids),
+                        from_priority=sum(
+                            1 for sid in report.candidate_ids if sid in report.priority_ids
+                        ),
+                        negation_hits=len(candidate_id_set & negation_ids),
+                        negation_in_gray_zone=_negation_in_gray_zone(risks, budget, negation_ids),
+                    )
                 )
                 # **모으는 것이 먼저고 찍는 것이 나중이다.** 순서가 반대면
                 # `print`의 실패가 데이터 수집을 막는다 - 2026-09-05 실행에서

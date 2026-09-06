@@ -12,7 +12,13 @@ import dataclasses
 import json
 
 from bench.measure import BudgetResult
-from bench.report import RunMeta, render_markdown, render_tier1_comparison, write_report
+from bench.report import (
+    RunMeta,
+    render_markdown,
+    render_tier1_candidates,
+    render_tier1_comparison,
+    write_report,
+)
 
 # 실측값(Task 7 리포트) — en-ko. ja-ko는 0.9111%.
 _HARD_FAIL_FP_RATE = 0.009556
@@ -553,3 +559,47 @@ def test_write_report_tier1_comparisons_기본값은_빈_목록이다(tmp_path):
     _, json_path = write_report(META, RESULTS, DROPS, BASELINE, tmp_path)
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["tier1_comparisons"] == []
+
+
+def test_후보_구성표가_무작위_기대값을_함께_낸다():
+    """이월 21번의 교훈 - 적중만 보면 '적지만 있긴 하다'로 읽힌다."""
+    block = render_tier1_candidates(
+        budget=0.10,
+        cap=250,
+        gray_zone_size=4500,
+        candidates=250,
+        from_priority=250,
+        negation_hits=18,
+        negation_in_gray_zone=70,
+    )
+    assert "3.89" in block  # 70 * 250 / 4500
+    assert "18" in block
+    assert "4.63" in block  # 18 / 3.89
+
+
+def test_후보_구성표가_채움_경로를_구분한다():
+    """설계 D6 - 우선 풀이 cap 보다 작으면 나머지가 무작위 표본이다."""
+    block = render_tier1_candidates(
+        budget=0.10,
+        cap=250,
+        gray_zone_size=4500,
+        candidates=250,
+        from_priority=90,
+        negation_hits=12,
+        negation_in_gray_zone=70,
+    )
+    assert "90" in block
+    assert "160" in block  # 채움분
+
+
+def test_회색지대가_비면_0으로_나눈다고_죽지_않는다():
+    block = render_tier1_candidates(
+        budget=0.10,
+        cap=0,
+        gray_zone_size=0,
+        candidates=0,
+        from_priority=0,
+        negation_hits=0,
+        negation_in_gray_zone=0,
+    )
+    assert "0" in block

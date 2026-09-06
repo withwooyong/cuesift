@@ -573,6 +573,50 @@ def render_tier1_comparison(
     return "\n".join(lines)
 
 
+def render_tier1_candidates(
+    *,
+    budget: float,
+    cap: int,
+    gray_zone_size: int,
+    candidates: int,
+    from_priority: int,
+    negation_hits: int,
+    negation_in_gray_zone: int,
+) -> str:
+    """Tier 1 후보가 어떻게 구성됐는지 (설계 D10).
+
+    **무작위 기대값을 함께 내는 것이 이 표의 존재 이유다.** 적중 건수만
+    적으면 "적지만 있긴 하다"로 읽히는데, 기대값과 나란히 놔야 선정이
+    무작위와 구별되는지가 드러난다 (이월 21번).
+
+    **배수가 1.0 근처면 후보 선정이 여전히 무작위다** - Recall 이 올랐더라도
+    그것은 다른 이유이므로 이 표가 먼저다.
+    """
+    expected = (
+        negation_in_gray_zone * min(cap, gray_zone_size) / gray_zone_size if gray_zone_size else 0.0
+    )
+    ratio = negation_hits / expected if expected else 0.0
+    return "\n".join(
+        [
+            f"### Tier 1 후보 구성 (예산 {budget:.0%})",
+            "",
+            "| 항목 | 값 |",
+            "| --- | ---: |",
+            f"| 회색지대 | {gray_zone_size} |",
+            f"| 상한(cap) | {cap} |",
+            f"| 후보 | {candidates} |",
+            f"| 그중 극성 표지 보유 | {from_priority} |",
+            f"| 그중 채움분(무작위 표본) | {candidates - from_priority} |",
+            f"| 후보 안 negation | **{negation_hits}** |",
+            f"| 무작위 기대값 | {expected:.2f} |",
+            f"| **배수** | **{ratio:.2f}x** |",
+            "",
+            "**배수가 1.0 근처면 후보 선정이 여전히 무작위다.** 적중 건수만"
+            " 보면 판단할 수 없으므로 기대값을 함께 싣는다 (이월 21번).",
+        ]
+    )
+
+
 def write_report(
     meta: RunMeta,
     results: Sequence[BudgetResult],
