@@ -309,8 +309,11 @@ def select_tier1_candidates(
 
 **로컬 3b 모델의 표본 한계**도 함께 적는다. `qwen2.5:3b` 는 배치 번역 형식을
 자주 어겨(26건 중 19건 `invalid_response`) 실측 표본이 작아진다.
-`--tier1-samples 2 --tier1-max-ratio 0.149` 처럼 곱 게이트 한계까지 올려야
-후보 상한이 내림으로 0 이 되지 않는다.
+`cuesift` CLI 로 작은 트랙을 돌 때는 `--tier1-samples 2 --tier1-max-ratio 0.149`
+처럼 곱 게이트 한계까지 올려야 후보 상한이 내림으로 0 이 되지 않는다.
+**벤치에는 해당하지 않는다** - `bench/run.py` 는 그 두 옵션을 받지 않고
+`TIER1_MAX_RATIO = 0.05` 를 상수로 두며, 5,000건 트랙에서는 상한이
+`floor(4500 × 0.05) = 225` 라 0 이 되지 않는다.
 
 ## 9. 완료 판정
 

@@ -1020,11 +1020,17 @@ Expected: Recall @ Budget 표가 2026-09-05 리포트와 소수점까지 같다.
 
 **`--cache-dir` 를 반드시 준다.** 역번역과 임베딩은 캐시가 없으면 매번 다시 부른다.
 
-곱 게이트(`samples × max_ratio < 0.3`) 한계까지 올려야 후보 상한이 내림으로 0 이 되지 않는다. 로컬 `qwen2.5:3b` 는 배치 번역 형식을 자주 어겨(26건 중 19건 `invalid_response`) 표본이 작아진다.
+**`bench/run.py` 에는 `--tier1-samples` 도 `--tier1-max-ratio` 도 없다.** 그 둘은 `cuesift` CLI 의 옵션이고, 벤치는 `TIER1_MAX_RATIO = 0.05` 를 상수로 고정한다(`bench/run.py:78`). 곱 게이트 한계까지 올리라는 제약은 **작은 트랙에서 후보 상한이 내림으로 0 이 되는 것을 막기 위한 것**이므로 5,000건 트랙에는 해당하지 않는다. 예산 10% 에서 `floor(4500 × 0.05) = 225` 다.
+
+**`--base-url` · `--model` · `--embed-model` 은 반드시 준다.** 셋 중 하나라도 빠지면 벤치가 Tier 0 리포트만 낸 뒤 **exit 2 로 죽는다**(`bench/run.py:447`). 리포트 파일은 이미 쓰인 뒤라 성공한 것처럼 보이므로, 종료 코드를 반드시 읽는다.
+
+**`--cache-dir` 도 반드시 준다.** 역번역과 임베딩은 캐시가 없으면 매번 다시 부른다.
+
+로컬 `qwen2.5:3b` 는 배치 번역 형식을 자주 어겨(26건 중 19건 `invalid_response`) 실측 표본이 작아진다.
 
 ```bash
-.venv/Scripts/python.exe -m bench.run --pair en-ko --seed 20260729 \
-  --tier1 --tier1-samples 2 --tier1-max-ratio 0.149 \
+.venv/Scripts/python.exe -m bench.run --pair en-ko --seed 20260729 --tier1 \
+  --base-url http://localhost:11434/v1 --model qwen2.5:3b --embed-model bge-m3 \
   --cache-dir data/bench/cache --audit-dir data/bench
 ```
 
@@ -1107,6 +1113,7 @@ PR 본문에는 **무엇을 · 근거 문서 · 게이트 수치**를 담는다.
 | C11 | 3 | 리뷰 두 라운드의 반영 결과 | I-1 `kept` 주석이 일어나지 않는 실패를 서술했다. I-2 `cap` 산식이 복제돼 갈라져도 안 죽었다 - `policy.py` 에 `tier1_cap()` 을 내고 세 곳이 쓰게 했다. I-3 미지원 언어 테스트 데이터가 `length.ratio` 때문에 회색지대 밖이었다. I-4 `candidate_ids` 는 **선정 집합을 유지하고 독스트링에 명시**했다 - 설계 §3.2~§3.4 의 기대값이 전부 선정 집합 기준이라 분모를 바꾸면 리포트가 설계 표와 대조되지 않는다 |
 | C12 | 4 | `negation_ids` 는 **새로 만들지 않고 411행의 것을 재사용한다** | C10 을 쓸 때 내가 `grep` 결과 두 줄 중 248행만 보고 「함수 안이라 스코프 밖」이라 결론지었다. **411행은 `main()` 안이라 Tier 1 루프와 같은 스코프다.** 구현자가 잡아냈다. 새로 만들었다면 같은 식이 세 번 복제된다 |
 | C13 | 4 | `write_report` 는 시그니처를 바꾸지 않는다 | 이미 `tier1_comparisons` 리스트를 받으므로 새 블록을 그 리스트에 얹으면 된다. 브리프의 「`write_report` 확장」은 불필요한 지시였다 |
+| C14 | 5 | 벤치 실행 명령이 **실행되지 않는 옵션**을 적고 있었다 | `bench/run.py` 는 `--tier1-samples` 도 `--tier1-max-ratio` 도 받지 않는다(둘 다 `cuesift` CLI 의 것이다). 대신 `--base-url` · `--model` · `--embed-model` 이 필수이고, 빠지면 **Tier 0 리포트를 쓴 뒤 exit 2 로 죽는다** - 리포트 파일이 생겨 성공처럼 보이므로 종료 코드를 읽어야 한다. 곱 게이트 제약은 작은 트랙용이고 5,000건 트랙의 상한은 `floor(4500 × 0.05) = 225` 라 0 이 되지 않는다. 설계 스펙 §8 도 같이 고쳤다 |
 
 **공통 원인은 하나다.** 계획서에 한글 문자열·정규식·변수명을 **실행해 보지 않고**
 적었다. C1·C3·C6·C7 이 전부 그 부류다. 이 리포에 문자열을 박을 때는 실행으로
