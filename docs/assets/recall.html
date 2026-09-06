@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recall @ Budget 실측</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #eb6c36;
+      --font-sans:     'Geist', 'Noto Sans KR', 'Malgun Gothic', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1000px; width: 100%; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 0.5rem;
+    }
+
+    .sub {
+      font-size: 0.82rem;
+      line-height: 1.5;
+      color: var(--color-muted);
+      max-width: 62ch;
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 720px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Line chart · cuesift</p>
+    <h1>검수 예산을 얼마나 쓰면 오류를 얼마나 잡는가</h1>
+    <p class="sub">TED2020(OPUS) 병렬 코퍼스에서 언어쌍마다 5,000건을 뽑아 합성 오류를 주입하고 측정했습니다(2026-09-04).
+      두 곡선이 서로 다른 지점에서 시작하는 것은 hard fail 신호가 예산을 우회해 무조건 큐에 들어가기 때문이며,
+      그 지점이 각 언어쌍의 최소 검수 비율입니다.</p>
+
+    <svg viewBox="0 0 1000 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="recall-title recall-desc">
+      <title id="recall-title">Recall @ Budget 실측</title>
+      <desc id="recall-desc">실제 검수 비율에 따른 오류 포착률을 한국어에서 영어, 한국어에서 일본어 두 언어쌍과 무작위 선별 기준선으로 비교한 선 그래프이며, 검수 비율 10퍼센트 부근에서 두 언어쌍 모두 무작위의 일곱 배 이상을 잡는다.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ============ 그리드 ============ -->
+      <line x1="80" y1="40" x2="960" y2="40" stroke="rgba(45,49,66,0.08)" stroke-width="0.8"/>
+      <line x1="80" y1="135" x2="960" y2="135" stroke="rgba(45,49,66,0.08)" stroke-width="0.8"/>
+      <line x1="80" y1="230" x2="960" y2="230" stroke="rgba(45,49,66,0.08)" stroke-width="0.8"/>
+      <line x1="80" y1="325" x2="960" y2="325" stroke="rgba(45,49,66,0.08)" stroke-width="0.8"/>
+      <line x1="80" y1="420" x2="960" y2="420" stroke="#bfc0c0" stroke-width="1"/>
+
+      <text x="68" y="44" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">100</text>
+      <text x="68" y="139" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">75</text>
+      <text x="68" y="234" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">50</text>
+      <text x="68" y="329" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">25</text>
+      <text x="68" y="424" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">0</text>
+
+      <text x="80" y="24" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', sans-serif">오류 포착률 (%)</text>
+
+      <!-- ============ x 눈금 ============ -->
+      <text x="80" y="440" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">0</text>
+      <text x="227" y="440" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">5</text>
+      <text x="373" y="440" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">10</text>
+      <text x="520" y="440" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">15</text>
+      <text x="667" y="440" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">20</text>
+      <text x="813" y="440" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">25</text>
+      <text x="960" y="440" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">30</text>
+
+      <text x="520" y="462" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">실제 검수 비율 (%)</text>
+
+      <!-- ============ 10% 기준선 ============ -->
+      <line x1="373" y1="56" x2="373" y2="420" stroke="rgba(45,49,66,0.18)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="325" y="36" width="96" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="373" y="48" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">검수 비율 10%</text>
+
+      <!-- ============ 시리즈 ============ -->
+      <!-- 무작위 기준선 -->
+      <polyline points="80,420 960,306" fill="none" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4"/>
+
+      <!-- ja-ko (비초점) -->
+      <polyline points="246,232 373,133 667,102 960,98" fill="none" stroke="#7c8f6f" stroke-width="1.2" stroke-linejoin="round"/>
+
+      <!-- en-ko (초점) -->
+      <polyline points="265,213 373,142 667,92 960,86" fill="none" stroke="#eb6c36" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="265" cy="213" r="4" fill="#eb6c36"/>
+      <circle cx="373" cy="142" r="4" fill="#eb6c36"/>
+      <circle cx="667" cy="92" r="4" fill="#eb6c36"/>
+      <circle cx="960" cy="86" r="4" fill="#eb6c36"/>
+
+      <!-- 10% 지점 수치 -->
+      <rect x="385" y="102" width="72" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="389" y="114" fill="#7c8f6f" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif">75.6%</text>
+
+      <rect x="385" y="158" width="72" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="389" y="170" fill="#eb6c36" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif">73.2%</text>
+
+      <rect x="385" y="392" width="72" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="389" y="404" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', sans-serif">10.0%</text>
+
+      <!-- ============ 범례 ============ -->
+      <line x1="80" y1="482" x2="960" y2="482" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="80" y="502" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+      <line x1="168" y1="498" x2="192" y2="498" stroke="#eb6c36" stroke-width="1.8"/>
+      <circle cx="180" cy="498" r="4" fill="#eb6c36"/>
+      <text x="200" y="502" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">한국어에서 영어</text>
+
+      <line x1="360" y1="498" x2="384" y2="498" stroke="#7c8f6f" stroke-width="1.2"/>
+      <text x="392" y="502" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">한국어에서 일본어</text>
+
+      <line x1="576" y1="498" x2="600" y2="498" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4"/>
+      <text x="608" y="502" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">무작위로 골랐을 때</text>
+    </svg>
+  </div>
+</body>
+</html>

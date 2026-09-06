@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cuesift 명령별 입출력</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #eb6c36;
+      --font-sans:     'Geist', 'Noto Sans KR', 'Malgun Gothic', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1280px; width: 100%; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Swimlane · cuesift</p>
+    <h1>세 명령이 각각 무엇을 받아 무엇을 내놓는가</h1>
+
+    <svg viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="commands-title commands-desc">
+      <title id="commands-title">cuesift 명령별 입출력</title>
+      <desc id="commands-desc">transcribe 는 영상을 원문 자막으로 전사하고, translate 는 원문 자막을 번역해 번역 자막과 검수 리포트를 내며, check 는 자막의 규격을 검사해 종료 코드를 낸다. transcribe 의 결과는 translate 로 이어지며 --media 옵션을 쓰면 두 단계가 한 번에 돈다.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ============ 레인 ============ -->
+      <rect x="48" y="240" width="1184" height="136" rx="8" fill="rgba(45,49,66,0.02)"/>
+      <line x1="48" y1="236" x2="1232" y2="236" stroke="rgba(45,49,66,0.12)" stroke-width="1"/>
+      <line x1="48" y1="380" x2="1232" y2="380" stroke="rgba(45,49,66,0.12)" stroke-width="1"/>
+
+      <text x="48" y="160" fill="#4f5d75" font-size="10" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.14em">transcribe</text>
+      <text x="48" y="176" fill="rgba(45,49,66,0.45)" font-size="9" font-family="'Geist Mono', monospace">FR-8.3</text>
+
+      <text x="48" y="304" fill="#4f5d75" font-size="10" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.14em">translate</text>
+      <text x="48" y="320" fill="rgba(45,49,66,0.45)" font-size="9" font-family="'Geist Mono', monospace">FR-8.1</text>
+
+      <text x="48" y="448" fill="#4f5d75" font-size="10" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.14em">check</text>
+      <text x="48" y="464" fill="rgba(45,49,66,0.45)" font-size="9" font-family="'Geist Mono', monospace">FR-8.2</text>
+
+      <!-- ============ 화살표 ============ -->
+      <line x1="344" y1="164" x2="384" y2="164" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="552" y1="164" x2="592" y2="164" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <line x1="688" y1="200" x2="688" y2="264" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+
+      <line x1="776" y1="308" x2="816" y2="308" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="1016" y1="308" x2="1056" y2="308" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <line x1="776" y1="452" x2="816" y2="452" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="1016" y1="452" x2="1056" y2="452" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- 핸드오프 라벨 -->
+      <rect x="700" y="224" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="728" y="233" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">--media</text>
+
+      <!-- ============ 레인 1: transcribe ============ -->
+      <rect x="184" y="128" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="184" y="128" width="160" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="192" y="136" width="40" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="212" y="145" fill="rgba(122,131,153,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">INPUT</text>
+      <text x="264" y="172" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">영상 · 오디오</text>
+      <text x="264" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">mp4 wav m4a</text>
+
+      <rect x="392" y="128" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="392" y="128" width="160" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="400" y="136" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="414" y="145" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STT</text>
+      <text x="472" y="172" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">음성 인식</text>
+      <text x="472" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">openai-compatible</text>
+
+      <rect x="600" y="128" width="176" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="600" y="128" width="176" height="72" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="608" y="136" width="32" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="624" y="145" fill="rgba(79,93,117,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FILE</text>
+      <text x="688" y="172" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">전사 결과</text>
+      <text x="688" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">talk.ko.srt</text>
+
+      <!-- ============ 명령 예시 ============ -->
+      <text x="200" y="312" fill="rgba(45,49,66,0.65)" font-size="11" font-family="'Geist Mono', monospace">$ cuesift translate talk.ko.srt --to en</text>
+      <text x="200" y="456" fill="rgba(45,49,66,0.65)" font-size="11" font-family="'Geist Mono', monospace">$ cuesift check talk.en.srt --spec en</text>
+
+      <!-- ============ 레인 2: translate ============ -->
+      <rect x="600" y="272" width="176" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="600" y="272" width="176" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="608" y="280" width="40" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="628" y="289" fill="rgba(122,131,153,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">INPUT</text>
+      <text x="688" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">원문 자막</text>
+      <text x="688" y="332" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">srt vtt ass ssa</text>
+
+      <rect x="824" y="272" width="192" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="824" y="272" width="192" height="72" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="832" y="280" width="48" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="856" y="289" fill="rgba(235,108,54,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ENGINE</text>
+      <text x="920" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">번역 · 신호 · 트리아지</text>
+      <text x="920" y="332" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">batch - tier0 - fuse</text>
+
+      <rect x="1064" y="272" width="168" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="1064" y="272" width="168" height="72" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="1072" y="280" width="32" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="1088" y="289" fill="rgba(79,93,117,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FILE</text>
+      <text x="1148" y="316" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">자막 · 검수 리포트</text>
+      <text x="1148" y="332" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">talk.en.srt</text>
+
+      <!-- ============ 레인 3: check ============ -->
+      <rect x="600" y="416" width="176" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="600" y="416" width="176" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="608" y="424" width="40" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="628" y="433" fill="rgba(122,131,153,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">INPUT</text>
+      <text x="688" y="460" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">검사할 자막</text>
+      <text x="688" y="476" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">srt vtt ass ssa</text>
+
+      <rect x="824" y="416" width="192" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="824" y="416" width="192" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="832" y="424" width="36" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="850" y="433" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SPEC</text>
+      <text x="920" y="460" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">규격 검사</text>
+      <text x="920" y="476" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cps line dur overlap</text>
+
+      <rect x="1064" y="416" width="168" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="1064" y="416" width="168" height="72" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="1072" y="424" width="32" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="1088" y="433" fill="rgba(79,93,117,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EXIT</text>
+      <text x="1148" y="460" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">종료 코드</text>
+      <text x="1148" y="476" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">0 pass / 1 fail</text>
+
+      <!-- ============ 범례 ============ -->
+      <line x1="48" y1="552" x2="1232" y2="552" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="48" y="576" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+      <line x1="140" y1="572" x2="168" y2="572" stroke="#eb6c36" stroke-width="1.2"/>
+      <text x="176" y="576" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">명령 사이의 인수인계</text>
+
+      <rect x="392" y="564" width="16" height="16" rx="3" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="416" y="576" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">이 도구의 핵심 처리</text>
+
+      <rect x="632" y="564" width="16" height="16" rx="3" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="656" y="576" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">사람이 주는 것</text>
+
+      <rect x="824" y="564" width="16" height="16" rx="3" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="848" y="576" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">도구가 내놓는 것</text>
+    </svg>
+  </div>
+</body>
+</html>

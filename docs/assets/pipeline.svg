@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="pipeline-title pipeline-desc">
+      <title id="pipeline-title">cuesift 트리아지 파이프라인</title>
+      <desc id="pipeline-desc">자막이나 영상이 번역 엔진을 거쳐 Tier 0 결정론적 신호와 선택적인 Tier 1 신호로 나뉘어 검사되고, 두 계층의 신호가 위험도 융합으로 모인 뒤 트리아지 선별을 통해 사람 검수 큐로 나가는 구조를 보여 준다.</desc>
+      <defs><style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;display=swap');</style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ============ 화살표 (노드보다 먼저) ============ -->
+
+      <!-- 1. 입력 → 번역 엔진 -->
+      <line x1="208" y1="268" x2="264" y2="268" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- 2. 번역 엔진 → Tier 0 (우+상) -->
+      <path d="M 448,252 H 472 Q 480,252 480,244 V 148 Q 480,140 488,140 H 504"
+            fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- 3. 번역 엔진 → Tier 1 (우+하, 선택 경로) -->
+      <path d="M 448,284 H 472 Q 480,284 480,292 V 388 Q 480,396 488,396 H 504"
+            fill="none" stroke="rgba(45,49,66,0.45)" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+      <!-- 4. Tier 0 → 위험도 융합 (우+하) -->
+      <path d="M 720,140 H 744 Q 752,140 752,148 V 244 Q 752,252 760,252 H 776"
+            fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- 5. Tier 1 → 위험도 융합 (우+상, 선택 경로) -->
+      <path d="M 720,396 H 744 Q 752,396 752,388 V 292 Q 752,284 760,284 H 776"
+            fill="none" stroke="rgba(45,49,66,0.45)" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+      <!-- 6. 위험도 융합 → 트리아지 선별 -->
+      <line x1="960" y1="268" x2="1016" y2="268" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+
+      <!-- 7. 트리아지 선별 → 사람 검수 큐 -->
+      <line x1="1128" y1="304" x2="1128" y2="496" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+
+      <!-- 8. 번역 엔진 → 번역 자막 -->
+      <line x1="360" y1="304" x2="360" y2="496" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- ============ 화살표 라벨 ============ -->
+      <rect x="492" y="188" width="32" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="508" y="200" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">전량</text>
+
+      <rect x="492" y="332" width="72" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="528" y="344" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">회색지대</text>
+
+      <rect x="972" y="240" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="992" y="249" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RISK</text>
+
+      <rect x="1140" y="392" width="32" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="1156" y="404" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">선별</text>
+
+      <!-- ============ 노드 ============ -->
+
+      <!-- 입력 -->
+      <rect x="48" y="232" width="160" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="48" y="232" width="160" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="56" y="240" width="40" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="76" y="249" fill="rgba(122,131,153,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">INPUT</text>
+      <text x="128" y="276" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">자막 · 영상</text>
+      <text x="128" y="292" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">srt vtt ass mp4</text>
+
+      <!-- 번역 엔진 -->
+      <rect x="272" y="232" width="176" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="272" y="232" width="176" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="280" y="240" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="294" y="249" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">LLM</text>
+      <text x="360" y="276" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">번역 엔진</text>
+      <text x="360" y="292" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">batch=10 ctx=3</text>
+
+      <!-- Tier 0 -->
+      <rect x="504" y="104" width="216" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="504" y="104" width="216" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="512" y="112" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="534" y="121" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TIER 0</text>
+      <text x="612" y="148" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">결정론적 신호 9종</text>
+      <text x="612" y="164" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cost 0 · no LLM</text>
+
+      <!-- Tier 1 -->
+      <rect x="504" y="360" width="216" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="504" y="360" width="216" height="72" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="512" y="368" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="534" y="377" fill="rgba(45,49,66,0.70)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TIER 1</text>
+      <text x="612" y="404" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">자가일관성 · 역번역</text>
+      <text x="612" y="420" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">opt-in --tier1</text>
+
+      <!-- 위험도 융합 -->
+      <rect x="784" y="232" width="176" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="784" y="232" width="176" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="792" y="240" width="36" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="810" y="249" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FUSE</text>
+      <text x="872" y="276" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">위험도 융합</text>
+      <text x="872" y="292" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">noisy-or · 0.0-1.0</text>
+
+      <!-- 트리아지 선별 (focal) -->
+      <rect x="1016" y="232" width="216" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="1016" y="232" width="216" height="72" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="1024" y="240" width="48" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="1048" y="249" fill="rgba(235,108,54,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">POLICY</text>
+      <text x="1124" y="276" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">트리아지 선별</text>
+      <text x="1124" y="292" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">budget | top-k | thr</text>
+
+      <!-- 사람 검수 큐 (focal) -->
+      <rect x="1016" y="504" width="216" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="1016" y="504" width="216" height="72" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="1024" y="512" width="44" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="1046" y="521" fill="rgba(235,108,54,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">QUEUE</text>
+      <text x="1124" y="548" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">사람 검수 큐</text>
+      <text x="1124" y="564" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">review.json / .html</text>
+
+      <!-- 번역 자막 -->
+      <rect x="272" y="504" width="176" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="272" y="504" width="176" height="72" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="280" y="512" width="32" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="296" y="521" fill="rgba(79,93,117,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FILE</text>
+      <text x="360" y="548" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', sans-serif" text-anchor="middle">번역 자막</text>
+      <text x="360" y="564" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">talk.en.srt</text>
+
+      <!-- ============ 범례 ============ -->
+      <line x1="48" y1="632" x2="1232" y2="632" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="48" y="656" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+      <line x1="140" y1="652" x2="168" y2="652" stroke="#4f5d75" stroke-width="1.2"/>
+      <text x="176" y="656" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">항상 도는 경로</text>
+
+      <line x1="332" y1="652" x2="360" y2="652" stroke="rgba(45,49,66,0.45)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="368" y="656" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">켤 때만 도는 경로</text>
+
+      <rect x="560" y="644" width="16" height="16" rx="3" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="584" y="656" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">이 도구의 핵심</text>
+
+      <rect x="752" y="644" width="16" height="16" rx="3" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="776" y="656" fill="#4f5d75" font-size="12" font-family="'Geist', 'Noto Sans KR', sans-serif">디스크에 남는 산출물</text>
+    </svg>
