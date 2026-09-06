@@ -19,15 +19,18 @@ from bench.classify_negation import CLEAN
 from bench.inject import Label
 from bench.report import render_tier1_comparison
 from bench.run import (
+    _candidate_counts,
     _collect_raw,
     _dump_raw,
     _make_stdout_lossy,
+    _negation_in_gray_zone,
     _resolve_embed_key,
     build_arg_parser,
 )
 
 from cuesift.segment import Segment, SegmentRisk, Signal
 from cuesift.signals.backtranslation import BackTranslation
+from cuesift.tier1 import CandidateReport
 
 
 def test_tier1_없이는_흐름이_같다():
@@ -217,3 +220,43 @@ def test_stdout을_손실_허용으로_바꾼다(capsys):
         # 다른 테스트에 영향을 주지 않도록 되돌린다. pytest가 stdout을
         # 가로채므로 원래 값이 "replace"였을 수도 있다 - 그때도 무해하다.
         sys.stdout.reconfigure(errors=before)
+
+
+# --- 수정 라운드 1 I-1: 후보 구성 배선 게이트 --------------------------------
+#
+# 렌더러(`render_tier1_candidates`)는 `test_bench_report.py`가 검사하지만,
+# `main()` 안에서 그 렌더러에 넘기는 인자를 계산하는 코드는 어떤 테스트도
+# 보지 않았다 - 리뷰어가 `_negation_in_gray_zone`을 `return 0`으로, `negation_hits`
+# 계산을 `0`으로 바꿔도 전체 스위트(1934건)가 그대로 통과했다. 아래 두 테스트가
+# 그 배선(글루 코드)의 게이트다. `_collect_raw`가 같은 파일에서 이미 단위
+# 테스트되는 선례(위 68·120행)를 따른다.
+
+
+def test_negation_in_gray_zone은_hard_fail과_selected를_제외한다():
+    """`_negation_in_gray_zone`은 회색지대(hard_fail도 아니고 이미 선별되지도
+    않은 것) 안의 negation만 센다. hard_fail·selected 제외가 실제로 결과에
+    영향을 주는 데이터로 확인한다 - 그래야 `return 0`류 변이와 "제외 없이
+    전부 센" 변이를 둘 다 잡는다."""
+    risks = [
+        SegmentRisk(segment_id=f"s{i}", signals=[], risk_score=(10 - i) / 10, hard_fail=(i < 2))
+        for i in range(10)
+    ]
+    # budget=0.3 -> quota=floor(10*0.3)=3. hard_fail 2건(s0,s1)이 quota를
+    # 우회해 무조건 선별되고, 남은 1자리는 risk_score 순으로 s2가 채운다.
+    # 즉 selected={s0,s1,s2}, 회색지대(hard_fail도 selected도 아님)={s3..s9}.
+    negation_ids = {"s1", "s2", "s5", "s9"}  # s1은 hard_fail, s2는 selected라 회색지대 밖
+    assert _negation_in_gray_zone(risks, 0.3, negation_ids) == 2  # s5, s9만 회색지대 안
+
+
+def test_candidate_counts는_우선_집합과_negation_교집합을_각각_센다():
+    """`main()` 인라인 계산을 뽑아낸 함수 - 이 테스트가 깨지면 리포트에
+    실리는 두 수(`from_priority`·`negation_hits`)가 조용히 0이 되는 회귀를
+    잡는다(M7: `negation_hits=0`으로 바꾸는 변이가 이 테스트로 죽어야 한다)."""
+    report = CandidateReport(
+        candidate_ids=("a", "b", "c", "d"),
+        priority_ids=frozenset({"a", "c"}),
+        gray_zone_size=10,
+        cap=4,
+    )
+    negation_ids = {"b", "d", "z"}  # "z"는 후보 밖 - 세면 안 된다
+    assert _candidate_counts(report, negation_ids) == (2, 2)

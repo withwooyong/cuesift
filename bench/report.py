@@ -583,7 +583,7 @@ def render_tier1_candidates(
     negation_hits: int,
     negation_in_gray_zone: int,
 ) -> str:
-    """Tier 1 후보가 어떻게 구성됐는지 (설계 D10).
+    """Tier 1 후보가 어떻게 구성됐는지 (FR-4.3 · 설계 D10).
 
     **무작위 기대값을 함께 내는 것이 이 표의 존재 이유다.** 적중 건수만
     적으면 "적지만 있긴 하다"로 읽히는데, 기대값과 나란히 놔야 선정이
@@ -591,11 +591,20 @@ def render_tier1_candidates(
 
     **배수가 1.0 근처면 후보 선정이 여전히 무작위다** - Recall 이 올랐더라도
     그것은 다른 이유이므로 이 표가 먼저다.
+
+    **기대값의 표본 크기는 `min(cap, gray_zone_size)`로 다시 유도하지 않고
+    `candidates` 인자를 그대로 쓴다**(수정 라운드 1 I-2). `select_tier1_candidates`가
+    `(first + rest)[:cap]`이라 오늘은 두 값이 같지만, 그 개수 규칙이 바뀌면
+    `min(...)` 쪽만 조용히 틀린다 - `gray_zone()`을 공유 함수로 뽑은 것과 같은
+    이유로, 술어(여기서는 "표본 크기 계산")를 두 곳에 복제하지 않는다.
     """
-    expected = (
-        negation_in_gray_zone * min(cap, gray_zone_size) / gray_zone_size if gray_zone_size else 0.0
-    )
-    ratio = negation_hits / expected if expected else 0.0
+    expected = negation_in_gray_zone * candidates / gray_zone_size if gray_zone_size else 0.0
+    # **`expected == 0`이면 배수를 "-"로 찍는다**(수정 라운드 1 M-4). `else 0.0`으로
+    # 기본값을 두면 회색지대가 비어 "판정 불가"인 경우와, `negation_hits`가 양수인데
+    # `expected`만 0인 경우(오늘은 `negation_hits`가 `negation_in_gray_zone`의
+    # 부분집합이라 도달 불가지만, 두 스냅샷이 갈리면 값이 어긋날 수 있다)가 똑같이
+    # "0.00x"(=무작위보다 나쁨)로 읽힌다 - 실제로는 "잴 수 없다"와 "최악"은 다르다.
+    ratio_str = f"{negation_hits / expected:.2f}x" if expected else "-"
     return "\n".join(
         [
             f"### Tier 1 후보 구성 (예산 {budget:.0%})",
@@ -609,7 +618,7 @@ def render_tier1_candidates(
             f"| 그중 채움분(무작위 표본) | {candidates - from_priority} |",
             f"| 후보 안 negation | **{negation_hits}** |",
             f"| 무작위 기대값 | {expected:.2f} |",
-            f"| **배수** | **{ratio:.2f}x** |",
+            f"| **배수** | **{ratio_str}** |",
             "",
             "**배수가 1.0 근처면 후보 선정이 여전히 무작위다.** 적중 건수만"
             " 보면 판단할 수 없으므로 기대값을 함께 싣는다 (이월 21번).",

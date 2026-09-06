@@ -575,6 +575,32 @@ def test_후보_구성표가_무작위_기대값을_함께_낸다():
     assert "3.89" in block  # 70 * 250 / 4500
     assert "18" in block
     assert "4.63" in block  # 18 / 3.89
+    # 수정 라운드 1 M-5 - "18" 하나만으로는 cap 행이 gray_zone_size(4500)를
+    # 찍도록 바뀌어도(리뷰어가 실제로 넣은 변이) 잡히지 않는다. cap과
+    # 회색지대가 서로 다른 값이라는 것을 이용해 각 행이 제 값을 찍는지 본다.
+    assert "| 회색지대 | 4500 |" in block
+    assert "| 상한(cap) | 250 |" in block
+
+
+def test_후보_구성표는_candidates_인자를_쓰고_cap과_회색지대에서_다시_유도하지_않는다():
+    """수정 라운드 1 I-2 - `min(cap, gray_zone_size)`로 표본 크기를 다시
+    유도하면 `select_tier1_candidates`의 개수 규칙이 바뀔 때 조용히 틀린다.
+    실제 표본 크기는 `candidates` 인자로 이미 받으므로 그것만 써야 한다.
+
+    `cap(300) > gray_zone_size(200)`인데 `candidates(150)`가 둘 중 어느 것과도
+    다르게 넘어온 경우로, `candidates`를 썼는지 `min(cap, gray_zone_size)`를
+    다시 계산했는지가 결과값으로 갈린다."""
+    block = render_tier1_candidates(
+        budget=0.10,
+        cap=300,
+        gray_zone_size=200,
+        candidates=150,
+        from_priority=80,
+        negation_hits=15,
+        negation_in_gray_zone=40,
+    )
+    assert "30.00" in block  # candidates(150)를 썼을 때: 40 * 150 / 200
+    assert "40.00" not in block  # min(cap, gray_zone_size)=200을 다시 썼다면 나올 값
 
 
 def test_후보_구성표가_채움_경로를_구분한다():
@@ -603,3 +629,26 @@ def test_회색지대가_비면_0으로_나눈다고_죽지_않는다():
         negation_in_gray_zone=0,
     )
     assert "0" in block
+    # 수정 라운드 1 M-5 - "0"만 보면 표의 다른 어느 행이 찍혀도(예: cap 행에
+    # 실수로 회색지대 값을 넣어도) 통과한다. 배수 자리가 정확히 판정 불가
+    # 표기(`-`)인지를 본다 - M-4가 요구하는 분기다.
+    assert "| **배수** | **-** |" in block
+    assert "0.00x" not in block
+
+
+def test_기대값이_0인데_적중이_있으면_배수는_대시로_표시된다():
+    """수정 라운드 1 M-4 - `expected == 0`인데 `negation_hits > 0`이면(오늘은
+    `negation_hits`가 `negation_in_gray_zone`의 부분집합이라 도달 불가지만,
+    두 스냅샷이 갈리는 순간 어긋날 수 있다) '0.00x'(무작위보다 나쁨으로
+    오독)가 아니라 '-'(판정 불가)를 찍어야 한다."""
+    block = render_tier1_candidates(
+        budget=0.10,
+        cap=0,
+        gray_zone_size=0,
+        candidates=0,
+        from_priority=0,
+        negation_hits=5,
+        negation_in_gray_zone=0,
+    )
+    assert "| **배수** | **-** |" in block
+    assert "0.00x" not in block

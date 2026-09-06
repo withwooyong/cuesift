@@ -257,13 +257,25 @@ def _negation_recall_scores(
 def _negation_in_gray_zone(
     risks: Sequence[SegmentRisk], budget: float, negation_ids: set[str]
 ) -> int:
-    """회색지대 안 negation 건수 - 무작위 기대값의 분자다.
+    """회색지대 안 negation 건수 - 무작위 기대값의 분자다 (FR-4.3).
 
     **`gray_zone`을 직접 부른다.** 술어를 여기서 복제하면 `triage/`가
     제외 조건을 하나 더 넣을 때 이 수가 조용히 틀린다 (2라운드 리뷰 C3 전례).
     """
     scored = select_by_budget(risks, budget)
     return sum(1 for r in gray_zone(scored) if r.segment_id in negation_ids)
+
+
+def _candidate_counts(report: CandidateReport, negation_ids: set[str]) -> tuple[int, int]:
+    """후보 구성에서 (우선 집합에서 온 건수, negation 건수)를 센다 (FR-4.3 · 설계 D10).
+
+    **`main()` 안에 인라인으로 두면 게이트할 방법이 없다**(수정 라운드 1 I-1) -
+    리포트에 실리는 두 수가 조용히 0이 되어도 아무 테스트도 죽지 않는다.
+    """
+    candidate_id_set = set(report.candidate_ids)
+    from_priority = sum(1 for sid in report.candidate_ids if sid in report.priority_ids)
+    negation_hits = len(candidate_id_set & negation_ids)
+    return from_priority, negation_hits
 
 
 def _collect_raw(
@@ -540,23 +552,6 @@ def main(argv: list[str] | None = None) -> int:
                 comparison = render_tier1_comparison(
                     tier0=tier0_scores, tier1=tier1_scores, budget=budget
                 )
-                # **`negation_in_gray_zone`은 라벨에서 센다.** 후보 안 건수만
-                # 세면 분모가 없어 무작위 기대값을 낼 수 없다(설계 D10).
-                report = candidate_reports[0]
-                candidate_id_set = set(report.candidate_ids)
-                tier1_comparisons.append(
-                    render_tier1_candidates(
-                        budget=budget,
-                        cap=report.cap,
-                        gray_zone_size=report.gray_zone_size,
-                        candidates=len(report.candidate_ids),
-                        from_priority=sum(
-                            1 for sid in report.candidate_ids if sid in report.priority_ids
-                        ),
-                        negation_hits=len(candidate_id_set & negation_ids),
-                        negation_in_gray_zone=_negation_in_gray_zone(risks, budget, negation_ids),
-                    )
-                )
                 # **모으는 것이 먼저고 찍는 것이 나중이다.** 순서가 반대면
                 # `print`의 실패가 데이터 수집을 막는다 - 2026-09-05 실행에서
                 # 실제로 그랬다. cp949 콘솔이 이 문자열의 엠대시(U+2014)를
@@ -564,7 +559,28 @@ def main(argv: list[str] | None = None) -> int:
                 # 목록에 들어가지 못해 아래 `if tier1_comparisons:`가 거짓이
                 # 되면서 리포트 재작성까지 통째로 건너뛰었다. 한 시간 48분의
                 # LLM 호출이 원자료로만 남았다(`finally` 덕분에 그것은 살았다).
+                #
+                # **후보 구성 블록의 계산도 이 원칙을 따른다**(수정 라운드 1 M-3) -
+                # `comparison`을 목록에 먼저 넣은 뒤에야 아래 계산을 한다. 계산이
+                # 먼저였다면 그 계산에서 예외가 나는 순간 이미 끝난 `comparison`까지
+                # 이 예산 지점에서 통째로 사라진다.
                 tier1_comparisons.append(comparison)
+
+                # **`negation_in_gray_zone`은 라벨에서 센다.** 후보 안 건수만
+                # 세면 분모가 없어 무작위 기대값을 낼 수 없다(설계 D10).
+                report = candidate_reports[0]
+                from_priority, negation_hits = _candidate_counts(report, negation_ids)
+                tier1_comparisons.append(
+                    render_tier1_candidates(
+                        budget=budget,
+                        cap=report.cap,
+                        gray_zone_size=report.gray_zone_size,
+                        candidates=len(report.candidate_ids),
+                        from_priority=from_priority,
+                        negation_hits=negation_hits,
+                        negation_in_gray_zone=_negation_in_gray_zone(risks, budget, negation_ids),
+                    )
+                )
                 print(comparison)
         finally:
             # 예산 루프가 도중에 죽어도(위 주석) 지금까지 모은 것은 남긴다.
