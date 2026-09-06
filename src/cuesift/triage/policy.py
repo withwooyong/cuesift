@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import replace
 
 from cuesift.segment import SegmentRisk
@@ -178,9 +178,29 @@ def gray_zone(risks: Sequence[SegmentRisk]) -> list[SegmentRisk]:
     return [r for r in _sorted_desc(risks) if not r.hard_fail and not r.selected]
 
 
+def tier1_cap(total: int, max_ratio: float) -> int:
+    """Tier 1 상한 - 전체 대비 내림(floor) (FR-4.3).
+
+    **공유 함수로 뽑은 이유** - `select_tier1_candidates`가 회색지대 안에서
+    쓰는 상한과, `tier1.py`의 `CandidateReport.cap`·`explain_zero_bound`가
+    "왜 0인지" 설명할 때 쓰는 상한이 각자 계산되면 한쪽만 고쳐도 다른 쪽이
+    조용히 다른 수를 낸다(`gray_zone()`을 공유 함수로 뽑은 것과 같은 이유,
+    2라운드 리뷰 C3). 실측(3라운드 리뷰 I-2) - 공유 전에는 `tier1.py` 쪽
+    산식만 `math.ceil(...) + 1`로 바꿔도 전체 스위트(1930건)가 그대로
+    통과했다 - `cap`·`gray_zone_size`를 단언하는 테스트가 없었기 때문이다.
+
+    **왜 내림(`floor`)인지는 `select_tier1_candidates`의 독스트링(아래
+    "내림한다" 문단)이 단일 출처다** - 여기서 다시 설명하면 그 문단과
+    갈라질 자리가 생긴다.
+    """
+    return math.floor(total * max_ratio)
+
+
 def select_tier1_candidates(
     risks: Sequence[SegmentRisk],
     max_ratio: float,
+    *,
+    priority_ids: Collection[str] = (),
 ) -> list[str]:
     """Tier 1을 적용할 세그먼트 ID (FR-4.3 · 설계 §5).
 
@@ -207,6 +227,24 @@ def select_tier1_candidates(
     `triage/`가 `segment/` 본문에 결합된다.
 
     상한은 **할당량이 아니다.** 회색지대가 상한보다 작으면 있는 만큼만 낸다.
+
+    ## `priority_ids` - 무엇을 바꾸고 무엇을 안 바꾸나
+
+    회색지대 안에서 **순서만** 바꾼다. `max_ratio` 의 의미도 분모도 그대로이며
+    (FR-4.3 - 전체 세그먼트 중 Tier 1 을 적용할 최대 비율), **후보 개수가
+    우선 집합과 무관하게 같다**(설계 D6). 개수가 흔들리면 `tier1.py` 의
+    `_diagnose_empty_candidates` 가 구분하는 여섯 갈래에 일곱 번째가 생긴다.
+
+    하드 필터가 아니라 **우선순위**인 것이 그 이유다 - 우선 집합이 상한보다
+    작으면 나머지를 기존 회색지대 순서로 채운다.
+
+    회색지대 밖의 ID(hard fail · 이미 선별됨)는 무시된다. 교집합만 보므로
+    "컷라인 아래"라는 개념이 유지된다.
+
+    **이 함수는 우선 집합을 어떻게 만드는지 모른다.** 그 판정은 언어와 자막
+    본문을 알아야 하는데, 그것을 여기 끌어들이면 `triage/` 가 `segment/`
+    본문에 결합된다 - `target_text is None` 제외를 호출자에게 맡긴 것과
+    같은 이유다 (설계 §4).
     """
     # select_by_budget과 같은 방어다. NaN을 비교 연산의 방향에 맡기면
     # 훗날 리팩터링 한 번에 조용히 깨진다.
@@ -217,6 +255,15 @@ def select_tier1_candidates(
     if not risks:
         return []
 
+    # `excluded_ids` 와 같은 방어다. 문자열을 그대로 넘기면 `set("s000")` 이
+    # 글자 단위로 쪼개져 `{"s", "0"}` 이 되고, 교집합이 늘 비어 **조용히
+    # 오늘과 같은 동작**을 한다 - 게이트가 없으면 영영 드러나지 않는다.
+    if isinstance(priority_ids, str | bytes):
+        raise ValueError(
+            f"priority_ids에 {type(priority_ids).__name__}을 그대로 넘겼다"
+            f"({priority_ids!r}) - 원소 단위로 쪼개진다. 집합이나 리스트로 감싸라"
+        )
+
     # **분모가 후보 집합이 아니라 전체다.** FR-4.3이 "전체 세그먼트 중
     # Tier 1을 적용할 최대 비율"이라고 적혀 있고, 후보 집합을 분모로 삼으면
     # 회색지대가 좁은 트랙에서 상한이 사실상 사라진다.
@@ -225,11 +272,19 @@ def select_tier1_candidates(
     # 내림이면 n < 1/max_ratio일 때 cap이 0이 되어 Tier 1이 통째로 꺼진다
     # (0.25 비율은 n<4, 0.10은 n<10에서 빈 목록). 이것은 **명시되면 설계**이고,
     # 조용하면 사고다 — 주석으로 비용을 기록해 다음 사람이 설계를 읽을 수 있게.
-    cap = math.floor(len(risks) * max_ratio)
+    cap = tier1_cap(len(risks), max_ratio)
     if cap <= 0:
         return []
 
-    return [r.segment_id for r in gray_zone(risks)[:cap]]
+    # **우선 구간과 나머지를 이어 붙인 뒤 자른다.** 우선 집합이 비면
+    # `first` 가 비고 `rest` 가 회색지대 전부라 오늘과 **문자 그대로 같은
+    # 결과**가 나온다 - 그래서 빈 집합을 위한 분기를 따로 두지 않는다.
+    # 분기를 두면 두 경로가 갈라질 자리가 하나 생긴다.
+    priority = set(priority_ids)
+    ordered = gray_zone(risks)
+    first = [r.segment_id for r in ordered if r.segment_id in priority]
+    rest = [r.segment_id for r in ordered if r.segment_id not in priority]
+    return (first + rest)[:cap]
 
 
 def review_ratio(risks: Sequence[SegmentRisk]) -> float:

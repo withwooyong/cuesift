@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from dataclasses import replace
 
 import pytest
 from tests.fakes.provider import EchoProvider
@@ -13,7 +14,9 @@ from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals.base import SignalContext
 from cuesift.spec import load_builtin
 from cuesift.tier1 import (
+    _POLARITY_UNSUPPORTED,
     _ZERO_BY_SWITCH,
+    CandidateReport,
     _diagnose_empty_candidates,
     explain_zero_bound,
     triage_with_tier1,
@@ -976,3 +979,176 @@ def test_상한이_0이_아니면_None이다() -> None:
 def test_실행_경로와_같은_문자열을_쓴다() -> None:
     """**복제 금지의 게이트다.** 한쪽만 고치면 여기가 죽는다."""
     assert explain_zero_bound(10, 0.0) == _ZERO_BY_SWITCH
+
+
+def _segments_with_texts(pairs: list[tuple[str, str]]) -> list[Segment]:
+    """`(source_text, target_text)` 쌍으로 세그먼트를 만든다 (Task 3 전용).
+
+    시간 구간이 겹치면 `spec.overlap`(배치 신호)이 발화해 극성 판정이 아니라
+    Tier 0 신호를 재는 테스트가 되므로, `start_ms`/`end_ms`를 겹치지 않게 둔다.
+    """
+    return [
+        Segment(
+            id=f"s{i:03d}",
+            index=i,
+            start_ms=i * 2000,
+            end_ms=i * 2000 + 1500,
+            source_text=source_text,
+            target_text=target_text,
+        )
+        for i, (source_text, target_text) in enumerate(pairs)
+    ]
+
+
+def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다(signal_ctx) -> None:
+    """설계 D2 - 원문 또는 번역문에 표지가 있으면 우선 집합이다."""
+    reports: list[CandidateReport] = []
+    segments = _segments_with_texts(
+        # (source_text, target_text) 20건 중 뒤 두 건만 부정을 담는다.
+        [("맑은 날입니다", "It is sunny")] * 18
+        + [("가지 않았습니다", "did not go"), ("아무도 없습니다", "there is none")]
+    )
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert len(reports) == 1
+    # cap = floor(20 * 0.1) = 2 이므로 표지 보유 두 건이 그대로 후보다.
+    assert set(reports[0].candidate_ids) == set(reports[0].priority_ids)
+    assert len(reports[0].candidate_ids) == 2
+
+
+def test_미지원_언어면_경고가_나가고_우선_집합이_빈다(signal_ctx) -> None:
+    """설계 D5 - 조용히 되돌아가면 무음 열화다 (Q3)."""
+    warnings: list[str] = []
+    reports: list[CandidateReport] = []
+    triage_with_tier1(
+        _segments_with_texts([("맑은 날입니다", "Il fait beau")] * 20),
+        replace(signal_ctx, source_lang="fr", target_lang="de"),
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=warnings.append,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert any(_POLARITY_UNSUPPORTED in w for w in warnings)
+    assert reports[0].priority_ids == frozenset()
+    # 후보 개수는 오늘과 같다 (D6).
+    assert len(reports[0].candidate_ids) == 2
+
+
+def test_한쪽만_미지원이면_지원되는_쪽으로_판정한다(signal_ctx) -> None:
+    """설계 D5 - 지원되는 쪽 판정이 실제로 후보에 반영되는지까지 본다.
+
+    **타깃을 `"x"`·`"y"` 로 두면 회색지대 밖으로 밀린다**(3라운드 리뷰
+    I-3 실측) - 두 문자열은 원문보다 극단적으로 짧아 `length.ratio` 가
+    걸리고, 그 위험도가 예산 10% 컷라인 위로 올라가 `gray_zone` 에서
+    빠진다. 그러면 이 테스트는 `_polarity_priority` 의 반환값만 잴 뿐,
+    "지원되는 쪽 판정이 실제로 후보에 반영된다" 는 이 테스트의 본체를
+    게이트하지 못한다. `"er ging nicht"`·`"niemand war da"` 로 바꾸면
+    Tier 0 신호가 0건이라(사전 확인 스니펫으로 재확인) 회색지대에 남는다.
+    """
+    warnings: list[str] = []
+    reports: list[CandidateReport] = []
+    triage_with_tier1(
+        _segments_with_texts(
+            [("맑은 날입니다", "Il fait beau")] * 18
+            + [("가지 않았습니다", "er ging nicht"), ("아무도 없습니다", "niemand war da")]
+        ),
+        replace(signal_ctx, target_lang="de"),
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=warnings.append,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert any(_POLARITY_UNSUPPORTED in w for w in warnings)
+    # ko 는 지원되므로 원문 표지로 두 건이 잡힌다.
+    assert len(reports[0].priority_ids) == 2
+    # **후보에도 실제로 반영된다** - 우선 집합만 재고 후보를 안 재면
+    # `_polarity_priority` 가 옳아도 `select_tier1_candidates` 로 이어지는
+    # 배선이 끊긴 것을 못 잡는다.
+    assert set(reports[0].candidate_ids) == set(reports[0].priority_ids)
+
+
+def test_경고_문구를_테스트가_지어_넘기지_않는다() -> None:
+    """상수를 임포트해 검사한다. 리터럴로 두면 문구가 바뀌어도 통과한다."""
+    assert "극성" in _POLARITY_UNSUPPORTED
+    assert "—" not in _POLARITY_UNSUPPORTED  # cp949 에 없는 em dash 금지
+
+
+def test_on_candidates가_없으면_아무것도_안_부른다(signal_ctx) -> None:
+    """콜백은 선택이다. 기존 호출부가 손대지 않은 채 돌아야 한다."""
+    triage_with_tier1(
+        _segments_with_texts([("맑은 날입니다", "It is sunny")] * 20),
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        embedder=_FakeEmbedder(),
+    )
+
+
+def test_번역문에만_표지가_있어도_우선_집합이다(signal_ctx) -> None:
+    """설계 D2 - 「원문 또는 번역문」 의 나머지 절반.
+
+    원문에는 부정이 없는데 번역문에만 있는 것이 실제 의미 반전 오류의
+    모습이다. 이 경로가 없으면 설계 §3.3 이 P2(원문에만)가 아니라 P1 을
+    채택한 근거(포함률 74~86%)가 게이트되지 않는다.
+    """
+    reports: list[CandidateReport] = []
+    segments = _segments_with_texts(
+        [("맑은 날입니다", "It is sunny")] * 18
+        + [("그렇게 생각합니다", "I do not think so"), ("그 사람은 왔습니다", "he did not arrive")]
+    )
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert len(reports) == 1
+    assert reports[0].priority_ids == {"s018", "s019"}
+
+
+def test_cap과_gray_zone_size가_실제_산식과_일치한다(signal_ctx) -> None:
+    """3라운드 리뷰 I-2 - 산식이 복제됐고 갈라져도 아무 테스트도 안 죽었다.
+
+    `tier1.py` 쪽 `cap` 산식만 `math.ceil(...) + 1`로 바꿔도, `gray_zone_size`를
+    상수 `0`으로 바꿔도 이 테스트를 더하기 전에는 전체 스위트(1930건)가 그대로
+    통과했다 - 이 두 필드를 재는 테스트가 하나도 없었기 때문이다.
+    """
+    reports: list[CandidateReport] = []
+    segments = _segments_with_texts([("맑은 날입니다", "It is sunny")] * 20)
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    # cap = floor(20 * 0.1) = 2 (`tier1_cap`과 같은 산식이지만, 테스트가
+    # 그 함수를 재사용하면 구현이 스스로를 검증하는 동어반복이 되므로
+    # 여기서는 기대값을 직접 적는다).
+    assert reports[0].cap == 2
+    # budget_ratio=0.1 -> select_by_budget이 20건 중 상위 10%(2건)를
+    # selected로 올린다. 20건이 전부 동점(신호 0건)이라 어느 2건이
+    # selected인지는 결정론적 동점 규칙(세그먼트 id)이 정하지만, 그 개수는
+    # 언제나 2다 - 그래서 gray_zone은 20 - 2 = 18이다.
+    assert reports[0].gray_zone_size == 18

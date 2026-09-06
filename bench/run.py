@@ -28,7 +28,7 @@ from bench.measure import (
     measure,
     random_baseline,
 )
-from bench.report import RunMeta, render_tier1_comparison, write_report
+from bench.report import RunMeta, render_tier1_candidates, render_tier1_comparison, write_report
 from bench.track_io import dump_audit, load_track
 from cuesift.embed import (
     Embedder,
@@ -43,9 +43,9 @@ from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals import SignalContext, collect_all
 from cuesift.signals.backtranslation import BackTranslation
 from cuesift.spec import load_builtin
-from cuesift.tier1 import triage_with_tier1
+from cuesift.tier1 import CandidateReport, triage_with_tier1
 from cuesift.translate.openai_compat import OpenAICompatibleProvider
-from cuesift.triage import select_by_budget
+from cuesift.triage import gray_zone, select_by_budget
 
 BUDGETS = (0.01, 0.02, 0.05, 0.10, 0.20, 0.30)
 # FR-3.5는 이번 측정에서 빠진다(스펙 §5.3). 리포트에 미측정으로 표기한다.
@@ -160,7 +160,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # --- Tier 1 (FR-4.2 · 태스크7 브리프 Step 4) ---
     # 기본값이 전부 꺼짐·`None`인 것이 핵심이다 — `--tier1` 없이 부르는
     # 기존 경로는 이 인자들이 전혀 관여하지 않아 한 줄도 달라지지 않는다
-    # (설계 D9 · `test_tier1_없이는_흐름이_같다`가 그 계약을 검사한다).
+    # (설계 2026-09-05 D9 · `test_tier1_없이는_흐름이_같다`가 그 계약을 검사한다.
+    # **2026-09-06 스펙에도 D9 가 있으나 그쪽은 「극성 표지는 risk_score 에
+    # 기여하지 않는다」로 다른 결정이다** - 날짜 없이 쓰면 실제로 오독된다).
     # `%%`로 이스케이프한다 — argparse의 `HelpFormatter`가 help 문자열을
     # `%`-포맷팅하므로, 이스케이프하지 않은 `%`는 `--help` 호출이 아니라
     # **파서 조립 시점**(`add_argument`)에 `ValueError`를 던진다(실측:
@@ -252,6 +254,30 @@ def _negation_recall_scores(
         "clean_recall": _recall(selected_ids, clean_ids),
         "clean_total": len(clean_ids),
     }
+
+
+def _negation_in_gray_zone(
+    risks: Sequence[SegmentRisk], budget: float, negation_ids: set[str]
+) -> int:
+    """회색지대 안 negation 건수 - 무작위 기대값의 분자다 (FR-4.3).
+
+    **`gray_zone`을 직접 부른다.** 술어를 여기서 복제하면 `triage/`가
+    제외 조건을 하나 더 넣을 때 이 수가 조용히 틀린다 (2라운드 리뷰 C3 전례).
+    """
+    scored = select_by_budget(risks, budget)
+    return sum(1 for r in gray_zone(scored) if r.segment_id in negation_ids)
+
+
+def _candidate_counts(report: CandidateReport, negation_ids: set[str]) -> tuple[int, int]:
+    """후보 구성에서 (우선 집합에서 온 건수, negation 건수)를 센다 (FR-4.3 · 설계 D10).
+
+    **`main()` 안에 인라인으로 두면 게이트할 방법이 없다**(수정 라운드 1 I-1) -
+    리포트에 실리는 두 수가 조용히 0이 되어도 아무 테스트도 죽지 않는다.
+    """
+    candidate_id_set = set(report.candidate_ids)
+    from_priority = sum(1 for sid in report.candidate_ids if sid in report.priority_ids)
+    negation_hits = len(candidate_id_set & negation_ids)
+    return from_priority, negation_hits
 
 
 def _collect_raw(
@@ -430,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.tier1:
-        # `--tier1` 없이는 위까지 한 줄도 다르지 않다(설계 D9) — 이 아래가
+        # `--tier1` 없이는 위까지 한 줄도 다르지 않다(설계 2026-09-05 D9) — 이 아래가
         # 전부다. 필수 인자는 여기서 검사한다: `OpenAICompatibleProvider`에
         # `base_url=None`을 그대로 넘기면 `_require_http_url`이 트레이스백을
         # 낸다 — 사람이 읽을 메시지로 먼저 막는다.
@@ -497,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
             # 역번역 결과까지 통째로 사라진다 — 이월 20이 열린 것이 정확히
             # 이 실패 경로였다.
             for budget in TIER1_BUDGETS:
+                candidate_reports: list[CandidateReport] = []
                 tier1_risks = triage_with_tier1(
                     mutated,
                     ctx,
@@ -507,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
                     embedder=embedder,
                     cache_dir=args.cache_dir,
                     identity=provider.cache_identity,
+                    on_candidates=candidate_reports.append,
                 )
                 tier1_selected = {r.segment_id for r in tier1_risks if r.selected}
                 tier1_scores = _negation_recall_scores(tier1_selected, labels, negation_classes)
@@ -533,7 +561,28 @@ def main(argv: list[str] | None = None) -> int:
                 # 목록에 들어가지 못해 아래 `if tier1_comparisons:`가 거짓이
                 # 되면서 리포트 재작성까지 통째로 건너뛰었다. 한 시간 48분의
                 # LLM 호출이 원자료로만 남았다(`finally` 덕분에 그것은 살았다).
+                #
+                # **후보 구성 블록의 계산도 이 원칙을 따른다**(수정 라운드 1 M-3) -
+                # `comparison`을 목록에 먼저 넣은 뒤에야 아래 계산을 한다. 계산이
+                # 먼저였다면 그 계산에서 예외가 나는 순간 이미 끝난 `comparison`까지
+                # 이 예산 지점에서 통째로 사라진다.
                 tier1_comparisons.append(comparison)
+
+                # **`negation_in_gray_zone`은 라벨에서 센다.** 후보 안 건수만
+                # 세면 분모가 없어 무작위 기대값을 낼 수 없다(설계 D10).
+                report = candidate_reports[0]
+                from_priority, negation_hits = _candidate_counts(report, negation_ids)
+                tier1_comparisons.append(
+                    render_tier1_candidates(
+                        budget=budget,
+                        cap=report.cap,
+                        gray_zone_size=report.gray_zone_size,
+                        candidates=len(report.candidate_ids),
+                        from_priority=from_priority,
+                        negation_hits=negation_hits,
+                        negation_in_gray_zone=_negation_in_gray_zone(risks, budget, negation_ids),
+                    )
+                )
                 print(comparison)
         finally:
             # 예산 루프가 도중에 죽어도(위 주석) 지금까지 모은 것은 남긴다.

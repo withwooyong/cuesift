@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from cuesift.embed.provider import Embedder
+from cuesift.polarity import has_polarity_marker, supported_languages
 from cuesift.progress import ProgressCallback
 from cuesift.risk.fuse import fuse
 from cuesift.segment import Segment, SegmentRisk
@@ -26,7 +27,42 @@ from cuesift.signals.base import (
 )
 from cuesift.store.provider import CachingProvider
 from cuesift.translate.provider import Provider
-from cuesift.triage.policy import gray_zone, select_by_budget, select_tier1_candidates
+from cuesift.triage.policy import (
+    gray_zone,
+    select_by_budget,
+    select_tier1_candidates,
+    tier1_cap,
+)
+
+
+@dataclass(frozen=True)
+class CandidateReport:
+    """Tier 1 후보가 어떻게 구성됐는지 (설계 D10).
+
+    **벤치 리포트가 이 값을 싣지 않으면 Recall 이 왜 움직였는지 갈리지
+    않는다.** 후보 안의 negation 건수를 무작위 기대값과 나란히 놔야
+    "적지만 있긴 하다"가 아니라 "선정이 무작위와 구별되는가"를 읽을 수 있다
+    (이월 21번의 교훈).
+
+    `frozen=True` 인 것은 콜백이 받은 뒤 고쳐도 파이프라인이 모르기
+    때문이다 - 관측용 값이 조용히 바뀌면 리포트가 실제와 갈라진다.
+
+    **`candidate_ids` 는 선정된 집합이지, 실제로 비용을 치른(Tier 1 이 돈)
+    집합이 아니다**(3라운드 리뷰 I-4). 이 값이 만들어진 직후, `triage_with_tier1`
+    은 `target_text` 가 없거나 공백인 항목을 한 번 더 걸러내고 그 나머지에만
+    Tier 1 을 돈다 - `candidate_ids` 는 그 필터보다 **앞선** 값이라 항상 같거나
+    더 넓다. **일부러 좁히지 않는다** - 설계 §3.2~§3.4 의 기대값 계산
+    (`pool_neg × min(cap, pool) / pool`) 이 전부 "cap 안에 든 선정 집합" 을
+    분모로 삼으므로, 여기서 분모를 "비용을 실제로 치른 집합" 으로 바꾸면
+    벤치 리포트가 설계의 표와 대조되지 않는다. 이 값이 재는 것은 **선정
+    품질**이고, 번역 실패로 비용이 안 나간 것은 별개 문제이며 `warn` 이
+    이미 그 사유를 알린다.
+    """
+
+    candidate_ids: tuple[str, ...]
+    priority_ids: frozenset[str]
+    gray_zone_size: int
+    cap: int
 
 
 def triage_with_tier1(
@@ -45,6 +81,7 @@ def triage_with_tier1(
     weights: Mapping[str, float] | None = None,
     on_progress: ProgressCallback | None = None,
     embedder: Embedder | None = None,
+    on_candidates: Callable[[CandidateReport], None] | None = None,
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -272,8 +309,33 @@ def triage_with_tier1(
     # ③ 예산 적용 - ④가 "이미 큐에 든 것"을 알아야 한다
     scored = select_by_budget(risks, budget_ratio)
 
-    # ④ 후보 선별
-    candidate_ids = set(select_tier1_candidates(scored, max_ratio))
+    # ④ 후보 선별 - 극성 표지를 가진 것을 먼저 본다 (설계 D2 · D6).
+    #
+    # **`kept` 를 넘긴다.** 후보 **선정** 결과는 `segments` 를 넘겨도 바뀌지
+    # 않는다 - `select_tier1_candidates` 는 `gray_zone(scored)` 와의
+    # 교집합만 보고 `scored` 는 `kept` 로만 만들어지므로, 번역 실패분 id는
+    # 처음부터 무시된다(3라운드 리뷰 I-1 실측: `kept -> segments` 로 바꿔도
+    # 전체 스위트 1930건이 그대로 통과한다). 진짜 이유는 **관측값** 쪽이다 -
+    # `priority_ids` 를 그대로 `CandidateReport` 에 실어 내보내므로,
+    # `segments` 를 넘기면 번역 실패분 id까지 우선 집합에 섞여 D10 리포트가
+    # "표지를 가진 세그먼트 수" 를 실제보다 부풀려 보고한다.
+    priority_ids = _polarity_priority(kept, ctx, warn)
+    ordered_candidates = select_tier1_candidates(scored, max_ratio, priority_ids=priority_ids)
+    candidate_ids = set(ordered_candidates)
+
+    if on_candidates is not None:
+        # **두 번째 정렬만 아낀다.** `select_tier1_candidates` 가 이미 같은
+        # `scored` 로 `gray_zone` 을 한 번 불렀다(실측: `on_candidates=None`
+        # 이면 1회, 콜백을 주면 2회) - 콜백이 없을 때 아끼는 것은 `gray_zone`
+        # 자체가 아니라 그 **두 번째** 호출(정렬 재계산)이다.
+        on_candidates(
+            CandidateReport(
+                candidate_ids=tuple(ordered_candidates),
+                priority_ids=priority_ids,
+                gray_zone_size=len(gray_zone(scored)),
+                cap=tier1_cap(len(scored), max_ratio),
+            )
+        )
 
     # 번역 실패분을 여기서 뺀다. SegmentRisk가 텍스트를 갖지 않아
     # select_tier1_candidates가 판정할 수 없다(설계 §5).
@@ -368,6 +430,15 @@ def triage_with_tier1(
 # 말하게 된다(`gray_zone()`을 공유한 것과 같은 이유, 2라운드 리뷰 C3).
 _ZERO_BY_SWITCH = "max_ratio=0.0 - Tier 1을 껐다 (정상)"
 
+# 극성 표지 목록이 없는 언어에서 내는 경고 (설계 D5).
+#
+# **리터럴로 두면 안 된다.** 테스트가 이 문자열을 자기 안에서 다시 지어
+# 넘기면 문구가 바뀌어도 계속 통과해 화면과 갈라진다 - `_TIER1_WARN_PREFIX`
+# 와 같은 이유이고, 리포트 caveat 두 건이 실제로 이렇게 갈렸다.
+#
+# **출력 문자열이라 em dash 를 쓰지 않는다**(전역 제약, cp949 미인코딩).
+_POLARITY_UNSUPPORTED = "극성 표지 목록이 없는 언어다 - Tier 1 후보를 위험도 순서로만 고른다"
+
 
 def _zero_by_floor(total: int, max_ratio: float, *, noun: str) -> str:
     """상한이 내림으로 0이 된 사정을 적는다.
@@ -414,12 +485,57 @@ def explain_zero_bound(total: int, max_ratio: float) -> str | None:
     """
     if max_ratio == 0.0:
         return _ZERO_BY_SWITCH
-    if math.floor(total * max_ratio) == 0:
+    if tier1_cap(total, max_ratio) == 0:
         # dry-run은 번역을 안 하므로 `total`이 자막 전체다. 실행 경로가 쓰는
         # 명사("번역 성공 세그먼트 수")를 여기 쓰면 아직 번역하지도 않은 수를
         # 성공분이라 부르게 된다.
         return _zero_by_floor(total, max_ratio, noun="세그먼트 수")
     return None
+
+
+def _polarity_priority(
+    segments: Sequence[Segment],
+    ctx: SignalContext,
+    warn: Callable[[str], None],
+) -> frozenset[str]:
+    """극성 표지를 가진 세그먼트 ID (설계 D2 · D5).
+
+    **원문 또는 번역문 어느 쪽이든** 표지가 있으면 우선 집합이다. 「원문에
+    있고 번역문에 없음」으로 좁히면 농축이 10~12x 로 오르지만, 그 조건은
+    `bench/inject.py` 가 오류를 만드는 방식(원문 유지 · 번역문에서 제거)을
+    그대로 베낀 것이라 측정이 자기 충족적이 된다 (설계 D2 · §3.3).
+
+    **미지원 언어를 조용히 넘기지 않는다.** 경고 없이 빈 집합을 내면
+    사용자에게는 "표지가 하나도 없었다"와 구별되지 않는다 (§12 Q3 무음 열화).
+    """
+    supported = supported_languages()
+    # **`dict.fromkeys`로 유일화한다.** `source_lang == target_lang`(예:
+    # "fr", "fr")이면 리스트 컴프리헨션이 같은 언어를 두 번 담아 경고가
+    # "... (fr, fr)"로 중복 출력된다(3라운드 리뷰 M-3). `set`이 아니라
+    # `dict.fromkeys`인 이유는 등장 순서를 보존하기 위해서다 - `set`은
+    # 해시 시드에 따라 "fr, de"와 "de, fr"를 오갈 수 있어 NFR-3(재현성)을
+    # 어긴다.
+    missing = list(
+        dict.fromkeys(lang for lang in (ctx.source_lang, ctx.target_lang) if lang not in supported)
+    )
+    if missing:
+        warn(f"{_POLARITY_UNSUPPORTED} ({', '.join(missing)})")
+
+    # **`len(missing) == 2`일 때 조기 반환하는 분기를 두지 않는다** (3라운드
+    # 리뷰 M-2). 지워도 아래 제너레이터가 `src_ok`·`tgt_ok`를 둘 다 `False`로
+    # 만들어 스스로 빈 집합을 낸다(실측: 이 분기를 지워도 전체 스위트
+    # 1930건이 그대로 통과한다). 성능 이득은 `collect_all` 전체 순회 대비
+    # 무시할 수준이라, 죽지 않는 분기를 남기면 읽는 사람에게 "여기 의미가
+    # 있다"는 거짓 신호만 남긴다. 경고는 위 `if missing:`에서 이미 나갔으므로
+    # 이 분기를 지워도 D5(무음 열화 금지)에는 영향이 없다.
+    src_ok = ctx.source_lang in supported
+    tgt_ok = ctx.target_lang in supported
+    return frozenset(
+        seg.id
+        for seg in segments
+        if (src_ok and has_polarity_marker(seg.source_text, ctx.source_lang))
+        or (tgt_ok and has_polarity_marker(seg.target_text, ctx.target_lang))
+    )
 
 
 def _diagnose_empty_candidates(

@@ -9,6 +9,7 @@ from cuesift.triage.policy import (
     select_by_count,
     select_by_threshold,
     select_tier1_candidates,
+    tier1_cap,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "select_by_count",
     "select_by_threshold",
     "select_tier1_candidates",
+    "tier1_cap",
 ]
