@@ -34,7 +34,7 @@ from cuesift.tier1 import CandidateReport
 
 
 def test_tier1_없이는_흐름이_같다():
-    """`--tier1`이 꺼져 있으면 지금과 한 줄도 다르지 않다 (설계 D9).
+    """`--tier1`이 꺼져 있으면 지금과 한 줄도 다르지 않다 (설계 2026-09-05 D9).
 
     **켜져 있으면 CI가 LLM 백엔드를 요구하게 된다.** 벤치 테스트는
     data/가 .gitignore라 CI에서 이미 skip되는데, 기본값이 바뀌면

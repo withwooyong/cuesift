@@ -160,7 +160,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # --- Tier 1 (FR-4.2 · 태스크7 브리프 Step 4) ---
     # 기본값이 전부 꺼짐·`None`인 것이 핵심이다 — `--tier1` 없이 부르는
     # 기존 경로는 이 인자들이 전혀 관여하지 않아 한 줄도 달라지지 않는다
-    # (설계 D9 · `test_tier1_없이는_흐름이_같다`가 그 계약을 검사한다).
+    # (설계 2026-09-05 D9 · `test_tier1_없이는_흐름이_같다`가 그 계약을 검사한다.
+    # **2026-09-06 스펙에도 D9 가 있으나 그쪽은 「극성 표지는 risk_score 에
+    # 기여하지 않는다」로 다른 결정이다** - 날짜 없이 쓰면 실제로 오독된다).
     # `%%`로 이스케이프한다 — argparse의 `HelpFormatter`가 help 문자열을
     # `%`-포맷팅하므로, 이스케이프하지 않은 `%`는 `--help` 호출이 아니라
     # **파서 조립 시점**(`add_argument`)에 `ValueError`를 던진다(실측:
@@ -454,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.tier1:
-        # `--tier1` 없이는 위까지 한 줄도 다르지 않다(설계 D9) — 이 아래가
+        # `--tier1` 없이는 위까지 한 줄도 다르지 않다(설계 2026-09-05 D9) — 이 아래가
         # 전부다. 필수 인자는 여기서 검사한다: `OpenAICompatibleProvider`에
         # `base_url=None`을 그대로 넘기면 `_require_http_url`이 트레이스백을
         # 낸다 — 사람이 읽을 메시지로 먼저 막는다.

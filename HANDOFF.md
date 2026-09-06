@@ -614,8 +614,12 @@ Recall 개선을 조건으로 걸지 않았다 — 결함 ②(비대칭 밀어�
 
 **리포트의 17건과 원자료의 16건은 불일치가 아니다.** 예산 10%에서 리포트는 후보
 안 negation을 **17건**으로 싣는데 원자료는 **16건**(총계도 500이 아니라 492)이다 —
-차이는 번역 실패분이다. `CandidateReport.candidate_ids`는 **선정된** 집합이고
-원자료는 **Tier 1 비용을 실제로 치른** 집합이다(태스크 3 리뷰 I-4에서 의도적으로
+차이는 **역번역이나 임베딩이 신호를 못 낸 분**이다(번역 실패분이 아니다 -
+네 건 모두 `target_text`가 정상이라 Tier 1 비용을 치렀고, `bench/run.py::_collect_raw`의
+`bt is None` 필터에서 떨어졌다). **그중 `en-00952`는 negation 라벨이다** - 재설계가
+골라내는 데는 성공했으나 백엔드가 신호를 못 준 건이고, 이것이 이월 22번의 입력이다.
+`CandidateReport.candidate_ids`는 **선정된** 집합이고
+원자료는 **신호를 낸** 집합이다(태스크 3 리뷰 I-4에서 의도적으로
 정한 구분 — 설계 §3.2~§3.4의 기대값 계산이 전부 선정 집합 기준이라, 분모를 바꾸면
 리포트가 설계 표와 대조되지 않는다).
 
@@ -631,8 +635,8 @@ Recall 개선을 조건으로 걸지 않았다 — 결함 ②(비대칭 밀어�
 **재현**: `bench/results/en-ko-2026-09-06.md`를 다시 내려면 캐시가 있는 채로
 
 ```bash
-.venv/Scripts/python.exe -m bench.run --pair en-ko --seed 20260729 \
-  --tier1 --tier1-samples 2 --tier1-max-ratio 0.149 \
+.venv/Scripts/python.exe -u -m bench.run --pair en-ko --seed 20260729 --tier1 \
+  --base-url http://localhost:11434/v1 --model qwen2.5:3b --embed-model bge-m3 \
   --cache-dir data/bench/cache --audit-dir data/bench
 ```
 
@@ -685,9 +689,10 @@ Recall 개선을 조건으로 걸지 않았다 — 결함 ②(비대칭 밀어�
 게이트는 CI와 같은 대상 `.`으로 돌린다 — **`src tests`로 좁히면 안 된다**(그 차이로 CI가
 5회 연속 실패한 전례가 있다).
 
-**로컬과 CI의 게이트 수치는 1건 다르다.** 로컬 `1889 passed`, CI `1888 passed · 1 skipped`
-(`tests/test_bench_glossary.py:47`이 트랙을 요구하는데 `data/`가 `.gitignore`다).
-**수집 개수 `1894 / 5 deselected`는 양쪽이 같아야 한다** — 이쪽이 갈리면 진짜 문제다.
+**로컬과 CI의 게이트 수치는 1건 다르다.** 2026-09-06 기준 로컬 `1938 passed`,
+CI 는 1건이 skip 된다(`tests/test_bench_glossary.py:47`이 트랙을 요구하는데
+`data/`가 `.gitignore`다). **수집 개수 `1943 / 5 deselected`는 양쪽이 같아야 한다** -
+이쪽이 갈리면 진짜 문제다.
 
 **문서를 추가했으면 `git add` 뒤에 링크 체커를 돌린다.** 이번에도 실제로 갈렸다 —
 새 리포트 2개를 추적하기 전에는 링크 체커 **45개** vs markdownlint **47개**였다.
