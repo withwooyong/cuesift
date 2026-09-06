@@ -353,3 +353,70 @@ def test_상한은_절대_초과하지_않는다(n, ratio):
     # selected 필드가 없으므로 비율은 단순히 len(result) / len(risks)
     actual_ratio = len(result) / len(risks) if risks else 0.0
     assert actual_ratio <= ratio + 1e-9  # 부동소수 오차 허용
+
+
+def _gray(n: int) -> list[SegmentRisk]:
+    """회색지대만 있는 목록. 위험도 내림차순이 ID 오름차순과 같도록 만든다."""
+    return [_t1_risk(f"s{i:03d}", 0.9 - i * 0.001) for i in range(n)]
+
+
+def test_우선_집합이_먼저_들어간다():
+    risks = _gray(100)  # cap = floor(100 * 0.05) = 5
+    # 위험도로는 꼴찌인 다섯을 우선 집합으로 준다.
+    priority = {"s095", "s096", "s097", "s098", "s099"}
+    got = select_tier1_candidates(risks, 0.05, priority_ids=priority)
+    assert set(got) == priority
+
+
+def test_우선_집합이_cap보다_작으면_나머지로_채운다():
+    risks = _gray(100)
+    got = select_tier1_candidates(risks, 0.05, priority_ids={"s099"})
+    # 우선 1건 + 회색지대 순서대로 4건
+    assert got == ["s099", "s000", "s001", "s002", "s003"]
+
+
+def test_후보_개수는_우선_집합과_무관하다():
+    """설계 D6 - 개수가 오늘과 같아야 빈 후보 진단의 여섯 갈래가 유효하다."""
+    risks = _gray(100)
+    base = select_tier1_candidates(risks, 0.05)
+    for priority in ({}, {"s099"}, {f"s{i:03d}" for i in range(50)}):
+        assert len(select_tier1_candidates(risks, 0.05, priority_ids=priority)) == len(base)
+
+
+def test_상한을_넘는_우선_집합은_앞에서_자른다():
+    risks = _gray(100)
+    priority = {f"s{i:03d}" for i in range(50)}
+    got = select_tier1_candidates(risks, 0.05, priority_ids=priority)
+    assert len(got) == 5
+    assert got == ["s000", "s001", "s002", "s003", "s004"]
+
+
+def test_회색지대_밖_ID는_무시된다():
+    """hard_fail 과 이미 선별된 것을 우선 집합으로 되살리면 안 된다 (§5.2)."""
+    risks = [
+        _t1_risk("hard", 1.0, hard_fail=True),
+        _t1_risk("picked", 0.8, selected=True),
+        *_gray(98),
+    ]
+    got = select_tier1_candidates(risks, 0.05, priority_ids={"hard", "picked"})
+    assert "hard" not in got
+    assert "picked" not in got
+
+
+def test_priority_ids에_str을_넘기면_거부한다():
+    """`excluded_ids` 와 같은 함정 - 원소 단위로 쪼개져 조용히 돈다."""
+    with pytest.raises(ValueError, match="priority_ids"):
+        select_tier1_candidates(_gray(100), 0.05, priority_ids="s000")
+
+
+def test_priority_ids에_bytes를_넘기면_거부한다():
+    with pytest.raises(ValueError, match="priority_ids"):
+        select_tier1_candidates(_gray(100), 0.05, priority_ids=b"s000")
+
+
+def test_priority_ids_기본값은_오늘과_같다():
+    """기존 호출부와 테스트가 손대지 않은 채 통과해야 한다 (T10)."""
+    risks = _gray(100)
+    assert select_tier1_candidates(risks, 0.05) == select_tier1_candidates(
+        risks, 0.05, priority_ids=()
+    )
