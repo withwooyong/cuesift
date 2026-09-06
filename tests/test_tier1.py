@@ -1082,3 +1082,29 @@ def test_on_candidates가_없으면_아무것도_안_부른다(signal_ctx):
         warn=_ignore,
         embedder=_FakeEmbedder(),
     )
+
+
+def test_번역문에만_표지가_있어도_우선_집합이다(signal_ctx):
+    """설계 D2 - 「원문 또는 번역문」 의 나머지 절반.
+
+    원문에는 부정이 없는데 번역문에만 있는 것이 실제 의미 반전 오류의
+    모습이다. 이 경로가 없으면 설계 §3.3 이 P2(원문에만)가 아니라 P1 을
+    채택한 근거(포함률 74~86%)가 게이트되지 않는다.
+    """
+    reports: list[CandidateReport] = []
+    segments = _segments_with_texts(
+        [("맑은 날입니다", "It is sunny")] * 18
+        + [("그렇게 생각합니다", "I do not think so"), ("그 사람은 왔습니다", "he did not arrive")]
+    )
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert len(reports) == 1
+    assert reports[0].priority_ids == {"s018", "s019"}
