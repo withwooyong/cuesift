@@ -537,7 +537,7 @@ git commit -m "구현: 후보 선정에 우선순위 통로를 연다 (설계 D6
 `tests/test_tier1.py` 맨 끝에 덧붙인다. **아래 이름들은 실제 파일을 확인해 맞춰 둔 것이므로 그대로 쓴다.** `signal_ctx` 는 `@pytest.fixture`(25행)이므로 반드시 **테스트 함수의 인자로 받아야** 하고, 언어를 바꾸는 테스트는 `dataclasses.replace` 로 파생시킨다(`SignalContext` 는 `frozen=True` 데이터클래스다). 파일 상단에 `from dataclasses import replace` 를 더한다.
 
 ```python
-def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다signal_ctx):
+def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다(signal_ctx):
     """설계 D2 - 원문 또는 번역문에 표지가 있으면 우선 집합이다."""
     reports: list[CandidateReport] = []
     segments = _segments_with_texts(
@@ -561,7 +561,7 @@ def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다signal_c
     assert len(reports[0].candidate_ids) == 2
 
 
-def test_미지원_언어면_경고가_나가고_우선_집합이_빈다signal_ctx):
+def test_미지원_언어면_경고가_나가고_우선_집합이_빈다(signal_ctx):
     """설계 D5 - 조용히 되돌아가면 무음 열화다 (Q3)."""
     warnings: list[str] = []
     reports: list[CandidateReport] = []
@@ -581,7 +581,7 @@ def test_미지원_언어면_경고가_나가고_우선_집합이_빈다signal_c
     assert len(reports[0].candidate_ids) == 2
 
 
-def test_한쪽만_미지원이면_지원되는_쪽으로_판정한다signal_ctx):
+def test_한쪽만_미지원이면_지원되는_쪽으로_판정한다(signal_ctx):
     warnings: list[str] = []
     reports: list[CandidateReport] = []
     triage_with_tier1(
@@ -608,7 +608,7 @@ def test_경고_문구를_테스트가_지어_넘기지_않는다():
     assert "—" not in _POLARITY_UNSUPPORTED  # cp949 에 없는 em dash 금지
 
 
-def test_on_candidates가_없으면_아무것도_안_부른다signal_ctx):
+def test_on_candidates가_없으면_아무것도_안_부른다(signal_ctx):
     """콜백은 선택이다. 기존 호출부가 손대지 않은 채 돌아야 한다."""
     triage_with_tier1(
         _segments_with_texts([("맑은 날입니다", "It is sunny")] * 20),
