@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from dataclasses import replace
 
 import pytest
 from tests.fakes.provider import EchoProvider
@@ -13,7 +14,9 @@ from cuesift.segment import Segment, SegmentRisk
 from cuesift.signals.base import SignalContext
 from cuesift.spec import load_builtin
 from cuesift.tier1 import (
+    _POLARITY_UNSUPPORTED,
     _ZERO_BY_SWITCH,
+    CandidateReport,
     _diagnose_empty_candidates,
     explain_zero_bound,
     triage_with_tier1,
@@ -976,3 +979,106 @@ def test_상한이_0이_아니면_None이다() -> None:
 def test_실행_경로와_같은_문자열을_쓴다() -> None:
     """**복제 금지의 게이트다.** 한쪽만 고치면 여기가 죽는다."""
     assert explain_zero_bound(10, 0.0) == _ZERO_BY_SWITCH
+
+
+def _segments_with_texts(pairs: list[tuple[str, str]]) -> list[Segment]:
+    """`(source_text, target_text)` 쌍으로 세그먼트를 만든다 (Task 3 전용).
+
+    시간 구간이 겹치면 `spec.overlap`(배치 신호)이 발화해 극성 판정이 아니라
+    Tier 0 신호를 재는 테스트가 되므로, `start_ms`/`end_ms`를 겹치지 않게 둔다.
+    """
+    return [
+        Segment(
+            id=f"s{i:03d}",
+            index=i,
+            start_ms=i * 2000,
+            end_ms=i * 2000 + 1500,
+            source_text=source_text,
+            target_text=target_text,
+        )
+        for i, (source_text, target_text) in enumerate(pairs)
+    ]
+
+
+def test_극성_표지를_가진_세그먼트가_후보로_먼저_간다(signal_ctx):
+    """설계 D2 - 원문 또는 번역문에 표지가 있으면 우선 집합이다."""
+    reports: list[CandidateReport] = []
+    segments = _segments_with_texts(
+        # (source_text, target_text) 20건 중 뒤 두 건만 부정을 담는다.
+        [("맑은 날입니다", "It is sunny")] * 18
+        + [("가지 않았습니다", "did not go"), ("아무도 없습니다", "there is none")]
+    )
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert len(reports) == 1
+    # cap = floor(20 * 0.1) = 2 이므로 표지 보유 두 건이 그대로 후보다.
+    assert set(reports[0].candidate_ids) == set(reports[0].priority_ids)
+    assert len(reports[0].candidate_ids) == 2
+
+
+def test_미지원_언어면_경고가_나가고_우선_집합이_빈다(signal_ctx):
+    """설계 D5 - 조용히 되돌아가면 무음 열화다 (Q3)."""
+    warnings: list[str] = []
+    reports: list[CandidateReport] = []
+    triage_with_tier1(
+        _segments_with_texts([("맑은 날입니다", "Il fait beau")] * 20),
+        replace(signal_ctx, source_lang="fr", target_lang="de"),
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=warnings.append,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert any(_POLARITY_UNSUPPORTED in w for w in warnings)
+    assert reports[0].priority_ids == frozenset()
+    # 후보 개수는 오늘과 같다 (D6).
+    assert len(reports[0].candidate_ids) == 2
+
+
+def test_한쪽만_미지원이면_지원되는_쪽으로_판정한다(signal_ctx):
+    warnings: list[str] = []
+    reports: list[CandidateReport] = []
+    triage_with_tier1(
+        _segments_with_texts(
+            [("맑은 날입니다", "Il fait beau")] * 18
+            + [("가지 않았습니다", "x"), ("아무도 없습니다", "y")]
+        ),
+        replace(signal_ctx, target_lang="de"),
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=warnings.append,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+    )
+    assert any(_POLARITY_UNSUPPORTED in w for w in warnings)
+    # ko 는 지원되므로 원문 표지로 두 건이 잡힌다.
+    assert len(reports[0].priority_ids) == 2
+
+
+def test_경고_문구를_테스트가_지어_넘기지_않는다():
+    """상수를 임포트해 검사한다. 리터럴로 두면 문구가 바뀌어도 통과한다."""
+    assert "극성" in _POLARITY_UNSUPPORTED
+    assert "—" not in _POLARITY_UNSUPPORTED  # cp949 에 없는 em dash 금지
+
+
+def test_on_candidates가_없으면_아무것도_안_부른다(signal_ctx):
+    """콜백은 선택이다. 기존 호출부가 손대지 않은 채 돌아야 한다."""
+    triage_with_tier1(
+        _segments_with_texts([("맑은 날입니다", "It is sunny")] * 20),
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        embedder=_FakeEmbedder(),
+    )
