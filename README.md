@@ -14,6 +14,14 @@
 > 파싱(`ingest`)도 들어왔습니다. **`check`(규격 검사)·`translate`(번역)·`transcribe`(STT)
 > 세 명령이 모두 CLI에 배선되어 실제로 동작합니다** - 아래 "CLI" 절 참고.
 
+**이 README는 옵션과 계약의 정본입니다.** 처음이라면 여기부터 읽지 마십시오.
+
+| 무엇이 궁금한가 | 어디로 |
+|---|---|
+| 설치해서 자막 하나를 끝까지 돌려 보고 싶다 | **[docs/사용법.md](docs/사용법.md)** — 처음 30분 |
+| 무엇을 잡고 무엇을 못 잡는지 알고 싶다 | **[docs/제품설명서.md](docs/제품설명서.md)** — 신호·한계·도입 요건 |
+| 옵션의 기본값·허용 범위·종료 코드가 필요하다 | 이 문서의 아래 "CLI" 절 |
+
 ---
 
 ## 실측: Recall @ Budget
@@ -301,6 +309,25 @@ cuesift translate ep01.ko.srt --to en,ja --out dist
 원격 API를 쓰면 `CUESIFT_API_KEY`도 설정합니다. 없으면 `Authorization` 헤더를
 붙이지 않으므로 위 예시의 로컬 Ollama에는 필요하지 않습니다.
 
+#### 출력 파일명 — `{stem}.{대상언어}.{확장자}`
+
+**원본 이름이 이미 원문 언어 코드로 끝나면 덧붙이지 않고 치환합니다.** 아래 셋은 실측입니다.
+`review.json`·`report.html`이 "자막 파일과 같은 stem 규칙"이라고 말하는 그 규칙이 이것입니다.
+
+| 입력 | 대상 언어 | 출력 |
+|---|---|---|
+| `talk.srt` | `en` | `talk.en.srt` |
+| `talk.ko.srt` | `en` | `talk.en.srt` (`talk.ko.en.srt`가 아닙니다) |
+| `talk.ko.srt` | `en,ja` | `talk.en.srt`와 `talk.ja.srt` |
+| `ep01.KO.srt` (`--source-lang ko`) | `en` | `ep01.en.srt` |
+
+치환하지 않으면 `ep01.ko.srt`가 `ep01.ko.en.srt`가 되어 **언어 태그가 둘이 됩니다.**
+
+**판정만 대소문자를 무시하고 원본 stem의 표기는 그대로 둡니다.** Windows는 파일명
+대소문자를 구분하지 않아 `ep01.KO.srt`가 정상인 파일명인데, 판정까지 대소문자를 가리면
+그 파일이 치환되지 않고 `ep01.KO.en.srt`라는 이중 태그를 냅니다 — 이 규칙이 막겠다고
+선언한 바로 그 사고입니다(위 표 넷째 줄이 실측입니다).
+
 **같은 명령을 다시 치면 재개됩니다.** 성공한 호출은 `.cuesift/cache/`에
 남아 두 번째 실행에서 네트워크를 타지 않습니다.
 
@@ -320,6 +347,51 @@ cuesift translate ep01.ko.srt --to en --dry-run   # 몇 번 더 불러야 하나
 비용은 추정하지 않습니다** — 문자에서 토큰으로 가는 계수가 모델마다 다르고
 우리에게 출처가 없기 때문입니다(요구사항정의서 §11 R8, "출처 없는 수치를
 기본값으로 넣지 않음").
+
+#### 나머지 옵션 — 접속과 번역 동작 (전수)
+
+아래 절들이 따로 다루지 않는 `translate` 옵션 전부입니다. **`--to`만 필수이고 나머지에는
+전부 기본값이 있습니다.**
+
+| 옵션 | 기본값 | 하는 일 |
+|---|---|---|
+| `--to` | **(필수)** | 대상 언어. 쉼표로 여럿 (`en,ja`) |
+| `--source-lang` | `ko` | 원문 언어. 위 출력 파일명 규칙에서 치환되는 태그이기도 합니다 |
+| `--out` | 입력 파일과 같은 곳 | 출력 디렉터리. 없으면 만들고, **이미 존재하는 파일**을 가리키면 종료 코드 2입니다 |
+| `--media` | 없음 | 번역 전에 전사할 영상·오디오. 자막 파일과 **함께 줄 수 없습니다**(아래 `transcribe` 절) |
+| `--base-url` | 환경변수 `CUESIFT_BASE_URL` | OpenAI 호환 엔드포인트 |
+| `--model` | 환경변수 `CUESIFT_MODEL` | 번역 모델 이름 |
+| `--glossary` | 없음 | 용어집 YAML (FR-2.3). 형식은 바로 아래 |
+| `--work-context` | 없음 | 작품 맥락 (FR-2.8). 프롬프트에 실립니다 (예: `"다큐멘터리, 존댓말"`) |
+| `--context-window` | `3` | 세그먼트마다 앞뒤로 함께 보낼 맥락 세그먼트 수. `0`이면 앞뒤 없이 보냅니다 |
+| `--cache-dir` | `.cuesift/cache` | 캐시 디렉터리 |
+| `--no-cache` | 꺼짐(= 캐시를 씁니다) | 캐시를 읽지도 쓰지도 않습니다. **`cuesift.yaml`의 `cache.enabled`와 방향이 반대입니다** |
+
+배치 크기는 옵션이 아니라 고정값 `10`입니다(`translate/batch.py`의 `DEFAULT_BATCH_SIZE`).
+
+##### 용어집 YAML 형식 — `--glossary`
+
+최상위에 `entries` 키가 있어야 하고, 항목마다 `source`와 **언어별 `targets` 리스트**를 둡니다.
+
+```yaml
+entries:
+  - source: 당뇨병
+    targets:
+      en: [diabetes, diabetic]
+      ja: [糖尿病]
+  - source: 기후 변화
+    targets:
+      en: [climate change, climate, global warming]
+      ja: [気候変動, 気候, 地球温暖化]
+```
+
+| 규칙 | 내용 |
+|---|---|
+| 판정 방향 | **원문에 키가 있는데 번역문에 대응어가 하나도 없으면 위반**입니다. 원문에 없는 용어는 검사하지 않습니다 — 이걸 어기면 용어집이 커질수록 오탐이 선형으로 늘어 **용어집을 키울 수 없게 됩니다** |
+| 대응어가 여럿일 때 | **하나만 나와도 통과**입니다. 전부 요구하면 정상 번역이 대량 오탐이 됩니다("AI"와 "artificial intelligence"를 한 문장에 둘 다 쓰지 않습니다) |
+| 그 언어의 대응어가 없는 항목 | 그 언어에서는 **버립니다.** 남겨 두면 대응어가 빈 채로 항상 위반 판정이 납니다 |
+| `targets`가 리스트가 아니면 | **종료 코드 66**과 함께 `YAML 대괄호 누락?`을 냅니다(실측). 문자열이 오면 글자 단위로 쪼개지고, 알파벳 한 글자는 거의 모든 텍스트에 있어 그 항목이 **영원히 통과**합니다 |
+| 단어 경계 | 라틴 문자·숫자 룩어라운드입니다. `\b`를 쓰지 않는 것은 **CJK 문자가 전부 `\w`라** 조사가 붙으면 경계가 생기지 않기 때문입니다 |
 
 #### 검수 트리아지 — `--review-budget` · `--review-threshold` · `--review-top-k` (FR-6.3, 동작합니다)
 
@@ -406,8 +478,11 @@ en·ja의 LLM 비용을 실제로 쓴 뒤에 fr에서 죽습니다.
 결과들이 서로 얼마나 흔들리는지**를 잽니다 — 흔들리면 모델 자신이 확신하지 못한다는 뜻입니다.
 
 ```bash
-cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1
+cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --embed-model bge-m3
 ```
+
+**`--embed-model`을 빼면 종료 코드 2입니다.** 역번역 신호가 임베딩 없이는 동작하지 않고
+(FR-4.2), 이 값에는 기본값이 없습니다 — 아래 옵션 표를 보십시오.
 
 **`--tier1`은 기본으로 꺼져 있고 `--review-budget`을 요구합니다.** LLM을 다시 부르므로
 비용이 실제로 발생하고, 후보를 고르려면 예산 컷라인이 있어야 합니다 — Tier 1은 컷라인
@@ -415,10 +490,12 @@ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1
 
 | 옵션 | 기본값 | 무엇을 |
 |---|---|---|
-| `--tier1` | 꺼짐 | 스위치. 이것 없이 아래 셋만 주면 종료 코드 2입니다 |
+| `--tier1` | 꺼짐 | 스위치. 이것 없이 아래 `--tier1-*` 셋만 주면 종료 코드 2입니다 |
 | `--tier1-max-ratio` | `0.05` | 전체 세그먼트 중 Tier 1을 적용할 **최대 비율**(FR-4.3). 허용은 `0 < x <= 1.0` — **`0`은 거부됩니다** |
 | `--tier1-samples` | `3` | 세그먼트당 재번역 횟수. 허용은 `x >= 2` — 2 미만은 비교할 쌍이 없어 거부됩니다 |
 | `--tier1-temperature` | `1.0` | 재번역 온도. 허용은 `0 < x` — **`0`은 거부됩니다**(샘플이 전부 같아져 신호가 죽습니다) |
+| `--embed-model` | **없음. `--tier1`에 필수** | 역번역 신호가 쓰는 임베딩 모델 이름입니다(FR-4.2). 이 옵션도 `CUESIFT_EMBED_MODEL`도 없이 `--tier1`을 켜면 종료 코드 2입니다. **기본값을 두지 않은 것은 의도입니다** — 개발자 로컬에 우연히 깔려 있는 모델 이름을 기본값으로 박으면 출처 없는 값이 조용히 비용에 실립니다(§11 R8) |
+| `--embed-base-url` | `--base-url`로 폴백 | 임베딩 엔드포인트입니다. 없으면 `CUESIFT_EMBED_BASE_URL`, 그것도 없으면 번역용 주소를 그대로 씁니다. **모델 이름에는 이 폴백이 없습니다** — 번역 모델과 임베딩 모델의 이름이 겹칠 근거가 없습니다 |
 
 **`--help`의 범위 표기는 파서가 받는 범위이지 허용 범위가 아닙니다.** `--tier1-temperature`는
 `[x>=0.0]`, `--tier1-max-ratio`는 `[0.0<=x<=1.0]`으로 찍히는데 **둘 다 `0`은 종료 코드 2**
@@ -441,7 +518,7 @@ $ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --tier1-samp
 `--tier1-samples 10 --tier1-max-ratio 0.5`(배수 **50**)가 통과합니다 — 상한이 잘못된 축에
 걸려 있으면 막으려던 것을 못 막습니다.
 
-거부되는 조합은 **일곱**이고 전부 **LLM을 부르기 전에** 종료 코드 2로 끝납니다(아래는 실행해
+거부되는 조합은 **아홉**이고 전부 **LLM을 부르기 전에** 종료 코드 2로 끝납니다(아래는 실행해
 받은 화면 그대로입니다).
 
 | 무엇을 주면 | 화면 |
@@ -450,6 +527,7 @@ $ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --tier1-samp
 | `--tier1` + `--review-threshold` | `--tier1은 --review-threshold와 함께 쓸 수 없다 (--review-budget을 쓴다)` |
 | `--tier1` + `--review-top-k` | `--tier1은 --review-top-k와 함께 쓸 수 없다 (--review-budget을 쓴다)` |
 | `--tier1`인데 예산이 없다 | `--tier1은 --review-budget을 요구한다` |
+| `--tier1`인데 `--embed-model`이 없다 | `--tier1은 --embed-model을 요구한다 (FR-4.2)` |
 | 곱이 한도에 닿거나 넘는다 | 위 화면 |
 | `--tier1-max-ratio 0` | `--tier1-max-ratio 0은 Tier 1을 끄는 값이라 --tier1과 함께 줄 수 없다` |
 | `--tier1-temperature 0` | `--tier1-temperature는 0보다 커야 한다 (0이면 샘플이 전부 같아진다)` |
@@ -463,18 +541,21 @@ $ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --tier1-samp
 `--tier1`을 켜면 dry-run 화면에 한 줄이 더 붙습니다. LLM은 부르지 않습니다.
 
 ```text
-$ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --dry-run
+$ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --embed-model bge-m3 --dry-run
 입력   ep01.ko.srt (srt) · 26 세그먼트
 모델   qwen2.5:3b @ http://127.0.0.1:11434/v1
 
 [en] ep01.en.srt
   배치 3개 (size=10, context_window=3)
   캐시 히트 0개 · 호출 필요 3개 이상
-  프롬프트 문자 system 945 + user 916
+  프롬프트 문자 system 945 + user 970
   Tier 1 재번역 요청 최대 3회 (재시도·폴백 제외 · 후보 상한 비율 0.05 · 샘플 3)
 
 (토큰·비용은 내지 않는다 - 문자에서 토큰으로 가는 계수의 출처가 없다)
 ```
+
+**옵션 조합 검증은 `--dry-run`에서도 돕니다.** 위 명령에서 `--embed-model`만 빼면 화면이
+나오지 않고 `--tier1은 --embed-model을 요구한다 (FR-4.2)`와 함께 종료 코드 2로 끝납니다(실측).
 
 `26 × 0.05 = 1.3`을 내림해 후보 1개, 거기에 샘플 3을 곱해 **3회**입니다.
 
@@ -490,9 +571,27 @@ $ cuesift translate ep01.ko.srt --to en --review-budget 10% --tier1 --dry-run
 화면이 같으면 사용자는 Tier 1이 돈 줄로 읽습니다.
 
 ```text
-$ cuesift translate short.ko.srt --to en --review-budget 30% --tier1
-[en] Tier 1: 세그먼트 수(3)에 비해 max_ratio(0.05)가 작아 Tier 1 상한이 내림(floor)으로 0이 됐다 (select_tier1_candidates 독스트링 - n < 1/max_ratio)
+$ cuesift translate short.ko.srt --to en --review-budget 30% --tier1 --embed-model bge-m3
+임베딩 준비됨 (bge-m3, 1024차원)
+[en] Tier 1: 번역 성공 세그먼트 수(3)에 비해 max_ratio(0.05)가 작아 Tier 1 상한이 내림(floor)으로 0이 됐다 (select_tier1_candidates 독스트링 - n < 1/max_ratio)
 ```
+
+(번역·트리아지 요약 줄은 이 사건과 무관해 뺐습니다. 종료 코드는 `0`입니다.)
+
+**첫 줄의 `임베딩 준비됨`은 `--tier1`을 켠 실행에서만 나옵니다.** 임베딩 엔드포인트를
+**번역 루프보다 먼저** 한 번 두드려 본(`probe()`) 결과입니다. 뒤로 미루면 후보 수만큼
+부른 역번역이 유사도 계산 단계에서 전부 버려지므로, 확인에 실패하면 어떤 언어의 번역도
+시작하지 않습니다. **차원 수를 함께 찍는 것은 `probe()`가 무엇을 확인했는지 사용자가 알
+수 있는 유일한 자리이기 때문입니다.**
+
+probe가 실패하면 사유를 셋으로 가릅니다. **404와 501을 합치면 안 됩니다** — 사용자가
+취해야 할 행동이 정반대입니다.
+
+| 사유 | 뜻 | 종료 코드 | 무엇을 바꾸나 |
+|---|---|---|---|
+| `501` | 엔드포인트는 있는데 그 **모델**이 임베딩을 내지 못한다 | `2` | `--embed-model` |
+| `404` | **엔드포인트 자체가 없다** | `2` | `--embed-base-url` (백엔드를 바꿉니다) |
+| 그 외(401·400·503·타임아웃) | 백엔드에 연결하지 못했다 | `69` | 주소·키·백엔드 상태 |
 
 회색지대 자체가 비었을 때도 같은 자리에 사유가 나옵니다
 (`Tier 1: 회색지대가 비었다 (전부 hard_fail이거나 이미 선별됨)`).
@@ -1078,8 +1177,18 @@ $env:CUESIFT_LIVE_AUDIO        = "C:/media/clip.mp3"
 
 ## 문서
 
+**역할 분담**: 값이 적힌 표(옵션 기본값·허용 범위·종료 코드·JSON 필드)는 **이 README에만**
+둡니다. `docs/사용법.md`는 그 값을 다시 적지 않고 **순서와 판단**만 적으며 이리로 링크합니다.
+같은 값이 두 곳에 있으면 한쪽만 고쳐져 반드시 갈라집니다.
+
+**예외는 설치 절차 하나입니다.** 사용법이 "설치하려면 README를 보라"로 시작하면 튜토리얼이
+성립하지 않습니다. 아래 "개발 환경" 절의 것은 `pytest`·`ruff`가 붙은 **개발자용**이고,
+사용법의 것은 그 두 줄이 없는 **사용자용**입니다.
+
 | 문서 | 내용 |
 |---|---|
+| [docs/사용법.md](docs/사용법.md) | **처음 30분** — 설치부터 검수 리포트를 읽기까지의 순서 |
+| [docs/제품설명서.md](docs/제품설명서.md) | 신호가 무엇을 잡고 무엇을 못 잡는지, 도입에 필요한 것 |
 | [docs/요구사항정의서.md](docs/요구사항정의서.md) | 배경·요구사항·아키텍처·인터페이스 명세 |
 | [docs/번역관리_TMS_솔루션_비교.md](docs/번역관리_TMS_솔루션_비교.md) | 기존 TMS 솔루션 조사 |
 | [docs/AI_자막검수_오픈소스_비교.md](docs/AI_자막검수_오픈소스_비교.md) | 자막 검수 오픈소스 조사 |
