@@ -196,11 +196,25 @@ def render_pushout(*, budget: float, before: Sequence[Movement], after: Sequence
     if not any(m.is_priority for m in after):
         raise ValueError(_PRIORITY_MISSING)
 
-    lines = [f"### 밀어냄 분해 (예산 {budget:.0%})", ""]
+    # **h2다.** `bench/run.py`가 이 앞에 h1 한 줄만 붙이므로 h3를 내면
+    # markdownlint MD001(레벨 건너뛰기)이 문서 게이트를 깬다.
+    lines = [f"## 밀어냄 분해 (예산 {budget:.0%})", ""]
     lines += ["| 조건 | 부류 | 유입 | 유실 | 순증 |", "| --- | --- | ---: | ---: | ---: |"]
     for label, moves in (("재설계 전", before), ("재설계 후", after)):
-        for kind, bd in sorted(breakdown_by_kind(moves).items()):
+        parts = sorted(breakdown_by_kind(moves).items())
+        for kind, bd in parts:
             lines.append(f"| {label} | {kind} | {bd.gained} | {bd.lost} | {bd.net:+d} |")
+        # **합계가 이 표의 결론이다.** 부류가 일곱이라 없으면 독자가 손으로
+        # 더해야 하고, 그러면 "한 부류는 올랐는데 전체는 떨어졌다"가 보이지
+        # 않는다 - 예산 10%에서 실제로 그런 일이 일어났다(negation +2,
+        # 전체 -2). Recall@Budget이 이 프로젝트의 핵심 지표이므로 전체가
+        # 떨어진 것은 한 부류가 오른 것보다 무겁다.
+        total_gained = sum(bd.gained for _, bd in parts)
+        total_lost = sum(bd.lost for _, bd in parts)
+        lines.append(
+            f"| {label} | **합계** | {total_gained} | {total_lost} |"
+            f" {total_gained - total_lost:+d} |"
+        )
     lines += [
         "",
         "**순증만으로는 갈리지 않는 두 항이다.** 유입은 Tier 1 이 건져 올린 것이고,"

@@ -573,6 +573,14 @@ def render_tier1_comparison(
     return "\n".join(lines)
 
 
+_CANDIDATE_VS_RAW = (
+    "**`후보 안 negation` 은 선정된 집합 기준이지 신호를 낸 집합이 아니다.**"
+    " 역번역이나 임베딩이 실패한 세그먼트는 후보였어도 `{pair}.backtranslation.json`"
+    " 에서 빠지므로, 원자료를 세면 이 값보다 작을 수 있다 - 선정 품질과 백엔드"
+    " 가용성은 다른 문제다 (이월 22번 M-1)."
+)
+
+
 def render_tier1_candidates(
     *,
     budget: float,
@@ -599,6 +607,15 @@ def render_tier1_candidates(
     라벨에 압축한 것인데, 그 실측은 **결과가 무작위와 구별되지 않는다**는
     말이지 **절차가 무작위**라는 말이 아니다. 아래 무작위 기대값과 비교하는
     근거는 그 실측이고, 라벨은 실제 절차를 적는다.
+
+    **이 표의 건수와 원자료의 건수가 다를 수 있다** (이월 22번 M-1). 2026-09-06
+    실측에서 예산 10%의 `후보 안 negation`이 여기서는 17건인데 원자료
+    (`en-ko.backtranslation.json`)에서는 16건이었다 - 후보 250건 중 4건이
+    역번역·임베딩에서 신호를 못 내 `bench/run.py::_collect_raw`의 `bt is None`
+    필터에서 떨어졌고, 그중 하나(`en-00952`)가 negation 라벨이었다. 번역
+    실패분이 아니다 - 네 건 모두 `target_text`가 정상이라 Tier 1 비용은 치렀다.
+    **분모를 원자료로 바꾸지 않는다** - 설계 §3.2~§3.4의 기대값 계산이 전부
+    선정 집합 기준이라, 바꾸면 이 표가 설계의 표와 대조되지 않는다.
 
     **기대값의 표본 크기는 `min(cap, gray_zone_size)`로 다시 유도하지 않고
     `candidates` 인자를 그대로 쓴다**(수정 라운드 1 I-2). `select_tier1_candidates`가
@@ -630,6 +647,8 @@ def render_tier1_candidates(
             "",
             "**배수가 1.0 근처면 후보 선정이 여전히 무작위다.** 적중 건수만"
             " 보면 판단할 수 없으므로 기대값을 함께 싣는다 (이월 21번).",
+            "",
+            _CANDIDATE_VS_RAW,
         ]
     )
 

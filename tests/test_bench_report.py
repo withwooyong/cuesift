@@ -652,3 +652,26 @@ def test_기대값이_0인데_적중이_있으면_배수는_대시로_표시된�
     )
     assert "| **배수** | **-** |" in block
     assert "0.00x" not in block
+
+
+def test_후보_구성표가_원자료와의_차이를_설명한다():
+    """M-1 (이월 22번) — 리포트의 17건과 원자료의 16건이 왜 다른지 적혀 있어야 한다.
+
+    **문구를 테스트 안에서 짓지 않고 실제 상수를 임포트한다.** 지어 넘기면
+    렌더러가 그 문장을 빼도 테스트가 자기 문자열만 확인해 통과한다 —
+    리포트 caveat 두 건이 정확히 그렇게 코드와 갈라진 채 1,792건을 통과한
+    전례가 있다.
+    """
+    from bench.report import _CANDIDATE_VS_RAW
+
+    block = render_tier1_candidates(
+        budget=0.10,
+        cap=250,
+        gray_zone_size=4500,
+        candidates=250,
+        from_priority=250,
+        negation_hits=17,
+        negation_in_gray_zone=70,
+    )
+
+    assert _CANDIDATE_VS_RAW in block

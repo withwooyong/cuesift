@@ -296,3 +296,37 @@ def test_후_조건에_우선_집합이_없으면_거부한다():
 
     with pytest.raises(ValueError, match="재설계 후"):
         render_pushout(budget=0.1, before=before, after=before)
+
+
+def test_분해표가_합계_행을_싣는다():
+    """**부류별 합이 이번 측정의 결론이다.** 예산 10%에서 negation은 올랐는데
+    전체 오류는 떨어졌다(+21 → -2) — 부류가 일곱이라 합계 행이 없으면 독자가
+    손으로 더해야 하고, 그러면 그 사실이 표에서 보이지 않는다.
+
+    합계는 라벨이 있는 세그먼트 전체의 유입·유실이다. 라벨 없는 것은
+    Recall 의 분자가 아니므로 세지 않는다.
+    """
+    before, after = _two_conditions()
+
+    out = render_pushout(budget=0.1, before=before, after=after)
+
+    # 재설계 전: negation 0/0 · untranslated 0/0 -> 합계 0/0
+    assert "| 재설계 전 | **합계** | 0 | 0 | +0 |" in out
+    # 재설계 후: negation 0/1 · untranslated 1/0 -> 합계 1/1
+    assert "| 재설계 후 | **합계** | 1 | 1 | +0 |" in out
+
+
+def test_절_제목은_h2다():
+    """**h1 바로 아래에 h3를 놓으면 markdownlint MD001이 문서 게이트를 깬다.**
+
+    `bench/run.py`가 이 렌더러의 출력 앞에 h1 한 줄만 붙이므로, 여기서 h3를
+    내면 레벨이 한 단계 건너뛴다 — 실측으로 `docs` 잡이 1건 실패했다.
+    렌더러가 제목 레벨을 정하는 유일한 자리이고, 결과물 `.md`를 손으로 고치면
+    다음 재생성에서 같은 자리가 다시 깨진다.
+    """
+    before, after = _two_conditions()
+
+    out = render_pushout(budget=0.1, before=before, after=after)
+
+    assert out.startswith("## 밀어냄 분해 (예산 10%)")
+    assert "### " not in out
