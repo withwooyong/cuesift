@@ -82,6 +82,7 @@ def triage_with_tier1(
     on_progress: ProgressCallback | None = None,
     embedder: Embedder | None = None,
     on_candidates: Callable[[CandidateReport], None] | None = None,
+    priority_ids: Collection[str] | None = None,
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -319,7 +320,26 @@ def triage_with_tier1(
     # `priority_ids` 를 그대로 `CandidateReport` 에 실어 내보내므로,
     # `segments` 를 넘기면 번역 실패분 id까지 우선 집합에 섞여 D10 리포트가
     # "표지를 가진 세그먼트 수" 를 실제보다 부풀려 보고한다.
-    priority_ids = _polarity_priority(kept, ctx, warn)
+    #
+    # **`is None` 이지 `or` 가 아니다** (이월 22번). `priority_ids or
+    # _polarity_priority(...)` 로 쓰면 **빈 집합이 "안 준 것"으로 취급돼**
+    # 극성 판정으로 되돌아간다 - 재설계 전 조건(우선 집합 없음)을 재현하려고
+    # 빈 집합을 주입한 실행이 조용히 재설계 후가 되고, 그러면 "전후가 같다"는
+    # 거짓 결론이 나온다. 빈 집합은 유효한 입력이다.
+    if priority_ids is None:
+        priority_ids = _polarity_priority(kept, ctx, warn)
+    else:
+        # **`select_tier1_candidates` 의 같은 방어가 여기서는 발동하지 않는다** -
+        # 아래에서 `frozenset(...)` 으로 변환해 넘기므로 그 함수는 문자열을 보지
+        # 못한다. `frozenset("s017")` 은 `{'s','0','1','7'}` 로 쪼개져 교집합이
+        # 비고, 이 인자를 준 실행은 극성 판정을 건너뛰므로 **재설계 전 조건과
+        # 구별되지 않는다** (이월 22번의 측정이 거짓 결론을 내는 경로).
+        if isinstance(priority_ids, str | bytes):
+            raise ValueError(
+                f"priority_ids에 {type(priority_ids).__name__}을 그대로 넘겼다"
+                f"({priority_ids!r}) - 원소 단위로 쪼개진다. 집합이나 리스트로 감싸라"
+            )
+        priority_ids = frozenset(priority_ids)
     ordered_candidates = select_tier1_candidates(scored, max_ratio, priority_ids=priority_ids)
     candidate_ids = set(ordered_candidates)
 

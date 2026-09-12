@@ -34,11 +34,19 @@ from cuesift.tier1 import CandidateReport
 
 
 def test_tier1_없이는_흐름이_같다():
-    """`--tier1`이 꺼져 있으면 지금과 한 줄도 다르지 않다 (설계 2026-09-05 D9).
+    """`--tier1`·`--embed-model`의 기본값이 꺼짐이다 (설계 2026-09-05 D9).
 
-    **켜져 있으면 CI가 LLM 백엔드를 요구하게 된다.** 벤치 테스트는
-    data/가 .gitignore라 CI에서 이미 skip되는데, 기본값이 바뀌면
-    로컬에서만 조용히 다른 것을 재게 된다.
+    **이 테스트가 검사하는 것은 파서 기본값 두 개뿐이다** (이월 22번 M-4).
+    이름과 옛 독스트링은 "흐름이 한 줄도 다르지 않다"를 주장했지만 그것을
+    직접 재지는 않는다 - 그 계약을 실제로 지키는 것은 `main()`에서 Tier 1
+    코드가 전부 `if args.tier1:` 아래에 있다는 **구조**이고, 여기서 고정하는
+    것은 그 구조의 입구다. 구조 자체를 재려면 `--tier1` 없는 실행과 있는
+    실행의 Tier 0 산출물을 대조해야 하는데, 그것은 `data/`를 요구해 CI에서
+    돌지 않는다.
+
+    입구를 고정하는 것만으로도 값이 있다 - 기본값이 켜짐으로 바뀌면 CI가
+    LLM 백엔드를 요구하게 된다. 벤치 테스트는 data/가 .gitignore라 CI에서
+    이미 skip되므로, 그 변화는 로컬에서만 조용히 다른 것을 재는 상태를 만든다.
     """
     parser_defaults = build_arg_parser().parse_args(["--pair", "en-ko"])
     assert parser_defaults.tier1 is False
@@ -260,3 +268,80 @@ def test_candidate_counts는_우선_집합과_negation_교집합을_각각_센�
     )
     negation_ids = {"b", "d", "z"}  # "z"는 후보 밖 - 세면 안 된다
     assert _candidate_counts(report, negation_ids) == (2, 2)
+
+
+# --- 이월 22번: 밀어냄 산출물 --------------------------------------------
+#
+# **`import bench.run`만으로는 이 경로가 검사되지 않는다.** `date.today()`가
+# 임포트되지 않은 채로도 모듈 임포트는 성공하고, NameError는 실제로 파일을
+# 쓸 때에야 난다 — 실측으로 그 상태가 한 번 만들어졌다.
+
+
+def _movements_for_dump():
+    from bench.pushout import analyze_movement
+
+    from cuesift.triage import select_by_budget
+
+    def risks(scores):
+        return [
+            SegmentRisk(segment_id=k, signals=[], risk_score=v, hard_fail=False)
+            for k, v in scores.items()
+        ]
+
+    tier0 = select_by_budget(risks({"A": 0.9, "B": 0.8, "C": 0.3}), 0.5)
+    tier01 = select_by_budget(risks({"A": 0.9, "B": 0.8, "C": 0.85}), 0.5)
+    kinds = {"B": "negation"}
+    before = analyze_movement(
+        tier0, tier01, candidate_ids={"B"}, priority_ids=set(), label_kinds=kinds
+    )
+    after = analyze_movement(
+        tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds=kinds
+    )
+    return before, after
+
+
+def test_밀어냄_리포트가_실제로_파일로_써진다(tmp_path):
+    """`date.today()` 같은 누락 임포트는 **파일을 쓸 때에야** 드러난다."""
+    from bench.pushout import render_pushout
+    from bench.run import _write_pushout
+
+    before, after = _movements_for_dump()
+    block = render_pushout(budget=0.1, before=before, after=after)
+
+    path = _write_pushout(
+        [block], tmp_path, "en-ko", commit="abc1234", model="qwen2.5:3b", embed_model="bge-m3"
+    )
+
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "abc1234" in text and "qwen2.5:3b" in text
+    assert "밀어냄 분해" in text
+
+
+def test_밀어냄_원자료에_자막_본문이_없다(tmp_path):
+    """**자막 본문이 실리면 CC BY-NC-ND 4.0에 걸려 커밋할 수 없게 된다.**
+
+    `_dump_raw`는 원문·번역문을 담아 audit-dir에만 두는데, 이쪽은 담지
+    않는다는 것이 설계다 — 필드가 늘어나며 조용히 섞이면 그 구분이 무너진다.
+    """
+    from bench.run import _dump_pushout
+
+    before, after = _movements_for_dump()
+    path = _dump_pushout({0.1: (before, after)}, tmp_path, "en-ko", commit="abc1234")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload["budgets"]["0.10"]["before"]
+    assert rows and set(rows[0]) == {
+        "segment_id",
+        "rank_tier0",
+        "rank_tier01",
+        "score_tier0",
+        "score_tier01",
+        "selected_tier0",
+        "selected_tier01",
+        "is_candidate",
+        "is_priority",
+        "hard_fail",
+        "label_kind",
+        "delta_rank",
+    }
