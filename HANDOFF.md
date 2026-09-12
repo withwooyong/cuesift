@@ -1,6 +1,6 @@
 # Session Handoff
 
-> Last updated: 2026-09-12 (KST) · 브랜치 `feat/tier1-overall-recall` · PR (다음 커밋에서 채운다)
+> Last updated: 2026-09-12 (KST) · 브랜치 `feat/tier1-overall-recall` · PR [#45](https://github.com/withwooyong/cuesift/pull/45)
 > **v0.2 를 열었다. 이월 23번의 「착수 시 먼저 할 것」 두 갈래를 끝냈고 항목은 아직 닫지 않았다.**
 > ① `render_tier1_comparison` 에 **전체 Recall 행**을 더했다 - 비율·건수·순증을 함께 내고
 > 실제 검수 비율 행도 넣었다. 빠진 키는 `KeyError`, 두 조건의 정답 건수가 다르면
