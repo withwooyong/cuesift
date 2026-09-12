@@ -527,19 +527,46 @@ def render_markdown(
     return "\n".join(lines)
 
 
+def _require(scores: Mapping[str, float | int], key: str, which: str) -> float:
+    """비교표의 필수 지표를 꺼낸다. 없으면 `KeyError`로 세운다 (이월 23번).
+
+    **없는 값을 0으로 메우면 표가 거짓말을 한다.** 호출자가 키를 빠뜨린 것과
+    그 지표가 실제로 0인 것은 다른 사실인데, 기본값을 두면 둘 다 "0.00%"로
+    렌더링돼 구별할 방법이 사라진다. 이 항목 자체가 "지표가 표에 없어서 결함을
+    못 봤다"에서 나왔으므로, 같은 부류의 누락은 조용히 넘어가지 않고 실행을
+    멈추게 한다.
+    """
+    if key not in scores:
+        raise KeyError(f"{which} 점수에 '{key}'가 없다 — 전체 Recall 행을 그릴 수 없다 (이월 23번)")
+    return float(scores[key])
+
+
 def render_tier1_comparison(
     tier0: Mapping[str, float | int],
     tier1: Mapping[str, float | int],
     *,
     budget: float,
 ) -> str:
-    """Tier 0 대 Tier 0+1의 negation Recall 비교 (FR-4.2 · 태스크7 브리프 Step 2).
+    """Tier 0 대 Tier 0+1의 Recall 비교 (FR-4.2 · 태스크7 브리프 Step 2 · 이월 23번).
 
-    `tier0`·`tier1`은 각각 `{"negation_recall", "clean_recall",
-    "clean_total"}`을 담는다 — `negation_recall`은 negation 라벨 전체
-    (표기 변이·비문 포함) 기준이고, `clean_recall`은 `bench.classify_negation`이
-    `CLEAN`으로 판정한 **정상 반전** 부분집합만의 Recall이다(이월 19번이
-    이 구분이 없어 오염된 표본을 그대로 썼다).
+    `tier0`·`tier1`은 각각 `{"overall_recall", "overall_hits", "error_total",
+    "review_ratio", "negation_recall", "clean_recall", "clean_total"}`을 담는다 —
+    `negation_recall`은 negation 라벨 전체(표기 변이·비문 포함) 기준이고,
+    `clean_recall`은 `bench.classify_negation`이 `CLEAN`으로 판정한 **정상 반전**
+    부분집합만의 Recall이다(이월 19번이 이 구분이 없어 오염된 표본을 그대로 썼다).
+
+    **전체 Recall 행이 맨 위에 있는 것이 이월 23번의 처방이다.** 이 표가
+    2026-09-06에 negation과 clean 부분집합만 싣고 전체를 싣지 않아, 예산 10%에서
+    재설계가 전체 Recall을 73.2%에서 72.8%로 깎은 사실이 여섯 날 동안 드러나지
+    않았다. 부류 하나가 오른 것보다 전체가 떨어진 것이 무겁고, Recall@Budget은
+    이 프로젝트의 핵심 지표다(요구사항정의서 §9.1).
+
+    **빠진 키에 기본값을 두지 않는다.** `.get(key, 0.0)`으로 받으면 호출자가 키를
+    빠뜨렸을 때 표에 "0.00%"가 실려, **값이 없는 것과 Recall이 0인 것을 표가
+    구별하지 못한다** — 이 항목을 만든 실패가 바로 "지표가 표에 없었다"이므로
+    같은 부류의 조용한 누락을 여기서 막는다. `clean_total`만 예외로 `.get`을 쓰는
+    것은 분모가 0인 경우("clean 부분집합이 비어 있다")가 실제로 일어나는 상태이기
+    때문이다.
 
     **분모 없는 부분집합 Recall은 소수점이 신뢰받는다.** `clean_total`이
     작으면(ja 표본 실측 약 35건) 해상도가 1/`clean_total`로 성기다 —
@@ -550,17 +577,63 @@ def render_tier1_comparison(
     clean_total = int(tier1.get("clean_total") or tier0.get("clean_total") or 0)
     resolution_pct = 100.0 / clean_total if clean_total else 0.0
 
+    overall0 = _require(tier0, "overall_recall", "Tier 0")
+    overall1 = _require(tier1, "overall_recall", "Tier 0+1")
+    hits0 = int(_require(tier0, "overall_hits", "Tier 0"))
+    hits1 = int(_require(tier1, "overall_hits", "Tier 0+1"))
+    error_total = int(_require(tier1, "error_total", "Tier 0+1"))
+    # **두 조건의 분모가 갈리면 두 Recall 은 같은 축의 값이 아니다.** 오늘은 같은
+    # 라벨 목록에서 나오므로 항상 같지만, 한쪽이 다른 스냅샷을 보게 되면 표가
+    # 조용히 tier1 의 분모로 두 비율을 나란히 그려 비교가 성립하지 않는다.
+    if int(_require(tier0, "error_total", "Tier 0")) != error_total:
+        raise ValueError(
+            f"두 조건의 정답 건수가 다르다 (Tier 0 {int(tier0['error_total'])}건 · "
+            f"Tier 0+1 {error_total}건) — 같은 정답지에서 나온 값이 아니다"
+        )
+    ratio0 = _require(tier0, "review_ratio", "Tier 0")
+    ratio1 = _require(tier1, "review_ratio", "Tier 0+1")
+    delta = hits1 - hits0
+
     lines = [
         f"### Tier 1 비교 (예산 {budget:.0%})",
         "",
         "| 지표 | Tier 0 | Tier 0+1 |",
         "| --- | --- | --- |",
+        f"| **전체 Recall (n={error_total})** | {overall0:.2%} ({hits0}건) | "
+        f"{overall1:.2%} ({hits1}건, **{delta:+d}건**) |",
         f"| negation Recall | {tier0.get('negation_recall', 0.0):.2%} | "
         f"{tier1.get('negation_recall', 0.0):.2%} |",
         f"| clean 부분집합 Recall (n={clean_total}) | "
         f"{tier0.get('clean_recall', 0.0):.2%} | {tier1.get('clean_recall', 0.0):.2%} |",
+        f"| 실제 검수 비율 | {ratio0:.2%} | {ratio1:.2%} |",
         "",
     ]
+
+    # **떨어질 때만 문단을 낸다.** 오를 때도 같은 문단을 내면 문구가 상수가 되어
+    # 부호를 읽지 않게 된다 — 표에서 negation 행이 먼저 눈에 들어오므로 "전체가
+    # 떨어졌다"는 사실은 산문으로 한 번 더 말해야 요약에 살아남는다.
+    if delta < 0:
+        lines += [
+            f"**전체 Recall이 떨어졌다 — 이 예산 구간에서 Tier 1은 순손실이다**(이월 23번). "
+            f"negation이 올랐더라도 큐에 담긴 오류가 {hits0}건에서 {hits1}건으로 "
+            f"{-delta}건 줄었으므로, 부류 하나의 이득과 전체의 손해를 함께 놓고 "
+            "이 구간에서 Tier 1을 켤지 판정해야 한다. Recall@Budget이 이 프로젝트의 "
+            "핵심 지표다(요구사항정의서 §9.1).",
+            "",
+        ]
+
+    # **검수 비율이 갈리면 Recall 비교 자체가 성립하지 않는다.** hard fail이 예산을
+    # 우회하므로 두 조건의 큐 크기가 달라질 수 있고, 그러면 Recall 차이가 Tier 1의
+    # 효과인지 큐가 커진 덕인지 갈리지 않는다. 오늘의 Tier 1은 후보 점수만 올리고
+    # 정원을 건드리지 않아 두 값이 같지만, 그 성질이 깨지는 것을 표가 알려야 한다.
+    if abs(ratio0 - ratio1) > 1e-9:
+        lines += [
+            f"**두 조건의 실제 검수 비율이 다르다**({ratio0:.2%} 대 {ratio1:.2%}). "
+            "같은 비용에서의 비교가 아니므로 위 Recall 차이를 Tier 1의 효과로 "
+            "읽으면 안 된다 — 큐 크기가 달라진 몫이 섞여 있다.",
+            "",
+        ]
+
     if clean_total:
         lines.append(
             f"**분모가 작으면 해상도가 거칠다.** clean 부분집합은 {clean_total}건이라 "

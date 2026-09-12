@@ -47,7 +47,7 @@ from cuesift.signals.backtranslation import BackTranslation
 from cuesift.spec import load_builtin
 from cuesift.tier1 import CandidateReport, triage_with_tier1
 from cuesift.translate.openai_compat import OpenAICompatibleProvider
-from cuesift.triage import gray_zone, select_by_budget
+from cuesift.triage import gray_zone, review_ratio, select_by_budget
 
 BUDGETS = (0.01, 0.02, 0.05, 0.10, 0.20, 0.30)
 # FR-3.5는 이번 측정에서 빠진다(스펙 §5.3). 리포트에 미측정으로 표기한다.
@@ -246,19 +246,41 @@ def _negation_classes(
     }
 
 
-def _negation_recall_scores(
-    selected_ids: set[str],
+def _recall_scores(
+    scored: Sequence[SegmentRisk],
     labels: Sequence[Label],
     negation_classes: Mapping[str, str],
 ) -> dict[str, float | int]:
-    """예산 하나에서의 negation 전체 Recall과 clean 부분집합 Recall을 낸다.
+    """예산 하나에서의 전체 Recall·negation Recall·clean 부분집합 Recall을 낸다.
 
-    **`clean_total`을 항상 함께 낸다** — `render_tier1_comparison`이 해상도
-    (1/`clean_total`)를 보여주려면 분모가 있어야 한다(브리프 Step 2).
+    **전체 Recall이 여기 있는 것이 이월 23번의 처방이다.** 이 함수가 negation
+    축만 내던 동안 `render_tier1_comparison`은 전체 Recall을 실을 자료가 없었고,
+    그래서 예산 10%에서 재설계가 전체 오류를 366건에서 364건으로 깎은 사실이
+    별도 측정(`bench/pushout.py`)을 만들 때까지 드러나지 않았다.
+
+    **선택 집합이 아니라 채점된 전체 목록을 받는다.** 호출자가 `selected` 술어를
+    각자 풀면 한쪽만 조건이 바뀌어도 두 조건이 조용히 다른 기준으로 비교되고,
+    `review_ratio`를 여기서 낼 수도 없다 — `review_ratio`는 분모가 전체
+    세그먼트 수라 선택 집합만으로는 계산되지 않는다.
+
+    **`review_ratio`를 함께 내는 것은 비교가 같은 비용에서 이뤄졌는지를 표가
+    스스로 보이게 하기 위함이다**(CLAUDE.md "배수는 요청 예산이 아니라 실제
+    검수 비율로 나눈다"). hard fail이 예산을 우회하므로 요청 예산과 실제 비율은
+    다르고, 두 조건의 비율이 갈리면 Recall 차이에 큐 크기 몫이 섞인다.
+
+    **`clean_total`·`error_total`을 항상 함께 낸다** — `render_tier1_comparison`이
+    해상도(1/`clean_total`)와 건수 순증을 보여주려면 분모가 있어야 한다
+    (브리프 Step 2).
     """
+    selected_ids = {r.segment_id for r in scored if r.selected}
+    error_ids = {lb.segment_id for lb in labels}
     negation_ids = {lb.segment_id for lb in labels if lb.kind == "negation"}
     clean_ids = {sid for sid, cls in negation_classes.items() if cls == CLEAN}
     return {
+        "overall_recall": _recall(selected_ids, error_ids),
+        "overall_hits": len(selected_ids & error_ids),
+        "error_total": len(error_ids),
+        "review_ratio": review_ratio(scored),
         "negation_recall": _recall(selected_ids, negation_ids),
         "clean_recall": _recall(selected_ids, clean_ids),
         "clean_total": len(clean_ids),
@@ -622,8 +644,7 @@ def main(argv: list[str] | None = None) -> int:
                     identity=provider.cache_identity,
                     on_candidates=candidate_reports.append,
                 )
-                tier1_selected = {r.segment_id for r in tier1_risks if r.selected}
-                tier1_scores = _negation_recall_scores(tier1_selected, labels, negation_classes)
+                tier1_scores = _recall_scores(tier1_risks, labels, negation_classes)
                 raw_records.extend(
                     _collect_raw(tier1_risks, mutated, labels, negation_classes, budget)
                 )
@@ -636,8 +657,7 @@ def main(argv: list[str] | None = None) -> int:
                 # 부르면 같은 값이 나오지만, 두 곳에서 각자 부르면 한쪽의
                 # 예산 인자만 바뀌어도 조용히 다른 기준선을 비교하게 된다.
                 tier0_scored = select_by_budget(risks, budget)
-                tier0_selected = {r.segment_id for r in tier0_scored if r.selected}
-                tier0_scores = _negation_recall_scores(tier0_selected, labels, negation_classes)
+                tier0_scores = _recall_scores(tier0_scored, labels, negation_classes)
 
                 comparison = render_tier1_comparison(
                     tier0=tier0_scores, tier1=tier1_scores, budget=budget

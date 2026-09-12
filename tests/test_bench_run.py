@@ -24,6 +24,7 @@ from bench.run import (
     _dump_raw,
     _make_stdout_lossy,
     _negation_in_gray_zone,
+    _recall_scores,
     _resolve_embed_key,
     build_arg_parser,
 )
@@ -200,8 +201,24 @@ def test_좁은_인코딩_콘솔에서도_비교표를_찍을_수_있다():
     해법이 아니라는 뜻은 아니지만, **없앴다는 사실이 조용히 묻히면 안 된다.**
     """
     rendered = render_tier1_comparison(
-        tier0={"negation_recall": 0.1972, "clean_recall": 0.20, "clean_total": 35},
-        tier1={"negation_recall": 0.4507, "clean_recall": 0.60, "clean_total": 35},
+        tier0={
+            "negation_recall": 0.1972,
+            "clean_recall": 0.20,
+            "clean_total": 35,
+            "overall_recall": 0.880,
+            "overall_hits": 440,
+            "error_total": 500,
+            "review_ratio": 0.3042,
+        },
+        tier1={
+            "negation_recall": 0.4507,
+            "clean_recall": 0.60,
+            "clean_total": 35,
+            "overall_recall": 0.912,
+            "overall_hits": 456,
+            "error_total": 500,
+            "review_ratio": 0.3042,
+        },
         budget=0.30,
     )
 
@@ -345,3 +362,59 @@ def test_밀어냄_원자료에_자막_본문이_없다(tmp_path):
         "label_kind",
         "delta_rank",
     }
+
+
+# --- 이월 23번: 비교표에 넘길 점수 한 벌 -------------------------------------
+
+
+def _risk(sid: str, *, score: float, selected: bool) -> SegmentRisk:
+    return SegmentRisk(
+        segment_id=sid, signals=[], risk_score=score, hard_fail=False, selected=selected
+    )
+
+
+def test_recall_scores가_전체_recall을_함께_낸다():
+    """**전체 Recall 을 여기서 내지 않으면 비교표가 그릴 자료가 없다** (이월 23번).
+
+    2026-09-06 실측이 예산 10%의 전체 오류 하락(366 -> 364건)을 놓친 것은
+    표의 문제이기 전에 이 함수가 negation 축만 냈기 때문이다.
+    """
+    labels = [
+        Label(segment_id="s1", kind="negation"),
+        Label(segment_id="s2", kind="glossary"),
+        Label(segment_id="s3", kind="number"),
+        Label(segment_id="s4", kind="spec"),
+    ]
+    # 정답 4건 중 s1·s2 만 큐에 담긴다. s5 는 오류가 아닌데 담겼다.
+    scored = [
+        _risk("s1", score=0.9, selected=True),
+        _risk("s2", score=0.8, selected=True),
+        _risk("s5", score=0.7, selected=True),
+        _risk("s3", score=0.2, selected=False),
+        _risk("s4", score=0.1, selected=False),
+    ]
+    scores = _recall_scores(scored, labels, {"s1": CLEAN})
+
+    assert scores["overall_hits"] == 2
+    assert scores["error_total"] == 4
+    assert scores["overall_recall"] == 0.5
+    # 검수 비율의 분모는 오류 건수가 아니라 **전체 세그먼트 수**다 - 3/5.
+    assert scores["review_ratio"] == 0.6
+    assert scores["negation_recall"] == 1.0
+    assert scores["clean_total"] == 1
+
+
+def test_recall_scores의_출력이_비교표의_필수_키를_모두_채운다():
+    """**두 모듈을 각자 검사하면 그 사이가 빈다** (이월 23번).
+
+    비교표는 필수 키가 없으면 `KeyError` 로 서는데, 그 키 목록을 테스트가
+    자기 안에서 지어 넘기면 `_recall_scores` 가 키 하나를 빠뜨려도 아무
+    게이트도 죽지 않는다 - 실제 산출물을 그대로 넘겨야 그 사이가 닫힌다.
+    """
+    labels = [Label(segment_id="s1", kind="negation")]
+    scored = [_risk("s1", score=0.9, selected=True), _risk("s2", score=0.1, selected=False)]
+    scores = _recall_scores(scored, labels, {"s1": CLEAN})
+
+    rendered = render_tier1_comparison(tier0=scores, tier1=scores, budget=0.10)
+    assert "전체 Recall" in rendered
+    assert "순손실" not in rendered, "같은 값끼리 비교하면 순증이 0이라 순손실이 아니다"
