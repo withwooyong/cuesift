@@ -13,7 +13,8 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from dataclasses import asdict
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from scripts.fetch_ted2020 import load_manifest
@@ -28,6 +29,7 @@ from bench.measure import (
     measure,
     random_baseline,
 )
+from bench.pushout import Movement, analyze_movement, render_pushout
 from bench.report import RunMeta, render_tier1_candidates, render_tier1_comparison, write_report
 from bench.track_io import dump_audit, load_track
 from cuesift.embed import (
@@ -160,7 +162,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # --- Tier 1 (FR-4.2 · 태스크7 브리프 Step 4) ---
     # 기본값이 전부 꺼짐·`None`인 것이 핵심이다 — `--tier1` 없이 부르는
     # 기존 경로는 이 인자들이 전혀 관여하지 않아 한 줄도 달라지지 않는다
-    # (설계 2026-09-05 D9 · `test_tier1_없이는_흐름이_같다`가 그 계약을 검사한다.
+    # (설계 2026-09-05 D9 · `test_tier1_없이는_흐름이_같다`는
+    # 그 계약의 **입구**(파서 기본값)만 고정한다 - 흐름이 같다는 것
+    # 자체는 `data/`가 있어야 재므로 CI에서 돌지 않는다.
     # **2026-09-06 스펙에도 D9 가 있으나 그쪽은 「극성 표지는 risk_score 에
     # 기여하지 않는다」로 다른 결정이다** - 날짜 없이 쓰면 실제로 오독된다).
     # `%%`로 이스케이프한다 — argparse의 `HelpFormatter`가 help 문자열을
@@ -168,6 +172,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # **파서 조립 시점**(`add_argument`)에 `ValueError`를 던진다(실측:
     # `test_파서는_pair_없이_거부한다`가 이 자리에서 걸렸다).
     parser.add_argument("--tier1", action="store_true", help="Tier 1을 예산 10%%·30%%에서 측정한다")
+    parser.add_argument(
+        "--pushout",
+        action="store_true",
+        help="밀어냄 분해를 함께 잰다 - 재설계 전 조건을 한 번 더 돌린다 (이월 22번)",
+    )
     parser.add_argument("--base-url", default=None, help="역번역에 쓸 LLM 엔드포인트")
     parser.add_argument("--model", default=None, help="역번역에 쓸 LLM 모델")
     parser.add_argument("--embed-base-url", default=None, help="비우면 --base-url을 그대로 쓴다")
@@ -356,6 +365,81 @@ def _dump_raw(
     return path
 
 
+def _movement_row(m: Movement) -> dict[str, object]:
+    """`delta_rank`는 property라 `asdict`에 들어가지 않는다 - 손으로 더한다."""
+    return {**asdict(m), "delta_rank": m.delta_rank}
+
+
+def _dump_pushout(
+    moves: Mapping[float, tuple[list[Movement], list[Movement]]],
+    out_dir: Path,
+    pair: str,
+    *,
+    commit: str,
+) -> Path:
+    """밀어냄 원자료를 세그먼트 단위로 남긴다 (이월 22번).
+
+    **자막 본문을 담지 않는다** - `_dump_raw`와 달리 세그먼트 ID·순위·선별
+    여부·라벨만 싣는다. 그래서 CC BY-NC-ND 4.0에 걸리지 않지만, 그래도
+    `bench/results/`가 아니라 audit-dir에 둔다 - 5,000행짜리 JSON이 리포에
+    들어갈 값은 없고, 집계표가 리포트에 실리기 때문이다.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{pair}.pushout.json"
+    payload = {
+        "pair": pair,
+        "commit": commit,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "budgets": {
+            f"{budget:.2f}": {
+                "before": [_movement_row(m) for m in before],
+                "after": [_movement_row(m) for m in after],
+            }
+            for budget, (before, after) in sorted(moves.items())
+        },
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_pushout(
+    blocks: Sequence[str],
+    out_dir: Path,
+    pair: str,
+    *,
+    commit: str,
+    model: str | None,
+    embed_model: str | None,
+) -> Path:
+    """밀어냄 집계표를 커밋 가능한 리포트로 남긴다 (이월 22번).
+
+    **기존 `{pair}-{date}.md`를 덮어쓰지 않고 별도 파일로 둔다.** 그 파일은
+    Tier 0 리포트를 Tier 1 비교로 확장한 것이고, 이쪽은 재설계 전후 **두
+    실행**을 비교한 것이라 실행 횟수 자체가 다르다 - 한 파일에 섞으면
+    어느 표가 어느 실행의 것인지 독자가 가릴 수 없다.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"pushout-{pair}-{date.today().isoformat()}.md"
+    header = [
+        f"# 밀어냄 분해 - {pair} (이월 22번 · 결함 ②)",
+        "",
+        f"- 커밋: `{commit}`",
+        f"- 번역 모델: `{model}` · 임베딩 모델: `{embed_model}`",
+        "",
+        "**이 문서가 답하는 것**: negation Recall 상승이 밀어냄이 완화돼서인가,",
+        "다른 경로 때문인가. 순증(리포트가 싣는 유일한 수치)은 유입과 유실의",
+        "차라서 그것만으로는 갈리지 않는다.",
+        "",
+        "**재설계 전 조건은 `priority_ids=frozenset()`을 주입해 재현했다** -",
+        "극성 판정을 건너뛰므로 후보가 회색지대 위험도 순으로만 뽑힌다",
+        "(2026-09-05 판의 동작). 두 조건은 같은 Tier 0 스냅샷을 기준선으로 쓴다.",
+        "",
+    ]
+    body = "\n".join(header) + "\n" + ("\n" + "\n").join(blocks) + "\n"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
 def _make_stdout_lossy() -> None:
     """콘솔 인코딩이 좁아도 출력이 죽지 않게 한다 (2026-09-05 실측).
 
@@ -515,6 +599,8 @@ def main(argv: list[str] | None = None) -> int:
         negation_classes = _negation_classes(mutated, labels, target_lang)
         raw_records: list[dict[str, object]] = []
         tier1_comparisons: list[str] = []
+        pushout_blocks: list[str] = []
+        pushout_moves: dict[float, tuple[list[Movement], list[Movement]]] = {}
         try:
             # 스펙 §5.7과 같은 원칙(위 316행 "측정 전에 감사 산출물을
             # 남긴다")을 예산 루프에도 적용한다(리뷰 지적 3) — 로컬 Ollama가
@@ -546,9 +632,11 @@ def main(argv: list[str] | None = None) -> int:
                 # 미적용)에 같은 예산을 적용해 비교 기준을 낸다. 새로 수집하지
                 # 않는다 — 이미 계산돼 있는 것을 재사용하지 않으면 Tier 0와
                 # Tier 1이 서로 다른 신호 스냅샷을 비교하게 된다.
-                tier0_selected = {
-                    r.segment_id for r in select_by_budget(risks, budget) if r.selected
-                }
+                # **밀어냄 분해가 이 스냅샷을 그대로 쓴다** (이월 22번) - 다시
+                # 부르면 같은 값이 나오지만, 두 곳에서 각자 부르면 한쪽의
+                # 예산 인자만 바뀌어도 조용히 다른 기준선을 비교하게 된다.
+                tier0_scored = select_by_budget(risks, budget)
+                tier0_selected = {r.segment_id for r in tier0_scored if r.selected}
                 tier0_scores = _negation_recall_scores(tier0_selected, labels, negation_classes)
 
                 comparison = render_tier1_comparison(
@@ -584,6 +672,51 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 print(comparison)
+
+                if args.pushout:
+                    # **재설계 전 조건을 한 번 더 돈다** (이월 22번). 결함 ②의
+                    # 원인은 "Recall이 왜 올랐나"이고, 그 답은 재설계 전후의
+                    # 순위 이동을 나란히 놔야 나온다 - 유입(Tier 1이 건져
+                    # 올림)과 유실(밀어냄)은 순증만으로는 갈리지 않는다.
+                    #
+                    # **`priority_ids=frozenset()`이 그 조건이다.** 극성 판정을
+                    # 건너뛰므로 후보가 회색지대 위험도 순으로만 뽑힌다 -
+                    # 2026-09-05 판의 동작이다. 캐시가 있으면 LLM 호출이
+                    # 대부분 적중한다(09-05 실행분이 같은 캐시에 남아 있다).
+                    pre_reports: list[CandidateReport] = []
+                    pre_risks = triage_with_tier1(
+                        mutated,
+                        ctx,
+                        budget_ratio=budget,
+                        provider=provider,
+                        max_ratio=TIER1_MAX_RATIO,
+                        warn=print,
+                        embedder=embedder,
+                        cache_dir=args.cache_dir,
+                        identity=provider.cache_identity,
+                        on_candidates=pre_reports.append,
+                        priority_ids=frozenset(),
+                    )
+                    label_kinds = {lb.segment_id: lb.kind for lb in labels}
+                    before = analyze_movement(
+                        tier0_scored,
+                        pre_risks,
+                        candidate_ids=set(pre_reports[0].candidate_ids),
+                        priority_ids=pre_reports[0].priority_ids,
+                        label_kinds=label_kinds,
+                    )
+                    after = analyze_movement(
+                        tier0_scored,
+                        tier1_risks,
+                        candidate_ids=set(report.candidate_ids),
+                        priority_ids=report.priority_ids,
+                        label_kinds=label_kinds,
+                    )
+                    # 모으는 것이 먼저고 찍는 것이 나중이다(위 comparison과 같은
+                    # 원칙) - 여기서는 렌더링이 전후 뒤바뀜을 검증하며 죽을 수
+                    # 있으므로, 원자료를 먼저 담아 `finally`가 건지게 한다.
+                    pushout_moves[budget] = (before, after)
+                    pushout_blocks.append(render_pushout(budget=budget, before=before, after=after))
         finally:
             # 예산 루프가 도중에 죽어도(위 주석) 지금까지 모은 것은 남긴다.
             # `raw_records`가 비어도(첫 예산에서 죽음) 빈 목록으로라도 쓴다 —
@@ -597,6 +730,16 @@ def main(argv: list[str] | None = None) -> int:
                 commit=commit,
             )
             print(f"Tier 1 원자료 -> {raw_path}")
+            if pushout_moves:
+                # `raw_records`와 같은 이유로 `finally`에 둔다 - 예산 루프가
+                # 30% 도중 죽어도 10%의 분해는 살린다.
+                pushout_raw = _dump_pushout(
+                    pushout_moves,
+                    args.audit_dir or track_path.parent,
+                    args.pair,
+                    commit=commit,
+                )
+                print(f"밀어냄 원자료 -> {pushout_raw}")
 
             if tier1_comparisons:
                 # 리뷰 지적 1 — `render_tier1_comparison`의 출력은 집계
@@ -615,6 +758,17 @@ def main(argv: list[str] | None = None) -> int:
                     tier1_comparisons=tier1_comparisons,
                 )
                 print(f"리포트(Tier 1 포함) -> {tier1_md_path}\n              {tier1_json_path}")
+
+            if pushout_blocks:
+                pushout_md = _write_pushout(
+                    pushout_blocks,
+                    args.out_dir,
+                    args.pair,
+                    commit=commit,
+                    model=args.model,
+                    embed_model=args.embed_model,
+                )
+                print(f"밀어냄 리포트 -> {pushout_md}")
 
             embedder.close()
             provider.close()

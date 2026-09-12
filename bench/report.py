@@ -592,6 +592,14 @@ def render_tier1_candidates(
     **배수가 1.0 근처면 후보 선정이 여전히 무작위다** - Recall 이 올랐더라도
     그것은 다른 이유이므로 이 표가 먼저다.
 
+    **채움분은 무작위 표본이 아니다** (이월 22번 M-2). D6·D7에 따라 우선
+    집합이 cap을 못 채우면 나머지를 **회색지대 위험도 내림 순서**로 담는다 -
+    표를 "무작위 표본"이라 적었던 것은 설계 §3.1~§3.2의 실측("회색지대에는
+    정렬할 정보가 남아 있지 않아 어떤 재정렬도 무작위와 구별되지 않는다")을
+    라벨에 압축한 것인데, 그 실측은 **결과가 무작위와 구별되지 않는다**는
+    말이지 **절차가 무작위**라는 말이 아니다. 아래 무작위 기대값과 비교하는
+    근거는 그 실측이고, 라벨은 실제 절차를 적는다.
+
     **기대값의 표본 크기는 `min(cap, gray_zone_size)`로 다시 유도하지 않고
     `candidates` 인자를 그대로 쓴다**(수정 라운드 1 I-2). `select_tier1_candidates`가
     `(first + rest)[:cap]`이라 오늘은 두 값이 같지만, 그 개수 규칙이 바뀌면
@@ -615,7 +623,7 @@ def render_tier1_candidates(
             f"| 상한(cap) | {cap} |",
             f"| 후보 | {candidates} |",
             f"| 그중 극성 표지 보유 | {from_priority} |",
-            f"| 그중 채움분(무작위 표본) | {candidates - from_priority} |",
+            f"| 그중 채움분(회색지대 위험도 순) | {candidates - from_priority} |",
             f"| 후보 안 negation | **{negation_hits}** |",
             f"| 무작위 기대값 | {expected:.2f} |",
             f"| **배수** | **{ratio_str}** |",
