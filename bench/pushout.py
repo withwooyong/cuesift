@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from statistics import fmean, median
 
 from cuesift.segment import SegmentRisk
 
@@ -109,4 +110,64 @@ def summarize(movements: Sequence[Movement]) -> PushoutSummary:
     return PushoutSummary(
         gained=tuple(m.segment_id for m in movements if m.selected_tier01 and not m.selected_tier0),
         lost=tuple(m.segment_id for m in movements if m.selected_tier0 and not m.selected_tier01),
+    )
+
+
+@dataclass(frozen=True)
+class KindBreakdown:
+    kind: str
+    gained: int = 0
+    lost: int = 0
+
+    @property
+    def net(self) -> int:
+        return self.gained - self.lost
+
+
+@dataclass(frozen=True)
+class RankShift:
+    """한 집합의 순위 이동 요약. **양수가 밀려남이다** (`Movement.delta_rank`)."""
+
+    n: int = 0
+    pushed_down: int = 0
+    pulled_up: int = 0
+    median: float = 0.0
+    mean: float = 0.0
+    worst: int = 0
+
+
+def breakdown_by_kind(movements: Sequence[Movement]) -> dict[str, KindBreakdown]:
+    """오류 부류별로 유입·유실을 센다.
+
+    **라벨 없는 세그먼트는 제외한다.** 이 표가 답하는 질문은 "어떤 오류가
+    큐에 들고 났나"이고, 라벨 없는 것은 애초에 Recall 의 분자가 아니다.
+    그쪽의 이동은 `rank_shift` 가 따로 본다 - 정원이 보존되므로 오류가
+    들어온 자리는 반드시 무언가가 비운 자리다.
+    """
+    kinds = sorted({m.label_kind for m in movements if m.label_kind})
+    out: dict[str, KindBreakdown] = {}
+    for kind in kinds:
+        part = summarize([m for m in movements if m.label_kind == kind])
+        out[kind] = KindBreakdown(kind=kind, gained=len(part.gained), lost=len(part.lost))
+    return out
+
+
+def rank_shift(movements: Sequence[Movement], *, inside: bool) -> RankShift:
+    """후보 안(`inside=True`) 또는 밖의 순위 이동을 요약한다.
+
+    **이 둘을 갈라 놓는 것이 "비대칭"의 정의다.** 후보 안은 Tier 1 신호로
+    점수가 오를 기회를 얻고 후보 밖은 못 얻는다 - 그래서 후보 밖에서는
+    위로 갈 방법이 구조적으로 없고, `pulled_up` 이 0 이어야 정상이다.
+    0 이 아니면 후보 안의 누군가가 점수를 **잃었다**는 뜻인데, noisy-or 는
+    점수를 올리기만 하므로 그런 일은 일어나지 않아야 한다.
+    """
+    part = [m for m in movements if m.is_candidate is inside]
+    deltas = [m.delta_rank for m in part]
+    return RankShift(
+        n=len(part),
+        pushed_down=sum(1 for d in deltas if d > 0),
+        pulled_up=sum(1 for d in deltas if d < 0),
+        median=median(deltas) if deltas else 0.0,
+        mean=fmean(deltas) if deltas else 0.0,
+        worst=max(deltas) if deltas else 0,
     )

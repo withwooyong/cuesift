@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from bench.pushout import analyze_movement, summarize
+from bench.pushout import analyze_movement, breakdown_by_kind, rank_shift, summarize
 
 from cuesift.segment import SegmentRisk
 from cuesift.triage import select_by_budget
@@ -120,3 +120,101 @@ def test_반환은_tier0_순위_오름차순이다():
 
     # Tier 0+1 순위였다면 ["A", "C", "B", "D"]가 된다.
     assert [m.segment_id for m in moves] == ["A", "B", "C", "D"]
+
+
+def test_순증은_큐_안_라벨_수의_실제_변화와_일치한다():
+    """**이것이 분해의 검산이다.** 유입 − 유실이 실제 변화와 어긋나면 분해가
+    틀린 것이고, 그러면 이월 22번의 결론 전체가 틀린다.
+
+    B와 C가 둘 다 negation인 자리를 골랐다 — 큐의 negation 수는 1에서 1로
+    **변하지 않는데** 유입 1건과 유실 1건이 동시에 일어난다. 순증만 보는
+    리포트에는 아무 일도 없었던 것으로 보이는 상황이고, **결함 ②가 숨는
+    자리가 정확히 여기다.**
+    """
+    scores0 = {"A": 0.9, "B": 0.8, "C": 0.3, "D": 0.2}
+    tier0 = select_by_budget(_risks(scores0), 0.5)
+    tier01 = select_by_budget(_risks({**scores0, "C": 0.85}), 0.5)
+    label_kinds = {"B": "negation", "C": "negation"}
+
+    moves = analyze_movement(
+        tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds=label_kinds
+    )
+    negation = breakdown_by_kind(moves)["negation"]
+
+    def _count(risks):
+        return sum(1 for r in risks if r.selected and label_kinds.get(r.segment_id) == "negation")
+
+    assert negation.gained == 1
+    assert negation.lost == 1
+    assert negation.net == _count(tier01) - _count(tier0)
+    # 순증 0 — 리포트에는 아무 일도 없었던 것으로 보인다.
+    assert negation.net == 0
+
+
+def test_후보_밖의_순위_이동만_따로_모은다():
+    """**비대칭의 정의가 이것이다** — 후보 안은 점수가 오를 기회를 얻고 후보
+    밖은 못 얻는다. 그래서 후보 밖의 Δrank 가 양(밀려남)으로 쏠린다.
+
+    A는 1위를 지키고(Δ0) B는 밀리고(Δ+1) D는 제자리다(Δ0). 후보 밖 셋 중
+    밀려난 것은 하나이고 올라간 것은 없다 — **후보 밖에서는 위로 갈 방법이
+    구조적으로 없다.**
+    """
+    tier0 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.3, "D": 0.2}), 0.5)
+    tier01 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.85, "D": 0.2}), 0.5)
+
+    moves = analyze_movement(tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds={})
+    outside = rank_shift(moves, inside=False)
+    inside = rank_shift(moves, inside=True)
+
+    assert outside.n == 3
+    assert outside.pushed_down == 1
+    assert outside.pulled_up == 0
+    assert inside.n == 1
+    assert inside.pushed_down == 0
+    assert inside.pulled_up == 1
+
+
+def test_순위_이동의_분포_통계를_낸다():
+    """리포트에 싣는 값이므로 게이트가 필요하다.
+
+    후보 밖 셋의 Δrank 는 A=0 · B=+1 · D=0 이다. **중앙값이 0인데 최악이
+    +1이라는 것**이 밀어냄의 성격을 말한다 — 전체가 조금씩 밀리는 것이
+    아니라 컷라인 근처 몇 건만 크게 밀린다.
+    """
+    tier0 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.3, "D": 0.2}), 0.5)
+    tier01 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.85, "D": 0.2}), 0.5)
+
+    outside = rank_shift(
+        analyze_movement(tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds={}),
+        inside=False,
+    )
+
+    assert outside.median == 0.0
+    assert outside.worst == 1
+    assert round(outside.mean, 4) == round(1 / 3, 4)
+
+
+def test_부류가_둘이면_각각_따로_세고_라벨_없음은_빠진다():
+    """**대칭 픽스처는 맞바꿈 변이를 못 잡는다.** 검산 테스트는 negation 의
+    `gained` 와 `lost` 가 둘 다 1이라, 둘을 맞바꾸는 변이가 생존했다(실측).
+
+    여기서는 B가 negation(밀려남) · C가 untranslated(올라옴)라 두 값이
+    비대칭이다. A와 D는 라벨이 없으므로 이 표에 나타나지 않아야 한다 —
+    Recall 의 분자가 아니기 때문이다.
+    """
+    tier0 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.3, "D": 0.2}), 0.5)
+    tier01 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.85, "D": 0.2}), 0.5)
+
+    bd = breakdown_by_kind(
+        analyze_movement(
+            tier0,
+            tier01,
+            candidate_ids={"C"},
+            priority_ids={"C"},
+            label_kinds={"B": "negation", "C": "untranslated"},
+        )
+    )
+
+    assert set(bd) == {"negation", "untranslated"}
+    assert (bd["negation"].gained, bd["negation"].lost, bd["negation"].net) == (0, 1, -1)
+    assert (bd["untranslated"].gained, bd["untranslated"].lost, bd["untranslated"].net) == (1, 0, 1)
