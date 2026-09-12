@@ -171,3 +171,56 @@ def rank_shift(movements: Sequence[Movement], *, inside: bool) -> RankShift:
         mean=fmean(deltas) if deltas else 0.0,
         worst=max(deltas) if deltas else 0,
     )
+
+
+_PRIORITY_MIXED_UP = (
+    "재설계 전 조건에 우선 집합이 실려 있다 - 전후를 뒤바꿔 넘겼다. "
+    "전 조건은 `priority_ids=frozenset()` 을 주입한 실행이라 우선 집합이 비어야 한다"
+)
+_PRIORITY_MISSING = (
+    "재설계 후 조건에 우선 집합이 없다 - 전후를 뒤바꿔 넘겼거나, "
+    "극성 판정이 빈 집합을 냈다(미지원 언어 경고를 확인할 것)"
+)
+
+
+def render_pushout(*, budget: float, before: Sequence[Movement], after: Sequence[Movement]) -> str:
+    """재설계 전후의 밀어냄을 나란히 싣는다 (이월 22번).
+
+    **전후 라벨을 믿지 않고 데이터로 검증한다.** 뒤바꿔 넘겨도 숫자는
+    그럴듯하게 나오는데 결론은 정반대가 된다 - 라벨은 호출부가 붙이는
+    것이라 실수하면 렌더러가 알 방법이 없다. 두 실행을 구조적으로 가르는
+    성질이 우선 집합의 유무이므로 그것으로 판정한다.
+    """
+    if any(m.is_priority for m in before):
+        raise ValueError(_PRIORITY_MIXED_UP)
+    if not any(m.is_priority for m in after):
+        raise ValueError(_PRIORITY_MISSING)
+
+    lines = [f"### 밀어냄 분해 (예산 {budget:.0%})", ""]
+    lines += ["| 조건 | 부류 | 유입 | 유실 | 순증 |", "| --- | --- | ---: | ---: | ---: |"]
+    for label, moves in (("재설계 전", before), ("재설계 후", after)):
+        for kind, bd in sorted(breakdown_by_kind(moves).items()):
+            lines.append(f"| {label} | {kind} | {bd.gained} | {bd.lost} | {bd.net:+d} |")
+    lines += [
+        "",
+        "**순증만으로는 갈리지 않는 두 항이다.** 유입은 Tier 1 이 건져 올린 것이고,"
+        " 유실은 후보 밖에서 밀려난 것이다 - 둘이 같은 수면 리포트에는 아무 일도"
+        " 없었던 것으로 보인다.",
+        "",
+        "| 조건 | 집합 | n | 밀려남 | 올라감 | Δrank 중앙값 | 평균 | 최악 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for label, moves in (("재설계 전", before), ("재설계 후", after)):
+        for name, inside in (("후보 안", True), ("후보 밖", False)):
+            sh = rank_shift(moves, inside=inside)
+            lines.append(
+                f"| {label} | {name} | {sh.n} | {sh.pushed_down} | {sh.pulled_up} |"
+                f" {sh.median:+.1f} | {sh.mean:+.2f} | {sh.worst:+d} |"
+            )
+    lines += [
+        "",
+        "**후보 밖의 `올라감` 이 0 인 것이 비대칭의 정의다.** noisy-or 는 점수를"
+        " 올리기만 하고 Tier 1 은 후보에만 신호를 더하므로, 후보 밖에서는 위로 갈"
+        " 방법이 구조적으로 없다.",
+    ]
+    return "\n".join(lines)

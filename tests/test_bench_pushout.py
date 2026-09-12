@@ -12,7 +12,15 @@
 
 from __future__ import annotations
 
-from bench.pushout import analyze_movement, breakdown_by_kind, rank_shift, summarize
+import pytest
+
+from bench.pushout import (
+    analyze_movement,
+    breakdown_by_kind,
+    rank_shift,
+    render_pushout,
+    summarize,
+)
 
 from cuesift.segment import SegmentRisk
 from cuesift.triage import select_by_budget
@@ -218,3 +226,74 @@ def test_부류가_둘이면_각각_따로_세고_라벨_없음은_빠진다():
     assert set(bd) == {"negation", "untranslated"}
     assert (bd["negation"].gained, bd["negation"].lost, bd["negation"].net) == (0, 1, -1)
     assert (bd["untranslated"].gained, bd["untranslated"].lost, bd["untranslated"].net) == (1, 0, 1)
+
+
+def _two_conditions():
+    """재설계 전과 후를 **서로 다르게** 만든다.
+
+    **같은 Tier 0+1 스냅샷을 두 조건에 쓰면 안 된다** - 그러면 표의 두 조건
+    행이 동일해져, `after` 자리에 `before` 를 넣는 변이가 생존한다(실측).
+    두 조건이 실제로 다른 이유를 그대로 합성한다.
+
+    | 조건 | 후보 | 무슨 일이 일어나나 |
+    | --- | --- | --- |
+    | 전 | B (위험도 상위) | 이미 큐에 있던 B의 점수만 올라 순위가 그대로다 |
+    | 후 | C (극성 표지) | 컷라인 아래 C가 올라와 B를 밀어낸다 |
+
+    이것이 이월 21번의 재설계가 바꾼 것이다 - 후보를 위험도 순위에서
+    극성 표지 보유로 옮겼다.
+    """
+    tier0 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.3, "D": 0.2}), 0.5)
+    pre = select_by_budget(_risks({"A": 0.9, "B": 0.85, "C": 0.3, "D": 0.2}), 0.5)
+    post = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.85, "D": 0.2}), 0.5)
+    kinds = {"B": "negation", "C": "untranslated"}
+    before = analyze_movement(
+        tier0, pre, candidate_ids={"B"}, priority_ids=set(), label_kinds=kinds
+    )
+    after = analyze_movement(
+        tier0, post, candidate_ids={"C"}, priority_ids={"C"}, label_kinds=kinds
+    )
+    return before, after
+
+
+def test_전후를_뒤바꿔_넘기면_거부한다():
+    """**뒤바뀌면 결론이 정반대가 되는데 숫자는 그럴듯하다.**
+
+    전후 라벨은 호출부가 붙이는 것이라 실수하면 렌더러는 모른다. 그래서
+    라벨을 믿지 않고 데이터로 검증한다 — 재설계 전 조건은 우선 집합이 비어
+    있고(`priority_ids=frozenset()`을 주입한 실행), 후 조건은 비어 있지 않다.
+    이 성질은 두 실행을 구조적으로 가르므로 뒤바뀜이 반드시 걸린다.
+    """
+    before, after = _two_conditions()
+
+    with pytest.raises(ValueError, match="재설계 전"):
+        render_pushout(budget=0.1, before=after, after=before)
+
+
+def test_분해표가_두_조건의_숫자를_싣는다():
+    """리포트에 실제로 들어가는 값이다. 표에 없으면 읽는 사람이 판단할 수 없다."""
+    before, after = _two_conditions()
+
+    out = render_pushout(budget=0.1, before=before, after=after)
+
+    assert "예산 10%" in out
+    # **행을 통째로 단언한다.** 문자열이 어딘가에 있는지만 보면 유실 열을
+    # 유입으로 바꾸는 변이가 생존한다(실측).
+    assert "| 재설계 전 | negation | 0 | 0 | +0 |" in out
+    assert "| 재설계 후 | negation | 0 | 1 | -1 |" in out
+    assert "| 재설계 후 | untranslated | 1 | 0 | +1 |" in out
+    # 후보 밖 셋 중 하나가 밀려났고, 위로 간 것은 없다.
+    assert "| 재설계 후 | 후보 밖 | 3 | 1 | 0 |" in out
+
+
+def test_후_조건에_우선_집합이_없으면_거부한다():
+    """`after` 쪽 검증이 없으면 **두 실행이 전부 재설계 전이어도 통과한다.**
+
+    `priority_ids` 주입을 실수로 양쪽에 걸면 그런 상태가 되는데, 표는
+    "전후가 같다"는 그럴듯한 숫자를 낸다 — 이월 22번이 가장 경계해야 할
+    거짓 결론이다.
+    """
+    before, _ = _two_conditions()
+
+    with pytest.raises(ValueError, match="재설계 후"):
+        render_pushout(budget=0.1, before=before, after=before)
