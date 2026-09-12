@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import pytest
-
 from bench.pushout import (
     analyze_movement,
     breakdown_by_kind,
