@@ -1152,3 +1152,99 @@ def test_cap과_gray_zone_size가_실제_산식과_일치한다(signal_ctx) -> N
     # selected인지는 결정론적 동점 규칙(세그먼트 id)이 정하지만, 그 개수는
     # 언제나 2다 - 그래서 gray_zone은 20 - 2 = 18이다.
     assert reports[0].gray_zone_size == 18
+
+
+def test_priority_ids를_주입하면_극성_판정을_건너뛴다(signal_ctx) -> None:
+    """**재설계 전(우선 집합 없음) 조건을 재현하는 통로다** (이월 22번).
+
+    결함 ②(비대칭 밀어냄)의 원인을 규명하려면 재설계 **전후**의 순위 이동을
+    나란히 놔야 하는데, 전 조건은 `priority_ids`가 빈 상태다. 이 인자가
+    없으면 그 조건을 얻는 방법이 프로덕션 코드를 되돌리거나 내부 헬퍼를
+    바꿔치기하는 것뿐이고, 둘 다 조용히 실패하면 "전후가 같다"는 거짓
+    결론이 나온다.
+
+    `signal_ctx`는 ko->en이라 극성 판정이 지원된다 — 그런데도 우선 집합이
+    비는 것이 "판정을 건너뛰었다"의 증거다(미지원 언어라 빈 것과 다르다).
+    그래서 경고도 나가지 않는다.
+    """
+    warnings: list[str] = []
+    reports: list[CandidateReport] = []
+    segments = _segments_with_texts(
+        [("맑은 날입니다", "It is sunny")] * 18
+        + [("가지 않았습니다", "did not go"), ("아무도 없습니다", "there is none")]
+    )
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=warnings.append,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+        priority_ids=frozenset(),
+    )
+
+    assert reports[0].priority_ids == frozenset()
+    assert not any(_POLARITY_UNSUPPORTED in w for w in warnings)
+    # 후보 개수는 오늘과 같다 (D6). 달라지면 `_diagnose_empty_candidates`의
+    # 여섯 갈래에 일곱 번째가 생긴다.
+    assert len(reports[0].candidate_ids) == 2
+    # 극성 판정을 했다면 s018·s019가 후보였다 — 건너뛰었으므로 아니다.
+    assert set(reports[0].candidate_ids) != {"s018", "s019"}
+
+
+def test_주입한_priority_ids가_극성_판정을_대신한다(signal_ctx) -> None:
+    """빈 집합만이 아니라 **임의의 집합**을 주입할 수 있어야 한다.
+
+    빈 집합만 검사하면 `priority_ids or _polarity_priority(...)` 같은 구현이
+    통과한다 — 그 구현은 빈 집합을 "안 준 것"으로 취급해 극성 판정으로
+    되돌아가므로, 재설계 전 조건이 조용히 재설계 후가 된다.
+
+    `s017`은 극성 표지가 없고 회색지대 안에 있다. 주입하지 않았다면
+    s018·s019가 후보인 자리다.
+    """
+    reports: list[CandidateReport] = []
+    segments = _segments_with_texts(
+        [("맑은 날입니다", "It is sunny")] * 18
+        + [("가지 않았습니다", "did not go"), ("아무도 없습니다", "there is none")]
+    )
+    triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=EchoProvider(),
+        max_ratio=0.1,
+        warn=_ignore,
+        on_candidates=reports.append,
+        embedder=_FakeEmbedder(),
+        priority_ids=frozenset({"s017"}),
+    )
+
+    assert reports[0].priority_ids == frozenset({"s017"})
+    assert "s017" in reports[0].candidate_ids
+
+
+def test_priority_ids에_문자열을_그대로_주면_거부한다(signal_ctx) -> None:
+    """`excluded_ids`·`select_tier1_candidates`와 같은 함정이다.
+
+    `frozenset("s017")`은 `{'s', '0', '1', '7'}`로 **쪼개진다.** 그러면 회색지대
+    와의 교집합이 비어 우선 집합이 빈 것과 같아지는데, 이 인자를 준 실행은
+    극성 판정을 건너뛰므로 **재설계 전 조건과 구별되지 않는다** — 이월 22번의
+    측정이 "전후가 같다"는 거짓 결론을 내는 경로다.
+
+    `select_tier1_candidates`가 같은 방어를 갖고 있지만 여기서는 발동하지
+    않는다. 이 함수가 `frozenset(...)`으로 먼저 변환해 넘기기 때문이다.
+    """
+    segments = _segments_with_texts([("맑은 날입니다", "It is sunny")] * 20)
+    with pytest.raises(ValueError, match="priority_ids"):
+        triage_with_tier1(
+            segments,
+            signal_ctx,
+            budget_ratio=0.1,
+            provider=EchoProvider(),
+            max_ratio=0.1,
+            warn=_ignore,
+            embedder=_FakeEmbedder(),
+            priority_ids="s017",
+        )

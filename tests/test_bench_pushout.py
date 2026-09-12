@@ -18,7 +18,9 @@ from cuesift.segment import SegmentRisk
 from cuesift.triage import select_by_budget
 
 
-def _risks(scores: dict[str, float], *, hard_fail: frozenset[str] = frozenset()) -> list[SegmentRisk]:
+def _risks(
+    scores: dict[str, float], *, hard_fail: frozenset[str] = frozenset()
+) -> list[SegmentRisk]:
     """점수만 다른 `SegmentRisk` 목록. 신호는 이 계산에 쓰이지 않는다."""
     return [
         SegmentRisk(segment_id=sid, signals=[], risk_score=score, hard_fail=sid in hard_fail)
@@ -90,14 +92,10 @@ def test_hard_fail은_후보가_점수를_올려도_밀려나지_않는다():
     """
     scores = {"A": 1.0, "B": 0.8, "C": 0.3, "D": 0.2}
     tier0 = select_by_budget(_risks(scores, hard_fail=frozenset({"A"})), 0.5)
-    tier01 = select_by_budget(
-        _risks({**scores, "C": 0.85}, hard_fail=frozenset({"A"})), 0.5
-    )
+    tier01 = select_by_budget(_risks({**scores, "C": 0.85}, hard_fail=frozenset({"A"})), 0.5)
 
     summary = summarize(
-        analyze_movement(
-            tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds={}
-        )
+        analyze_movement(tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds={})
     )
 
     assert summary.lost == ("B",)
@@ -118,9 +116,7 @@ def test_반환은_tier0_순위_오름차순이다():
     tier0 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.3, "D": 0.2}), 0.5)
     tier01 = select_by_budget(_risks({"A": 0.9, "B": 0.8, "C": 0.85, "D": 0.2}), 0.5)
 
-    moves = analyze_movement(
-        tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds={}
-    )
+    moves = analyze_movement(tier0, tier01, candidate_ids={"C"}, priority_ids={"C"}, label_kinds={})
 
     # Tier 0+1 순위였다면 ["A", "C", "B", "D"]가 된다.
     assert [m.segment_id for m in moves] == ["A", "B", "C", "D"]
