@@ -460,14 +460,66 @@ def test_ablation_omits_harmful_paragraph_when_no_negative_drops():
 # --- 태스크7 브리프 Step 2: Tier 1 비교표 ------------------------------------
 
 
+# 이월 23번의 실측값(en-ko, 2026-09-12). **지어낸 값이 아니라 관측된 값을 쓴다** —
+# 예산 10%는 전체 오류가 366건에서 364건으로 줄고(73.2% -> 72.8%) 예산 30%는
+# 440건에서 456건으로 는다(88.0% -> 91.2%). 부호가 예산에 따라 갈리는 이 성질이
+# 표의 순손실 판정을 양쪽에서 밟게 한다.
+_TEN_TIER0 = {
+    "overall_recall": 0.732,
+    "overall_hits": 366,
+    "error_total": 500,
+    "review_ratio": 0.1042,
+}
+_TEN_TIER1 = {
+    "overall_recall": 0.728,
+    "overall_hits": 364,
+    "error_total": 500,
+    "review_ratio": 0.1042,
+}
+_THIRTY_TIER0 = {
+    "overall_recall": 0.880,
+    "overall_hits": 440,
+    "error_total": 500,
+    "review_ratio": 0.3042,
+}
+_THIRTY_TIER1 = {
+    "overall_recall": 0.912,
+    "overall_hits": 456,
+    "error_total": 500,
+    "review_ratio": 0.3042,
+}
+
+
+def _scores(
+    *,
+    negation_recall: float,
+    overall_recall: float,
+    overall_hits: int,
+    error_total: int = 500,
+    clean_recall: float = 0.0,
+    clean_total: int = 35,
+    review_ratio: float = 0.10,
+) -> dict[str, float | int]:
+    """비교표 입력 한 벌. 새 필수 키가 늘면 여기 한 곳만 고친다."""
+    return {
+        "negation_recall": negation_recall,
+        "clean_recall": clean_recall,
+        "clean_total": clean_total,
+        "overall_recall": overall_recall,
+        "overall_hits": overall_hits,
+        "error_total": error_total,
+        "review_ratio": review_ratio,
+    }
+
+
 def test_tier1_비교표에_분모가_실린다():
     """부분집합 Recall은 분모 없이 쓰면 소수점이 신뢰받는다 (설계 §8.2).
 
     ja 표본의 정상 반전은 약 35건이라 해상도가 1/35 = 2.9%다.
     """
     rendered = render_tier1_comparison(
-        tier0={"negation_recall": 0.1972, "clean_recall": 0.20, "clean_total": 35},
-        tier1={"negation_recall": 0.4507, "clean_recall": 0.60, "clean_total": 35},
+        tier0=_scores(negation_recall=0.1972, clean_recall=0.20, **_THIRTY_TIER0),
+        tier1=_scores(negation_recall=0.4507, clean_recall=0.60, **_THIRTY_TIER1),
         budget=0.30,
     )
     table_rows = [line for line in rendered.splitlines() if line.startswith("| clean 부분집합")]
@@ -479,8 +531,8 @@ def test_tier1_비교표에_분모가_실린다():
 def test_tier1_비교표는_negation_전체와_clean_부분집합을_모두_담는다():
     """하나만 실리면 이월 19번이 다시 열린다 — 오염된 표본만으로 판단하게 된다."""
     rendered = render_tier1_comparison(
-        tier0={"negation_recall": 0.10, "clean_recall": 0.20, "clean_total": 35},
-        tier1={"negation_recall": 0.30, "clean_recall": 0.50, "clean_total": 35},
+        tier0=_scores(negation_recall=0.10, clean_recall=0.20, **_TEN_TIER0),
+        tier1=_scores(negation_recall=0.30, clean_recall=0.50, **_TEN_TIER1),
         budget=0.10,
     )
     assert "10.00%" in rendered
@@ -498,8 +550,8 @@ def test_tier1_비교표의_해상도는_1_나누기_clean_total로_계산된다
     (실측: `resolution_pct`를 0.0으로 고정해도 위 두 테스트가 전부 통과했다).
     """
     rendered = render_tier1_comparison(
-        tier0={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 4},
-        tier1={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 4},
+        tier0=_scores(negation_recall=0.0, clean_total=4, **_TEN_TIER0),
+        tier1=_scores(negation_recall=0.0, clean_total=4, **_TEN_TIER1),
         budget=0.10,
     )
     assert "25.0%" in rendered
@@ -509,8 +561,8 @@ def test_tier1_비교표는_clean_total이_0이면_해상도_대신_안내한다
     """분모가 0이면 나눗셈을 하지 않는다 — `ZeroDivisionError`도, 거짓
     해상도(`1/0`)도 내지 않는다."""
     rendered = render_tier1_comparison(
-        tier0={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 0},
-        tier1={"negation_recall": 0.0, "clean_recall": 0.0, "clean_total": 0},
+        tier0=_scores(negation_recall=0.0, clean_total=0, **_TEN_TIER0),
+        tier1=_scores(negation_recall=0.0, clean_total=0, **_TEN_TIER1),
         budget=0.10,
     )
     assert "해상도를 계산할 수 없다" in rendered
@@ -525,8 +577,8 @@ def test_render_markdown은_tier1_comparisons를_실을_수_있다():
     않는 유일한 Tier 1 산출물인데, `print`만 하면 스크롤백이 닫히는 순간
     사라진다."""
     block = render_tier1_comparison(
-        tier0={"negation_recall": 0.10, "clean_recall": 0.20, "clean_total": 35},
-        tier1={"negation_recall": 0.30, "clean_recall": 0.50, "clean_total": 35},
+        tier0=_scores(negation_recall=0.10, clean_recall=0.20, **_TEN_TIER0),
+        tier1=_scores(negation_recall=0.30, clean_recall=0.50, **_TEN_TIER1),
         budget=0.10,
     )
     md = render_markdown(META, RESULTS, DROPS, BASELINE, tier1_comparisons=[block])
@@ -675,3 +727,145 @@ def test_후보_구성표가_원자료와의_차이를_설명한다():
     )
 
     assert _CANDIDATE_VS_RAW in block
+
+
+# --- 이월 23번: 전체 Recall 행 --------------------------------------------
+#
+# **이 절이 막는 것은 계산 오류가 아니라 누락이다.** 2026-09-06 실측은
+# negation Recall 이 1.41% -> 4.23% 로 올랐다는 것만 싣고 전체 Recall 이
+# 73.2% -> 72.8% 로 떨어진 것을 싣지 않아, 재설계가 순손실인 예산 구간을
+# 여섯 날 동안 아무도 보지 못했다. Recall@Budget 은 이 프로젝트의 핵심
+# 지표다(요구사항정의서 §9.1).
+
+
+def test_tier1_비교표에_전체_recall_행이_실린다():
+    """이월 23번의 본체 — 부류 하나가 아니라 전체가 어떻게 됐는지를 싣는다."""
+    rendered = render_tier1_comparison(
+        tier0=_scores(negation_recall=0.0141, overall_recall=0.732, overall_hits=366),
+        tier1=_scores(negation_recall=0.0423, overall_recall=0.728, overall_hits=364),
+        budget=0.10,
+    )
+    rows = [line for line in rendered.splitlines() if "전체 Recall" in line]
+    assert rows, "전체 Recall 표 행이 없다"
+    assert "(n=500)" in rows[0], "분모가 표 행 자체에 실려야 한다 (clean 행과 같은 이유)"
+    assert "73.20%" in rows[0]
+    assert "72.80%" in rows[0]
+
+
+def test_tier1_비교표는_전체_recall_행에_순증_건수를_함께_낸다():
+    """비율만 실으면 -0.4%p 가 몇 건인지 독자가 되계산해야 한다.
+
+    이월 23번의 서술이 처음부터 건수(`366 -> 364`)였던 것은 500건 정답지에서
+    0.4%p 가 2건이라는 사실이 비율보다 먼저 읽히기 때문이다.
+    """
+    rendered = render_tier1_comparison(
+        tier0=_scores(negation_recall=0.0141, overall_recall=0.732, overall_hits=366),
+        tier1=_scores(negation_recall=0.0423, overall_recall=0.728, overall_hits=364),
+        budget=0.10,
+    )
+    rows = [line for line in rendered.splitlines() if "전체 Recall" in line]
+    assert "366" in rows[0] and "364" in rows[0]
+    assert "-2건" in rows[0], "순증 부호가 붙은 건수가 있어야 한다"
+
+
+def test_tier1_비교표는_전체_recall이_떨어지면_명시한다():
+    """**부류가 올라도 전체가 떨어지면 그 예산 구간은 순손실이다.**
+
+    표만 두면 negation 행이 먼저 읽혀 "올랐다"로 요약된다 — 실제로
+    2026-09-06 에 그렇게 읽혔다.
+    """
+    rendered = render_tier1_comparison(
+        tier0=_scores(negation_recall=0.0141, overall_recall=0.732, overall_hits=366),
+        tier1=_scores(negation_recall=0.0423, overall_recall=0.728, overall_hits=364),
+        budget=0.10,
+    )
+    assert "순손실" in rendered
+    assert "이월 23번" in rendered
+
+
+def test_tier1_비교표는_전체_recall이_오르면_순손실을_말하지_않는다():
+    """예산 30%(88.0% -> 91.2%)가 이쪽이다. 짝이 없으면 문구가 상수가 된다."""
+    rendered = render_tier1_comparison(
+        tier0=_scores(negation_recall=0.1972, overall_recall=0.880, overall_hits=440),
+        tier1=_scores(negation_recall=0.4225, overall_recall=0.912, overall_hits=456),
+        budget=0.30,
+    )
+    assert "순손실" not in rendered
+    assert "+16건" in rendered
+
+
+def test_tier1_비교표는_전체_recall_키가_없으면_죽는다():
+    """**조용한 0.00% 가 이 항목을 만든 실패 그 자체다.**
+
+    `.get(..., 0.0)` 로 기본값을 두면 호출자가 키를 빠뜨렸을 때 표에
+    "0.00%"가 실린다 — 값이 없는 것과 Recall 이 0 인 것은 다른 사실인데
+    표가 둘을 구별하지 않게 된다.
+    """
+    partial = _scores(negation_recall=0.0141, overall_recall=0.732, overall_hits=366)
+    del partial["overall_recall"]
+    try:
+        render_tier1_comparison(
+            tier0=partial,
+            tier1=_scores(negation_recall=0.0423, overall_recall=0.728, overall_hits=364),
+            budget=0.10,
+        )
+    except KeyError as exc:
+        assert "overall_recall" in str(exc)
+    else:
+        raise AssertionError("필수 키가 없는데 표가 그려졌다")
+
+
+def test_tier1_비교표는_실제_검수_비율을_나란히_낸다():
+    """**같은 비용에서의 비교인지를 표가 스스로 보여야 한다.**
+
+    hard fail 이 예산을 우회하므로 요청 예산과 실제 검수 비율은 다르다
+    (CLAUDE.md "배수는 요청 예산이 아니라 실제 검수 비율로 나눈다").
+    두 조건의 검수 비율이 갈리면 Recall 차이는 Tier 1 의 효과가 아니라
+    큐 크기 차이일 수 있다.
+    """
+    rendered = render_tier1_comparison(
+        tier0=_scores(
+            negation_recall=0.0141, overall_recall=0.732, overall_hits=366, review_ratio=0.1042
+        ),
+        tier1=_scores(
+            negation_recall=0.0423, overall_recall=0.728, overall_hits=364, review_ratio=0.1042
+        ),
+        budget=0.10,
+    )
+    rows = [line for line in rendered.splitlines() if "실제 검수 비율" in line]
+    assert rows, "실제 검수 비율 행이 없다"
+    assert rows[0].count("10.42%") == 2
+
+
+def test_tier1_비교표는_검수_비율이_갈리면_경고한다():
+    """비율이 다르면 표의 Recall 비교가 같은 비용에서의 비교가 아니다."""
+    rendered = render_tier1_comparison(
+        tier0=_scores(
+            negation_recall=0.0141, overall_recall=0.732, overall_hits=366, review_ratio=0.1042
+        ),
+        tier1=_scores(
+            negation_recall=0.0423, overall_recall=0.760, overall_hits=380, review_ratio=0.1200
+        ),
+        budget=0.10,
+    )
+    assert "검수 비율이 다르다" in rendered
+
+
+def test_tier1_비교표는_두_조건의_정답_건수가_다르면_죽는다():
+    """분모가 갈리면 두 Recall 이 같은 축의 값이 아니다.
+
+    표는 `error_total` 을 한 번만 찍으므로, 검사하지 않으면 서로 다른
+    정답지에서 나온 두 비율이 같은 분모를 단 채 나란히 놓인다.
+    """
+    tier1 = _scores(negation_recall=0.0423, overall_recall=0.728, overall_hits=364)
+    tier1["error_total"] = 480
+    try:
+        render_tier1_comparison(
+            tier0=_scores(negation_recall=0.0141, overall_recall=0.732, overall_hits=366),
+            tier1=tier1,
+            budget=0.10,
+        )
+    except ValueError as exc:
+        assert "정답 건수가 다르다" in str(exc)
+    else:
+        raise AssertionError("분모가 갈렸는데 표가 그려졌다")
