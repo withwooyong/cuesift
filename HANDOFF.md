@@ -1,6 +1,6 @@
 # Session Handoff
 
-> Last updated: 2026-09-13 (KST) · 브랜치 `docs/ott-adoption-review` · PR (이 커밋 시점에 미생성)
+> Last updated: 2026-09-13 (KST) · 브랜치 `docs/ott-adoption-review` · PR [#47](https://github.com/withwooyong/cuesift/pull/47)
 > **도입 적합성을 검토해 문서로 남겼다. 제품 코드는 한 줄도 고치지 않았다.**
 > ① **배치 지점을 정했다 - ④기계 번역과 ⑤번역가 검수 사이의 사이드카다.** 공정을 가로막는
 > 관문이 아니다. 규격 검사(`check`)만 위치가 달라 ③원문 자막 정형에 CI 게이트로 붙는다.
