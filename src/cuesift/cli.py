@@ -1343,13 +1343,14 @@ def translate(
             # 설명 열(약 20칸)에 들어가지 못하면 rich가 말줄임표로 **잘라낸다**
             # (`자가일관성·역번역`을 붙여 썼다가 `역…`으로 잘린 것을 실측했다).
             # 예산 두 구간을 함께 적는 것은 기본이 꺼짐이기 때문이다 - 켜는
-            # 사람이 부호가 갈린다는 것을 모르면 예산 10%에서 전체 Recall을
-            # 깎는 선택을 이득으로 오인한다(FR-4.2, HANDOFF 이월 23번).
+            # 사람이 낮은 예산에서 큐가 그대로인 것을 고장으로 오인하면 안
+            # 된다. 부호가 갈리던 구간(예산 10%에서 전체 -2건)은 보호 재절단
+            # 으로 닫혔다(FR-4.2, 설계 2026-09-13 §3.1).
             help=(
                 "Tier 1 신호(자가일관성과 역번역)를 켭니다. 기본은 꺼짐입니다 (FR-4.3). "
-                "이득은 예산 구간에 따라 갈립니다 (FR-4.2, en-ko 실측): "
-                "전체 Recall이 예산 30%에서 88.0%에서 91.2%로 오르지만 "
-                "예산 10%에서는 73.2%에서 72.8%로 떨어집니다."
+                "이득은 예산이 넓을수록 커집니다 (FR-4.2, en-ko 실측): "
+                "전체 Recall이 예산 30%에서 88.0%에서 91.2%로 오르고, "
+                "예산 10% 이하에서는 큐를 Tier 0 신호가 채워 바뀌지 않습니다."
             ),
         ),
     ] = False,
@@ -3202,13 +3203,19 @@ def _run_triage(
         # 실패분이 들어가 hard fail이 예산 quota를 먹는다 - 실측 Recall@10% 0%.
         # 게다가 반환 목록이 `kept`보다 길어져 `TriageOutcome`의 id 집합
         # 불변식이 `ValueError`를 던지고 트리아지가 통째로 exit 2가 된다.
-        # **후보 0건이면 Tier 1은 한 번도 안 돈다 - 그 사실을 `warn`이 말한다**
-        # (최종 리뷰 축B). `triage_with_tier1`은 `if not candidates:` 한 자리에서만
-        # `warn`을 부르고 **즉시 반환한다.** 그 경로에서 `tier1.counting.usage`를
+        # **후보 0건이면 Tier 1은 한 번도 안 돈다 - 그 사실을 `on_skip`이 말한다.**
+        # `triage_with_tier1`은 `if not candidates:` 한 자리에서만 이 콜백을
+        # 부르고 **즉시 반환한다.** 그 경로에서 `tier1.counting.usage`를
         # 그대로 넘기면 `TokenUsage(0, 0, 0)`이 `resolve_cost_scope`의
         # `usage is not None`을 통과해 **안 돈 계층이 비용 범위에 실린다** -
         # 화면은 `Tier 1: 회색지대가 비었다`인데 파일은 `["translation", "tier1"]`
         # 이라 말하는 상태다(실측: 5큐 실주행에서 `calls: 6`이 전부 번역이었다).
+        #
+        # **`warn`이 불렸는지로 판정하면 안 된다.** 옛 구현이 그렇게 했고,
+        # `warn`이 다른 사유로도 불리게 되자 곧바로 거짓이 됐다 - 극성 표지
+        # 미지원 언어와 큐를 못 바꾼 경우(이월 23번 ⑧)가 그렇고 **둘 다 Tier
+        # 1은 실제로 돈다.** 그때 회계에서 `tier1`이 통째로 빠져 실제로 쓴
+        # 토큰이 화면 어디에도 남지 않았다(실측: 이 부류로 5건이 깨졌다).
         #
         # **호출 수로 판정하면 안 된다.** `CountingProvider`는 캐시 **안쪽**이라
         # 재실행에서 샘플이 전부 캐시 히트면 `calls == 0`인데 그때 Tier 1은
@@ -3216,8 +3223,17 @@ def _run_triage(
         # 서로 다른 `includes`를 내 NFR-3 재현성이 깨진다.
         안_돈_사유: list[str] = []
 
+        def _tier1_skipped(reason: str) -> None:
+            """Tier 1이 LLM을 한 번도 부르지 못했다 - 비용 회계에서 뺀다.
+
+            **화면 출력은 하지 않는다.** 같은 문장을 `warn`이 이미 냈다
+            (`triage_with_tier1`이 둘을 나란히 부른다) - 여기서 또 내면
+            사용자가 같은 경고를 두 번 본다.
+            """
+            안_돈_사유.append(reason)
+
         def _tier1_warn(message: str) -> None:
-            """후보 0건의 사유를 화면에 내고, 안 돌았다는 사실을 기록한다.
+            """Tier 1이 낸 경고를 화면에 그대로 낸다.
 
             **`warn`을 침묵시키지 않는다**(Ruling P12). 여기서 조용하면 유료
             계층이 통째로 안 돌아도 반환값의 형태가 완전히 같아 알아챌 수단이
@@ -3227,12 +3243,14 @@ def _run_triage(
             일어났는가"의 보고이고, 같은 함수의 트리아지 요약과 나란히 읽혀야
             한다 - 한쪽만 stderr로 가면 리다이렉트한 로그에서 순서가 섞인다.
 
-            **`warn`이 다른 사유로도 불리게 되는 날 이 기록은 거짓이 된다.**
-            그때는 `triage_with_tier1`이 "돌았나"를 직접 돌려주게 바꿔야 한다 -
+            **이 함수는 "돌았나"를 기록하지 않는다.** 옛 구현은 여기서
+            `안_돈_사유`에 쌓았고, 그 기록은 `warn`이 다른 사유로도 불리는
+            순간 거짓이 됐다(이월 23번 ⑧ 경고에서 실측). 지금은
+            `triage_with_tier1`의 `on_skip`이 그 사실만 따로 말한다 -
             `test_후보가_0건이면_cost_includes에_tier1이_안_실린다`와
-            `test_tier1을_켜면_cost_includes에_tier1이_실린다`가 양방향으로 건다.
+            `test_tier1을_켜면_cost_includes에_tier1이_실린다`가 양방향으로 걸고,
+            `test_큐를_못_바꿔도_cost_includes에_tier1이_실린다`가 그 사이를 막는다.
             """
-            안_돈_사유.append(message)
             _echo(f"[{target_lang}] {_TIER1_WARN_PREFIX}{message}")
 
         # ② Tier 1 (FR-8.5 · 설계 D1). **`tier1`이 None이면 단계 자체가
@@ -3253,6 +3271,7 @@ def _run_triage(
             weights=weights,
             on_progress=reporter.update,
             embedder=tier1.embedder,
+            on_skip=_tier1_skipped,
         )
         reporter.done()
         return _outcome(

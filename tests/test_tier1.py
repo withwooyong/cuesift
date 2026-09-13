@@ -15,6 +15,7 @@ from cuesift.signals.base import SignalContext
 from cuesift.spec import load_builtin
 from cuesift.tier1 import (
     _POLARITY_UNSUPPORTED,
+    _TIER1_NO_ROOM,
     _ZERO_BY_SWITCH,
     CandidateReport,
     _diagnose_empty_candidates,
@@ -53,6 +54,32 @@ class _VaryingProvider(EchoProvider):
     def _t(self, s: str) -> str:
         self.n += 1
         return f"EN{self.n}:{s}" + ("x" * (self.n % 7))
+
+
+class _ScatterProvider(EchoProvider):
+    """재번역 N개를 **통째로 다르게** 내 자가일관성 점수를 1.0 근처로 올린다.
+
+    `_VaryingProvider` 로는 부족하다 - 접두·접미만 다른 재번역이라 점수가
+    0.21 까지밖에 오르지 않고(실측), Tier 0 의 `struct.number_missing`
+    (0.5)을 못 넘어 **큐가 어느 쪽 규칙에서든 그대로다.** 그 상태의
+    테스트는 ⑦ 을 옛 `select_by_budget` 으로 되돌려도 통과한다(변이 실측).
+    """
+
+    _문장 = (
+        "alpha bravo charlie",
+        "zzzz",
+        "the quick brown fox jumps",
+        "1234567890",
+        "qwertyuiop asdf",
+    )
+
+    def __init__(self) -> None:
+        self.n = 0
+        super().__init__(transform=self._t)
+
+    def _t(self, s: str) -> str:
+        self.n += 1
+        return self._문장[self.n % len(self._문장)]
 
 
 def _plain_segments(n: int) -> list[Segment]:
@@ -249,7 +276,10 @@ def test_Tier1_신호가_최종_점수와_신호목록에_반영된다(signal_ct
     )
 
     assert len(provider.calls) == 6  # 후보 2건(id=1,2) × samples=3
-    assert messages == []  # 후보가 있었으니 진단 메시지는 안 나간다
+    # 후보가 있었으니 **빈 후보** 진단은 안 나간다. 대신 ⑧의 "내어줄 자리가
+    # 없었다" 경고가 나간다 - 이 트랙은 큐 한 칸을 `struct.number_missing`
+    # (0.5)이 채우고 있어 보호 규칙이 그 자리를 지키기 때문이다(이월 23번).
+    assert messages == [_TIER1_NO_ROOM]
     by_id = {r.segment_id: r for r in risks}
 
     # id="0"은 Tier 1 후보가 아니었다 - ⑥이 Tier 0 신호를 버리면(M4) 이
@@ -1248,3 +1278,108 @@ def test_priority_ids에_문자열을_그대로_주면_거부한다(signal_ctx) 
             embedder=_FakeEmbedder(),
             priority_ids="s017",
         )
+
+
+# --- ⑦ 재절단이 보호 규칙을 거친다 (이월 23번 · 결함 ②) ----------------------
+
+
+def test_재절단은_Tier_0_가_말한_자리를_지킨다(signal_ctx):
+    """**`select_by_budget` 으로 되돌리면 이 테스트가 죽는다** (변이로 확인).
+
+    id="0" 은 `struct.number_missing`(0.5)으로 큐 한 칸을 차지하고, 후보
+    둘은 `_ScatterProvider` 덕에 자가일관성 1.0·0.98 을 받아 **재융합 점수가
+    id="0" 보다 높다.** 옛 ⑦ 은 같은 예산으로 다시 잘랐으므로 후보가 큐를
+    차지하고 id="0" 이 빠졌다 - 밀려나는 쪽의 오류 밀도가 높은 구간에서 그
+    거래가 손해라는 것이 이월 23번의 실측이다.
+
+    큐 크기는 그대로여야 한다 - 예산을 늘리는 것은 이 수정의 범위가 아니다.
+    """
+    segments = [
+        Segment(
+            id="0",
+            index=0,
+            start_ms=0,
+            end_ms=1000,
+            source_text="3개 있다",
+            target_text="There are some",
+        ),
+        *(
+            Segment(
+                id=str(i),
+                index=i,
+                start_ms=i * 1000,
+                end_ms=(i + 1) * 1000,
+                source_text=f"원문{i}",
+                target_text=f"Target {i}",
+            )
+            for i in range(1, 10)
+        ),
+    ]
+
+    messages: list[str] = []
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=_ScatterProvider(),
+        max_ratio=0.2,
+        samples=3,
+        warn=messages.append,
+    )
+
+    queue = [r.segment_id for r in risks if r.selected]
+    assert queue == ["0"]
+    # ⑧ - 비용을 내고 큐가 그대로면 사용자가 그 사실을 알아야 한다.
+    assert messages == [_TIER1_NO_ROOM]
+    by_id = {r.segment_id: r for r in risks}
+    # **후보가 id="0" 보다 높은 점수를 받고도 밀어내지 못했다**는 것이
+    # 이 테스트의 본체다. 이 단언이 없으면 "점수가 낮아서 안 밀린 것"과
+    # 구별되지 않는다.
+    assert by_id["1"].risk_score > by_id["0"].risk_score
+    assert by_id["1"].selected is False
+
+
+def test_재절단은_Tier_0_무증거_칸을_Tier_1에_내어준다(signal_ctx):
+    """Tier 0 신호가 하나도 없는 트랙이면 큐 전체가 양보 대상이고, 그 자리는
+    Tier 1 점수가 높은 후보가 가져간다. 보호 규칙을 "전부 보호"로 바꾸면
+    (`> 0.0` 을 `>= 0.0` 으로) 이 테스트가 죽는다."""
+    segments = _plain_segments(10)
+
+    messages: list[str] = []
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.1,
+        provider=_ScatterProvider(),
+        max_ratio=0.3,
+        samples=3,
+        warn=messages.append,
+    )
+
+    queue = [r.segment_id for r in risks if r.selected]
+    assert len(queue) == 1
+    # 큐가 실제로 바뀌었으므로 ⑧ 경고는 나가지 않는다 - 경고를 무조건
+    # 내는 변이가 여기서 죽는다.
+    assert messages == []
+    by_id = {r.segment_id: r for r in risks}
+    # 큐에 든 한 건은 Tier 1 후보 중 최고점이어야 한다 - Tier 0 는 전원 0 이다.
+    winner = by_id[queue[0]]
+    assert winner.risk_score > 0.0
+    assert winner.risk_score == max(r.risk_score for r in risks)
+
+
+def test_재절단은_큐_크기를_바꾸지_않는다(signal_ctx):
+    """`review_ratio` 가 달라지면 Recall@Budget 비교 자체가 성립하지 않는다."""
+    segments = _plain_segments(20)
+
+    risks = triage_with_tier1(
+        segments,
+        signal_ctx,
+        budget_ratio=0.25,
+        provider=_ScatterProvider(),
+        max_ratio=0.3,
+        samples=3,
+        warn=_ignore,
+    )
+
+    assert review_ratio(risks) == 0.25

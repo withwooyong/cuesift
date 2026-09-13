@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from cuesift.triage.policy import (
     gray_zone,
+    reselect_protecting_tier0,
     review_ratio,
     select_by_budget,
     select_by_count,
@@ -14,6 +15,7 @@ from cuesift.triage.policy import (
 
 __all__ = [
     "gray_zone",
+    "reselect_protecting_tier0",
     "review_ratio",
     "select_by_budget",
     "select_by_count",

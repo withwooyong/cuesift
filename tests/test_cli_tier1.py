@@ -50,7 +50,7 @@ from cuesift.embed import (
     OpenAICompatibleEmbedder,
     RetryableEmbeddingError,
 )
-from cuesift.tier1 import triage_with_tier1
+from cuesift.tier1 import _TIER1_NO_ROOM, triage_with_tier1
 from cuesift.translate import (
     ChatMessage,
     Completion,
@@ -630,6 +630,32 @@ def test_tier1이_쓴_토큰이_usage에_더해진다(
     티어1 = _read_review(tmp_path / "b")["summary"]["cost"]
     assert 티어1["calls"] > 일반["calls"]
     assert 티어1["completion_tokens"] > 일반["completion_tokens"]
+
+
+def test_큐를_못_바꿔도_cost_includes에_tier1이_실린다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**"경고가 났다"와 "안 돌았다"는 다른 사실이다** (이월 23번 ⑧).
+
+    옛 구현은 `warn`이 불렸는지로 "안 돌았다"를 추론했다. 그 추론은 `warn`이
+    다른 사유로도 불리는 순간 거짓이 되고, 실제로 이월 23번이 ⑧ 경고를 더하자
+    **LLM을 부르고도 `cost.includes`에서 `tier1`이 통째로 빠졌다**(이 부류로
+    5건이 깨졌다). 같은 함정이 `_POLARITY_UNSUPPORTED`에도 이미 있었다 -
+    그 언어에서도 Tier 1은 돈다.
+
+    아래 `test_후보가_0건이면_cost_includes에_tier1이_안_실린다`와 짝이다.
+    한쪽만 있으면 `on_skip`을 통째로 지우거나 무조건 부르는 구현이 살아남는다.
+    """
+    fake = _clean_echo()
+
+    result = _run_tier1(tmp_path, monkeypatch, *_TIER1_RUNS, provider=fake)
+
+    assert result.exit_code == 0, result.output
+    _assert_tier1_ran(fake)
+    # **전제를 단언한다.** 이 실행이 ⑧ 경고를 내지 않으면 아래 단언은 평범한
+    # 실행을 재는 것이 되어 아무것도 막지 못한다.
+    assert _TIER1_NO_ROOM in strip_rich_decoration(result.output), result.output
+    assert _read_review(tmp_path)["summary"]["cost"]["includes"] == ["translation", "tier1"]
 
 
 def test_후보가_0건이면_cost_includes에_tier1이_안_실린다(

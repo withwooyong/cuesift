@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import sys
@@ -19,6 +20,7 @@ from bench.classify_negation import CLEAN
 from bench.inject import Label
 from bench.report import render_tier1_comparison
 from bench.run import (
+    TIER1_BUDGETS,
     _candidate_counts,
     _collect_raw,
     _dump_raw,
@@ -27,6 +29,7 @@ from bench.run import (
     _recall_scores,
     _resolve_embed_key,
     build_arg_parser,
+    parse_tier1_budgets,
 )
 
 from cuesift.segment import Segment, SegmentRisk, Signal
@@ -77,9 +80,10 @@ def test_파서는_pair_없이_거부한다():
 # 테스트가 하나도 없었기 때문이다. 아래 두 테스트가 그 게이트다.
 
 
-def test_collect_raw는_아홉_필드와_selected를_전부_담는다():
+def test_collect_raw는_열_필드와_selected를_전부_담는다():
     """`_collect_raw`가 브리프 Step 5의 필드 아홉 개 + `selected`(리뷰 지적 6 —
-    원자료만으로 Recall@Budget을 되계산하려면 필요)를 정확히 담는지 고정한다.
+    원자료만으로 Recall@Budget을 되계산하려면 필요) + `tier1_scores`(이월 23번 —
+    신호별 점수가 없으면 큐 자체를 되계산할 수 없다)를 정확히 담는지 고정한다.
 
     **`dict` 전체를 비교한다.** 개별 필드만 골라 `assert record["cosine"]
     == 0.58`처럼 쓰면 그 필드가 통째로 빠져도(`KeyError`가 아니라) 다른
@@ -121,6 +125,7 @@ def test_collect_raw는_아홉_필드와_selected를_전부_담는다():
             "back_translation": "역번역문",
             "cosine": 0.58,
             "score": 0.42,
+            "tier1_scores": {BackTranslation.name: 0.42},
             "label_kind": "negation",
             "negation_class": CLEAN,
             "budget_ratio": 0.10,
@@ -129,15 +134,49 @@ def test_collect_raw는_아홉_필드와_selected를_전부_담는다():
     ]
 
 
-def test_collect_raw는_backtranslation_신호가_없으면_건너뛴다():
-    """회색지대 밖이라 Tier 1 후보가 아니었던 세그먼트는 레코드를 남기지 않는다."""
+def test_collect_raw는_tier1_신호가_하나도_없으면_건너뛴다():
+    """회색지대 밖이라 Tier 1 후보가 아니었던 세그먼트는 레코드를 남기지 않는다.
+
+    **Tier 0 신호만 달린 세그먼트도 건너뛴다** - 판정 기준이 `tier == 1`이라
+    이 구분이 `tier` 필드를 무시하는 변이에서 죽는다.
+    """
     seg = Segment(
         id="en-00002", index=0, start_ms=0, end_ms=1000, source_text="원문", target_text="번역문"
     )
     risk = SegmentRisk(segment_id="en-00002", signals=[], risk_score=0.1, hard_fail=False)
+    tier0_only = SegmentRisk(
+        segment_id="en-00002",
+        signals=[Signal(name="spec.violation", tier=0, score=0.5, detail={})],
+        risk_score=0.5,
+        hard_fail=False,
+    )
+
+    assert _collect_raw([risk], [seg], [], {}, budget=0.10) == []
+    assert _collect_raw([tier0_only], [seg], [], {}, budget=0.10) == []
+
+
+def test_collect_raw는_역번역이_실패해도_자가일관성을_남긴다():
+    """**역번역만 실패한 세그먼트를 버리면 그 가산점이 원자료 어디에도 없다**
+    (이월 23번). 큐를 되계산하려면 후보가 받은 점수가 전부 있어야 하므로,
+    역번역 전용 필드는 `None` 으로 두고 레코드 자체는 남긴다."""
+    seg = Segment(
+        id="en-00003", index=0, start_ms=0, end_ms=1000, source_text="원문", target_text="번역문"
+    )
+    risk = SegmentRisk(
+        segment_id="en-00003",
+        signals=[Signal(name="llm.self_consistency", tier=1, score=0.31, detail={})],
+        risk_score=0.31,
+        hard_fail=False,
+        selected=False,
+    )
 
     records = _collect_raw([risk], [seg], [], {}, budget=0.10)
-    assert records == []
+
+    assert len(records) == 1
+    assert records[0]["back_translation"] is None
+    assert records[0]["cosine"] is None
+    assert records[0]["score"] is None
+    assert records[0]["tier1_scores"] == {"llm.self_consistency": 0.31}
 
 
 def test_dump_raw는_메타_네_종을_담는다(tmp_path):
@@ -418,3 +457,58 @@ def test_recall_scores의_출력이_비교표의_필수_키를_모두_채운다(
     rendered = render_tier1_comparison(tier0=scores, tier1=scores, budget=0.10)
     assert "전체 Recall" in rendered
     assert "순손실" not in rendered, "같은 값끼리 비교하면 순증이 0이라 순손실이 아니다"
+
+
+# --- `--tier1-budgets` 게이트 (이월 23번) ------------------------------------
+#
+# 예산 지점을 늘려 「나머지 부류 순증이 예산의 함수인가」를 재려면 실행할
+# 때마다 예산 목록이 달라져야 한다. **상수를 손으로 고치는 방식은 변이를
+# 작업트리에 남긴다** - 그래서 옵션으로 두고, 아래가 그 옵션의 게이트다.
+
+
+def test_tier1_budgets_기본값이_10과_30이다():
+    """**기본값이 바뀌면 기본 실행 비용이 조용히 오른다.**
+
+    예산 지점 하나가 후보 최대 250건이고 그만큼 LLM 호출이 붙는다
+    (`TIER1_BUDGETS` 주석). 기본값을 늘리는 변경은 의도된 것이어야 하므로
+    여기서 고정한다.
+    """
+    args = build_arg_parser().parse_args(["--pair", "en-ko"])
+    assert args.tier1_budgets == TIER1_BUDGETS == (0.10, 0.30)
+
+
+def test_tier1_budgets는_쉼표_목록을_순서대로_읽는다():
+    """받은 순서를 정렬하지 않는다 - 리포트의 절 순서가 이 순서다."""
+    args = build_arg_parser().parse_args(["--pair", "en-ko", "--tier1-budgets", "0.05, 0.30,0.10"])
+    assert args.tier1_budgets == (0.05, 0.30, 0.10)
+
+
+@pytest.mark.parametrize(
+    ("text", "조각"),
+    [
+        ("", "쉼표로 구분한"),
+        ("   ", "쉼표로 구분한"),
+        ("0.10,", "쉼표로 구분한"),
+        ("0.10,,0.30", "쉼표로 구분한"),
+        ("절반", "숫자가 아니다"),
+        ("nan", "NaN"),
+        ("0", "0 초과 1 이하"),
+        ("-0.1", "0 초과 1 이하"),
+        ("1.5", "0 초과 1 이하"),
+        ("0.10,0.10", "두 번"),
+    ],
+)
+def test_tier1_budgets는_망가진_입력을_거부한다(text: str, 조각: str):
+    """**거부하지 않으면 무엇이 조용히 지나가는가**는 `parse_tier1_budgets`
+    독스트링의 표가 단일 출처다. 여기서는 그 표의 각 행이 실제로 걸리는지만
+    본다 - 문구를 테스트가 지어 넘기지 않고 실제 예외 메시지를 대조한다."""
+    with pytest.raises(argparse.ArgumentTypeError) as exc:
+        parse_tier1_budgets(text)
+    assert 조각 in str(exc.value)
+
+
+def test_파서가_망가진_tier1_budgets에_SystemExit를_낸다():
+    """`ArgumentTypeError` 는 파서를 거쳐야 사용자에게 보이는 오류가 된다 -
+    `type=` 배선이 빠지면 이 테스트만 죽는다."""
+    with pytest.raises(SystemExit):
+        build_arg_parser().parse_args(["--pair", "en-ko", "--tier1-budgets", "0"])

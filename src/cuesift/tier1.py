@@ -29,6 +29,7 @@ from cuesift.store.provider import CachingProvider
 from cuesift.translate.provider import Provider
 from cuesift.triage.policy import (
     gray_zone,
+    reselect_protecting_tier0,
     select_by_budget,
     select_tier1_candidates,
     tier1_cap,
@@ -83,6 +84,7 @@ def triage_with_tier1(
     embedder: Embedder | None = None,
     on_candidates: Callable[[CandidateReport], None] | None = None,
     priority_ids: Collection[str] | None = None,
+    on_skip: Callable[[str], None] | None = None,
 ) -> list[SegmentRisk]:
     """Tier 0로 좁히고 회색지대에만 Tier 1을 적용한 뒤 다시 선별한다.
 
@@ -105,6 +107,14 @@ def triage_with_tier1(
     ②만 넘기고 ⑥을 두면 사용자 가중치로 고른 후보를 기본 가중치로 다시
     세우게 되어, 가중치를 설정한 사용자에게만 순위가 어긋난다. `None`이면
     `fuse`가 `DEFAULT_WEIGHTS`를 쓴다.
+
+    **`on_skip`은 "LLM을 한 번도 부르지 못했다"만 말한다** - `warn`과 다른
+    사실이다. `warn`은 그 경로 말고도 불린다(극성 표지 미지원 언어, Tier 1이
+    큐를 못 바꾼 경우). **둘 다 Tier 1은 실제로 돈다.** 호출부가 `warn`이
+    불렸는지로 "안 돌았다"를 추론하면 그런 경고가 하나 늘 때마다 비용 회계가
+    조용히 거짓이 된다 - 실측으로 `cost.includes`에서 `tier1`이 빠져 실제로
+    쓴 토큰이 화면 어디에도 남지 않았다. 그래서 두 채널을 갈랐고, 후보 0건
+    경로는 **둘을 나란히** 부른다(화면 출력은 `warn`, 회계는 `on_skip`).
 
     ## `excluded_ids` - 수집과 융합의 입력이 다르다
 
@@ -389,15 +399,23 @@ def triage_with_tier1(
         # 그럼에도 차집합을 쓰는 이유는 `not scored` 조건이 나중에 완화되면
         # (예: "거의 다 빠졌다"로) `len(excluded)`가 미지의 id까지 세어
         # 판정을 부풀리기 때문이다. **측정할 수 없는 근거라고 밝힌 채 남긴다.**
-        warn(
-            _diagnose_empty_candidates(
-                scored,
-                candidate_ids,
-                max_ratio,
-                total=len(segments),
-                excluded_count=len(segments) - len(kept),
-            )
+        reason = _diagnose_empty_candidates(
+            scored,
+            candidate_ids,
+            max_ratio,
+            total=len(segments),
+            excluded_count=len(segments) - len(kept),
         )
+        warn(reason)
+        # **"돌지 않았다"는 `warn` 이 불렸는지로 추론할 수 없다.** `warn` 은
+        # 이 경로 말고도 불린다 - 극성 표지 미지원 언어(`_POLARITY_UNSUPPORTED`)
+        # 와 큐를 못 바꾼 경우(`_TIER1_NO_ROOM`)가 그렇고, **둘 다 Tier 1 은
+        # 실제로 돈다.** 추론으로 두면 그런 경고가 하나 늘 때마다 호출부의
+        # 비용 회계가 조용히 거짓이 된다(실측: `cost.includes` 에서 `tier1` 이
+        # 빠져 실제로 쓴 토큰이 화면 어디에도 남지 않았다). 그래서 LLM 을
+        # 부르지 못한 이 경로만 전용 신호를 낸다.
+        if on_skip is not None:
+            on_skip(reason)
         return scored
 
     # ⑤ Tier 1 - 후보에만
@@ -441,8 +459,31 @@ def triage_with_tier1(
     # 드러나지 않아, Tier 1을 켰을 때와 안 켰을 때의 분모가 갈라진다.
     rescored = [fuse(seg.id, tier0[seg.id] + tier1.get(seg.id, []), weights) for seg in kept]
 
-    # ⑦ 예산 재적용
-    return select_by_budget(rescored, budget_ratio)
+    # ⑦ 재절단 - **같은 예산으로 다시 자르지 않는다** (이월 23번 · 결함 ②).
+    #
+    # `select_by_budget(rescored, budget_ratio)` 로 두면 후보가 올라간 수만큼
+    # 큐 최하위가 정확히 같은 수로 빠지고, 그 거래는 밀려나는 쪽의 오류 밀도가
+    # 높은 구간에서 손해다 - en-ko 예산 10%에서 전체 오류가 366건에서 364건으로
+    # 줄었다. `reselect_protecting_tier0` 이 "Tier 0 가 아무 말도 하지 못한
+    # 칸만 가져간다"는 규칙으로 그 손해를 없앤다. 근거 실측과 대안 검토는
+    # 그 함수의 독스트링이 단일 출처다.
+    #
+    # **`scored` 를 넘긴다.** ③에서 같은 `risks` 에 같은 예산을 적용한 결과라
+    # 여기서 다시 부르면 같은 값이 나오지만, 두 곳에서 각자 부르면 한쪽의
+    # 예산 인자만 바뀌어도 조용히 다른 기준을 지키게 된다.
+    reselected = reselect_protecting_tier0(scored, rescored)
+
+    # ⑧ 무음 열화 방어 - **LLM 을 부르고도 큐가 한 글자도 안 바뀔 수 있다.**
+    # 큐 전체를 Tier 0 신호가 채우고 있으면 ⑦ 이 내어줄 칸이 0건이고, 그러면
+    # 사용자는 비용을 내고 아무것도 얻지 못한 채 그 사실을 알 수 없다
+    # (실측: en-ko·ja-ko 예산 10%가 이 상태다). 조용히 넘기면 "Tier 1 을
+    # 켰는데 효과가 없다"와 "Tier 1 이 볼 자리가 없었다"가 구별되지 않는다 -
+    # 설계 D5 가 미지원 언어에서 막은 것과 같은 부류의 열화다.
+    if {r.segment_id for r in reselected if r.selected} == {
+        r.segment_id for r in scored if r.selected
+    }:
+        warn(_TIER1_NO_ROOM)
+    return reselected
 
 
 # **두 곳이 같은 문장을 써야 한다** - 실행 경로의 `_diagnose_empty_candidates`와
@@ -458,6 +499,15 @@ _ZERO_BY_SWITCH = "max_ratio=0.0 - Tier 1을 껐다 (정상)"
 #
 # **출력 문자열이라 em dash 를 쓰지 않는다**(전역 제약, cp949 미인코딩).
 _POLARITY_UNSUPPORTED = "극성 표지 목록이 없는 언어다 - Tier 1 후보를 위험도 순서로만 고른다"
+
+# Tier 1 이 큐를 한 건도 바꾸지 못했을 때의 경고 (이월 23번 · 결함 ②).
+#
+# **리터럴로 두면 안 된다** - `_POLARITY_UNSUPPORTED` 와 같은 이유다.
+# **출력 문자열이라 em dash 를 쓰지 않는다**(전역 제약, cp949 미인코딩).
+_TIER1_NO_ROOM = (
+    "Tier 1 이 검수 큐를 바꾸지 못했다 - 큐 전체를 Tier 0 신호가 채우고 있어 "
+    "내어줄 자리가 없었다. 예산을 늘리면 Tier 1 이 볼 자리가 생긴다"
+)
 
 
 def _zero_by_floor(total: int, max_ratio: float, *, noun: str) -> str:

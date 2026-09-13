@@ -165,6 +165,92 @@ def select_by_threshold(risks: Sequence[SegmentRisk], threshold: float) -> list[
     return [_copy(r, selected=r.hard_fail or r.risk_score >= threshold) for r in ordered]
 
 
+def reselect_protecting_tier0(
+    tier0: Sequence[SegmentRisk],
+    rescored: Sequence[SegmentRisk],
+) -> list[SegmentRisk]:
+    """Tier 1 가산 뒤 큐를 다시 짜되, **Tier 0 가 말을 한 자리는 지킨다**
+    (FR-6.3 · 이월 23번 결함 ②).
+
+    ## 무엇을 고치는가
+
+    Tier 1 은 회색지대 후보에만 점수를 더하고 noisy-or 는 점수를 올리기만
+    하므로, 같은 예산으로 다시 자르면 **후보가 올라간 수만큼 큐 최하위가
+    정확히 같은 수로 빠진다.** 순위는 보존량이라 이것은 신호 품질과 무관한
+    구조적 성질이다.
+
+    그 거래가 이득인지 손해인지는 **밀려나는 쪽의 오류 밀도**가 정한다.
+    en-ko 실측(2026-09-13, 트랙 5,000건)은 그 밀도가 컷라인의 Tier 0
+    위험도에 따라 계단처럼 갈린다고 말한다.
+
+    | 컷라인 점수 | 컷라인 위 50건의 오류 밀도 |
+    | --- | ---: |
+    | 1.0000 (예산 5%) | 84% |
+    | 0.5000 (예산 10%) | 28% |
+    | **0.0000** (예산 15% 이상) | **2%** |
+
+    위험도 0 은 **결정론적 신호가 하나도 발화하지 않았다**는 뜻이고, 그
+    구간의 오류 밀도가 2%다. 그래서 규칙은 하나로 적힌다 - **Tier 1 은
+    Tier 0 가 아무 말도 하지 못한 칸만 가져간다.**
+
+    ## 이 규칙이 아니면 무엇이 깨지는가
+
+    - **임계 상수를 쓰면** 그 값을 벤치 Recall 로 맞추게 되고, 그것은 스펙
+      §6.3 이 금지한 "같은 데이터에서 맞춘 가중치"와 성질이 같아진다.
+      여기서 쓰는 0 은 튜닝된 값이 아니라 「증거 없음」의 경계다.
+    - **증거 문턱(τ)·후보 상위 q% 로는 고쳐지지 않는다.** 후처리 정책
+      9종을 같은 원자료로 재봤을 때 예산 10%의 손실을 없앤 것은 하나도
+      없었다 - 승격 적중률(최대 21%)이 밀려남 적중률(23~25%)을 이기지
+      못하기 때문이다. 고칠 대상은 신호의 질이 아니라 **누구를 밀어내는가**다.
+    - **`select_by_budget` 을 그대로 두면** 이 함수가 필요 없어 보이지만,
+      그 함수는 두 스냅샷을 모른다 - 무엇이 Tier 0 만으로 뽑혔는지를 알아야
+      "지킬 자리"가 정의된다.
+
+    ## 계약
+
+    `select_by_budget` 과 같다 - 전체 목록을 위험도 내림차순으로 돌려주고
+    선별된 것에만 `selected=True` 를 붙인다. **큐 크기는 `tier0` 의 큐와
+    같다** - 예산을 늘리는 것은 이 수정의 범위가 아니고, 늘리면
+    `review_ratio` 가 달라져 Recall@Budget 비교 자체가 성립하지 않는다.
+
+    `tier0` 는 `select_by_budget` 을 이미 거친 목록이고, `rescored` 는 같은
+    세그먼트 집합에 Tier 1 신호를 더해 다시 융합한 목록이다. **두 집합이
+    다르면 `ValueError` 다** - 조용히 교집합으로 동작하면 한쪽에만 있는
+    세그먼트가 큐에서 사라지고, 그 사라짐이 Recall 하락으로만 관측된다.
+    """
+    tier0_ids = {r.segment_id for r in tier0}
+    if len(tier0_ids) != len(tier0):
+        raise ValueError("tier0에 중복 세그먼트 id가 있다")
+    rescored_ids = {r.segment_id for r in rescored}
+    if len(rescored_ids) != len(rescored):
+        raise ValueError("rescored에 중복 세그먼트 id가 있다")
+    if tier0_ids != rescored_ids:
+        raise ValueError(
+            "tier0와 rescored의 세그먼트 집합이 다르다 "
+            f"(tier0에만 {len(tier0_ids - rescored_ids)}건, "
+            f"rescored에만 {len(rescored_ids - tier0_ids)}건)"
+        )
+
+    queue = [r for r in tier0 if r.selected]
+    # **`> 0.0` 이지 `>= 0.0` 이 아니다.** 후자면 큐 전체가 보호돼 Tier 1 이
+    # 영영 아무것도 바꾸지 못한다 - 기능을 끈 것과 같아진다.
+    protected = {r.segment_id for r in queue if r.risk_score > 0.0}
+    open_slots = len(queue) - len(protected)
+
+    ordered = _sorted_desc(rescored)
+    contenders = [r for r in ordered if r.segment_id not in protected]
+    # hard fail 은 예산을 우회한다(FR-6.2). 오늘의 신호 구성에서는 Tier 0
+    # hard fail 이 전부 `risk_score == 1.0` 이라 이미 보호 목록에 들어가므로
+    # 이 분기는 발화하지 않는다 - 그럼에도 두는 것은 `_select_top` 과 같은
+    # 규칙을 여기서만 빠뜨리지 않기 위해서다. 훗날 hard fail 을 내는 Tier 1
+    # 신호가 생기면 이 분기가 그것을 받는다.
+    hard_ids = {r.segment_id for r in contenders if r.hard_fail}
+    remaining = max(0, open_slots - len(hard_ids))
+    rest = [r for r in contenders if not r.hard_fail]
+    selected_ids = protected | hard_ids | {r.segment_id for r in rest[:remaining]}
+    return [_copy(r, selected=r.segment_id in selected_ids) for r in ordered]
+
+
 def gray_zone(risks: Sequence[SegmentRisk]) -> list[SegmentRisk]:
     """컷라인 아래 회색지대 - hard_fail도 아니고 이미 선별되지도 않은 것 (설계 §5).
 

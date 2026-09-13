@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -138,6 +139,55 @@ def _load_corpus_stats(track_path: Path) -> dict[str, object] | None:
     return json.loads(stats_path.read_text(encoding="utf-8"))
 
 
+def parse_tier1_budgets(text: str) -> tuple[float, ...]:
+    """`--tier1-budgets` 의 쉼표 목록을 예산 튜플로 바꾼다 (이월 23번).
+
+    **왜 상수를 직접 고치지 않고 옵션으로 두는가.** `TIER1_BUDGETS` 를 손으로
+    바꿔 재면 실행이 끝난 뒤 그 변경이 작업트리에 남고, 그 상태로 커밋하면
+    다음 실행의 기본 비용이 조용히 올라간다. 옵션이면 기본값은 (0.10, 0.30)
+    그대로이고 재는 사람만 비용을 진다.
+
+    **각 검사가 없으면 무엇이 깨지는가.**
+
+    | 입력 | 거부하는 이유 |
+    | --- | --- |
+    | 빈 문자열 · 빈 항목 | 빈 튜플이 되면 Tier 1 루프가 **조용히 한 번도 돌지 않고**, |
+    | | 리포트에서 Tier 1 절이 통째로 빠진다 |
+    | 숫자가 아님 | `float()` 의 `ValueError` 가 그대로 올라오면 어느 항목이 |
+    | | 틀렸는지 알 수 없다 |
+    | `NaN` | `select_by_budget` 이 NaN 을 막지만, 그 전에 회색지대 크기와 |
+    | | 리포트 제목이 `nan%` 로 찍힌다 |
+    | 0 이하 | 큐가 비어 Tier 0 대비 자체가 성립하지 않는다 |
+    | 1 초과 | 회색지대가 비어 후보가 0건이 된다 |
+    | 중복 | 같은 예산의 비교표가 두 번 실려 독자가 두 실행으로 오인한다 |
+    """
+    items = [chunk.strip() for chunk in text.split(",")]
+    if not text.strip() or any(not chunk for chunk in items):
+        raise argparse.ArgumentTypeError(
+            f"--tier1-budgets는 쉼표로 구분한 비율 목록이어야 한다 (받은 값: {text!r})"
+        )
+    budgets: list[float] = []
+    for chunk in items:
+        try:
+            value = float(chunk)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"--tier1-budgets의 항목이 숫자가 아니다 (받은 값: {chunk!r})"
+            ) from exc
+        if math.isnan(value):
+            raise argparse.ArgumentTypeError("--tier1-budgets에 NaN을 줄 수 없다")
+        if not 0.0 < value <= 1.0:
+            raise argparse.ArgumentTypeError(
+                f"--tier1-budgets의 항목은 0 초과 1 이하여야 한다 (받은 값: {value})"
+            )
+        if value in budgets:
+            raise argparse.ArgumentTypeError(
+                f"--tier1-budgets에 같은 예산이 두 번 들어왔다 (받은 값: {value})"
+            )
+        budgets.append(value)
+    return tuple(budgets)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """CLI 인자 파서를 조립한다 (컨트롤러 판정 A).
 
@@ -172,6 +222,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # **파서 조립 시점**(`add_argument`)에 `ValueError`를 던진다(실측:
     # `test_파서는_pair_없이_거부한다`가 이 자리에서 걸렸다).
     parser.add_argument("--tier1", action="store_true", help="Tier 1을 예산 10%%·30%%에서 측정한다")
+    parser.add_argument(
+        "--tier1-budgets",
+        type=parse_tier1_budgets,
+        default=TIER1_BUDGETS,
+        help="Tier 1을 잴 예산 지점 (쉼표 구분, 예: 0.05,0.10,0.15). 비우면 10%%·30%%",
+    )
     parser.add_argument(
         "--pushout",
         action="store_true",
@@ -330,25 +386,42 @@ def _collect_raw(
     (리뷰 지적 6) — 후보였는지는 남아도 그 예산에서 실제로 큐에 담겼는지가
     없으면, 라벨을 고친 뒤 이 파일만 다시 훑어서는 새 Recall을 낼 수 없고
     결국 재실행이 필요해져 이월 20이 다시 열린다.
+
+    **`tier1_scores`가 없으면 큐 자체를 되계산할 수 없다** (이월 23번 실측).
+    Tier 1 은 등록된 tier=1 신호를 **전부** 돌리므로(`tier1.py` 의
+    `default_tier1`) 후보가 받는 가산점은 `llm.backtranslation` 하나가
+    아니라 `llm.self_consistency` 와의 noisy-or 합이다. 역번역 점수만
+    남기면 오프라인 재구성이 예산 10%에서 승격 28건을 내는데 실제 실행은
+    61건이었다 - **어긋난 것이 코드가 아니라 기록이었다.** 신호별 점수를
+    통째로 남기면 그 재구성이 실행과 같은 큐를 낸다.
+
+    **필터도 역번역이 아니라 tier=1 전체를 본다.** 역번역만 실패하고
+    자가일관성은 성공한 세그먼트가 기록에서 빠지면, 그 세그먼트가 받은
+    가산점이 원자료 어디에도 없어 같은 구멍이 남는다.
     """
     by_id = {seg.id: seg for seg in mutated}
     label_by_id = {lb.segment_id: lb.kind for lb in labels}
     records: list[dict[str, object]] = []
     for risk in risks:
-        # 회색지대 밖이라 Tier 1 후보가 아니었던 세그먼트, 혹은 역번역/임베딩이
-        # 실패해(§5.1) 신호를 못 낸 세그먼트는 여기서 걸러진다.
-        bt = next((s for s in risk.signals if s.name == BackTranslation.name), None)
-        if bt is None:
+        # 회색지대 밖이라 Tier 1 후보가 아니었던 세그먼트, 혹은 신호 수집이
+        # 전부 실패한(§5.1) 세그먼트는 여기서 걸러진다.
+        tier1_scores = {s.name: s.score for s in risk.signals if s.tier == 1}
+        if not tier1_scores:
             continue
+        bt = next((s for s in risk.signals if s.name == BackTranslation.name), None)
         seg = by_id[risk.segment_id]
         records.append(
             {
                 "segment_id": risk.segment_id,
                 "source_text": seg.source_text,
                 "target_text": seg.target_text,
-                "back_translation": bt.detail.get("back_translation"),
-                "cosine": bt.detail.get("cosine"),
-                "score": bt.score,
+                "back_translation": None if bt is None else bt.detail.get("back_translation"),
+                "cosine": None if bt is None else bt.detail.get("cosine"),
+                # **`score`는 역번역 점수 그대로 둔다.** 이 키를 tier 1 합산으로
+                # 바꾸면 이름은 그대로인데 뜻이 달라져, 옛 파일을 읽는 분석이
+                # 조용히 다른 수를 낸다. 합산이 필요한 쪽은 `tier1_scores`를 쓴다.
+                "score": None if bt is None else bt.score,
+                "tier1_scores": tier1_scores,
                 "label_kind": label_by_id.get(risk.segment_id),
                 "negation_class": negation_classes.get(risk.segment_id),
                 "budget_ratio": budget,
@@ -630,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
             # 있어 30% 예산 도중 죽으면, `finally` 없이는 이미 끝난 10% 예산의
             # 역번역 결과까지 통째로 사라진다 — 이월 20이 열린 것이 정확히
             # 이 실패 경로였다.
-            for budget in TIER1_BUDGETS:
+            for budget in args.tier1_budgets:
                 candidate_reports: list[CandidateReport] = []
                 tier1_risks = triage_with_tier1(
                     mutated,
