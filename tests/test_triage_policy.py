@@ -4,6 +4,7 @@ import pytest
 
 from cuesift.segment import SegmentRisk
 from cuesift.triage import (
+    reselect_protecting_tier0,
     review_ratio,
     select_by_budget,
     select_by_count,
@@ -420,3 +421,115 @@ def test_priority_ids_기본값은_오늘과_같다():
     assert select_tier1_candidates(risks, 0.05) == select_tier1_candidates(
         risks, 0.05, priority_ids=()
     )
+
+
+# --- 보호 재절단 (이월 23번 · 결함 ②) ---------------------------------------
+#
+# **이 블록이 없으면 ⑦ 재절단을 통째로 되돌려도 스위트가 전부 통과한다**
+# (실측: `reselect_protecting_tier0` 을 `select_by_budget` 으로 되돌려도
+# 1,981건이 그대로 통과했다). 큐가 어떻게 다시 짜이는지를 재는 테스트가
+# 하나도 없었기 때문이다.
+
+
+def _queue_ids(scored):
+    return [r.segment_id for r in scored if r.selected]
+
+
+def test_보호_재절단은_Tier_0_증거가_있는_자리를_지킨다():
+    """위험도가 0 보다 큰 큐 구성원은 Tier 1 이 아무리 올라와도 밀리지 않는다."""
+    tier0 = select_by_budget([_risk("a", 0.6), _risk("b", 0.5), _risk("c", 0.1)], 2 / 3)
+    # c 가 Tier 1 가산으로 최상위가 돼도 a·b 를 밀어낼 수 없다.
+    rescored = [_risk("a", 0.6), _risk("b", 0.5), _risk("c", 0.99)]
+
+    result = reselect_protecting_tier0(tier0, rescored)
+
+    assert _queue_ids(result) == ["a", "b"]
+
+
+def test_보호_재절단은_Tier_0_무증거_칸을_내어준다():
+    """위험도 0 인 큐 구성원의 자리는 Tier 1 후보가 가져간다 - 그 구간의
+    오류 밀도가 2%라는 실측이 이 양보의 근거다."""
+    tier0 = select_by_budget([_risk("a", 0.6), _risk("b", 0.0), _risk("c", 0.0)], 2 / 3)
+    assert _queue_ids(tier0) == ["a", "b"], "동점은 id 로 깨뜨리므로 b 가 큐에 있다"
+    rescored = [_risk("a", 0.6), _risk("b", 0.0), _risk("c", 0.4)]
+
+    result = reselect_protecting_tier0(tier0, rescored)
+
+    assert _queue_ids(result) == ["a", "c"]
+
+
+def test_보호_재절단은_큐_크기를_유지한다():
+    """**예산을 늘리는 것은 이 수정의 범위가 아니다.** 늘리면 `review_ratio` 가
+    달라져 Recall@Budget 비교 자체가 성립하지 않는다."""
+    risks = [_risk(f"s{i}", 0.0) for i in range(10)]
+    tier0 = select_by_budget(risks, 0.3)
+    rescored = [_risk(f"s{i}", 0.9 if i >= 7 else 0.0) for i in range(10)]
+
+    result = reselect_protecting_tier0(tier0, rescored)
+
+    assert len(_queue_ids(result)) == len(_queue_ids(tier0)) == 3
+    assert _queue_ids(result) == ["s7", "s8", "s9"]
+
+
+def test_보호_재절단은_hard_fail을_지킨다():
+    """hard fail 은 `risk_score == 1.0` 이라 보호 목록에 들어간다 (FR-6.2)."""
+    tier0 = select_by_budget([_risk("a", 1.0, hard=True), _risk("b", 0.0)], 0.5)
+    rescored = [_risk("a", 1.0, hard=True), _risk("b", 0.95)]
+
+    assert _queue_ids(reselect_protecting_tier0(tier0, rescored)) == ["a"]
+
+
+def test_보호_재절단은_전체_목록을_위험도_순으로_돌려준다():
+    """`select_by_budget` 과 계약이 같다 - 선별된 것만 돌려주면 `review_ratio`
+    가 언제나 1.0 이 되어 README 배수의 분모가 무너진다."""
+    tier0 = select_by_budget([_risk("a", 0.6), _risk("b", 0.0), _risk("c", 0.0)], 1 / 3)
+    rescored = [_risk("a", 0.6), _risk("b", 0.0), _risk("c", 0.4)]
+
+    result = reselect_protecting_tier0(tier0, rescored)
+
+    assert [r.segment_id for r in result] == ["a", "c", "b"]
+    assert review_ratio(result) == 1 / 3
+
+
+def test_보호_재절단은_입력을_변형하지_않는다():
+    tier0 = select_by_budget([_risk("a", 0.6), _risk("b", 0.0)], 0.5)
+    rescored = [_risk("a", 0.6), _risk("b", 0.9)]
+
+    reselect_protecting_tier0(tier0, rescored)
+
+    assert [r.selected for r in tier0] == [True, False]
+    assert [r.selected for r in rescored] == [False, False]
+
+
+def test_보호_재절단은_세그먼트_집합이_다르면_거부한다():
+    """**조용히 교집합으로 동작하면** 한쪽에만 있는 세그먼트가 큐에서 사라지고,
+    그 사라짐이 Recall 하락으로만 관측된다."""
+    tier0 = select_by_budget([_risk("a", 0.6), _risk("b", 0.0)], 0.5)
+
+    with pytest.raises(ValueError, match="세그먼트 집합"):
+        reselect_protecting_tier0(tier0, [_risk("a", 0.6), _risk("z", 0.9)])
+
+
+def test_보호_재절단은_중복_id를_거부한다():
+    tier0 = select_by_budget([_risk("a", 0.6), _risk("b", 0.0)], 0.5)
+
+    with pytest.raises(ValueError, match="중복"):
+        reselect_protecting_tier0(tier0, [_risk("a", 0.6), _risk("a", 0.9), _risk("b", 0.0)])
+
+
+def test_보호_재절단은_tier0의_중복_id도_거부한다():
+    """**두 인자를 각각 검사한다.** 한쪽만 보면 다른 쪽의 중복이 집합 비교를
+    통과해(집합은 중복을 지운다) 보호 집합 크기와 큐 크기가 어긋난 채 돈다 -
+    그러면 내어줄 칸 수가 음수가 되어 큐가 조용히 줄어든다."""
+    tier0 = [_t1_risk("a", 0.6, selected=True), _t1_risk("a", 0.6, selected=True)]
+
+    with pytest.raises(ValueError, match="중복"):
+        reselect_protecting_tier0(tier0, [_t1_risk("a", 0.9)])
+
+
+def test_보호_재절단은_큐가_비면_아무것도_고르지_않는다():
+    """예산 0 에 hard fail 도 없으면 내어줄 칸이 없다."""
+    tier0 = select_by_budget([_risk("a", 0.6), _risk("b", 0.0)], 0.0)
+    assert _queue_ids(tier0) == []
+
+    assert _queue_ids(reselect_protecting_tier0(tier0, [_risk("a", 0.6), _risk("b", 0.9)])) == []
