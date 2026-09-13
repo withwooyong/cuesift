@@ -1,6 +1,6 @@
 # Session Handoff
 
-> Last updated: 2026-09-13 (KST) · 브랜치 `feat/tier1-budget-sweep` · PR (이 커밋 다음에 채운다)
+> Last updated: 2026-09-13 (KST) · 브랜치 `feat/tier1-budget-sweep` · PR [#46](https://github.com/withwooyong/cuesift/pull/46)
 > **이월 23번을 닫았다. 결함 ②(비대칭 밀어냄)를 구조적으로 고쳤다.**
 > ① **착수의 첫 질문에 답했다 - 「나머지 부류 순증이 예산의 함수인가」는 기각이다.**
 > `bench/run.py` 에 `--tier1-budgets` 를 더해 예산을 다섯 지점(5·10·15·20·30%)으로 늘리자,
