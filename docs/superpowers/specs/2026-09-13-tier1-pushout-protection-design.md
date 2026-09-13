@@ -299,7 +299,7 @@ def reselect_protecting_tier0(
 | 3 | M1~M15 가 각각 해당 변이에서 **실제로 실패하는 것을 확인했다** | ✅ 열다섯 다 잡혔다(§6) |
 | 4 | 오프라인 재구성이 예측한 수와 실제 실행의 수가 같다 | ✅ 스무 칸이 전부 같다(§3.6) |
 | 5 | 로컬 게이트 5종이 전부 통과하고, `check_links.py` 와 markdownlint 의 파일 개수가 같다 | ✅ 아래 표 |
-| 6 | CI 5잡이 전부 통과한다 | PR 에서 확인한다 |
+| 6 | CI 5잡이 전부 통과한다 | ✅ `test 3.11`~`3.14` · `docs` 전부 success (PR [#46](https://github.com/withwooyong/cuesift/pull/46)) |
 
 게이트 수치는 개수를 그대로 적는다 — 「통과했나」가 아니라 「무엇을 대상으로
 통과했나」를 보기 위해서다.
@@ -311,3 +311,7 @@ def reselect_protecting_tier0(
 | `pytest --cov=cuesift` | 1995 passed · 5 deselected · 커버리지 98% |
 | `scripts/check_links.py` | 마크다운 61개 · 상대 링크 344개 · 깨진 링크 없음 |
 | `markdownlint-cli2` | Linting: 61 files · 0 issues |
+
+**CI 는 로컬보다 1 건이 skip 된다** — `data/` 가 `.gitignore` 라 벤치 트랙을 요구하는
+테스트가 CI 에서 돌지 못한다(`1994 passed · 1 skipped · 5 deselected`). **수집 개수
+2000 은 양쪽이 같다** — 이쪽이 갈리면 그것은 진짜 문제다.
